@@ -60,3 +60,12 @@ test("the archive list: one zip per month, the v2 file when a month has both, no
     expect((await listArchive()).map((x) => `${x.month} ${x.url.split("/").pop()}`)).toEqual(["2018-01 18_01.zip", "2022-01 ist-daten-2022-01.zip", "2025-12 ist-daten-v2-2025-12.zip"]);
   } finally { globalThis.fetch = real; }
 });
+
+test("history punctuality: on time of the trains that ran, cancelled ones counted apart (not subtracted twice)", async () => {
+  const rec = await import("../server/record"); // the stats module reads record's live `db` binding
+  const { longHistory } = await import("../server/stats");
+  rec.initRecord(":memory:");
+  await importDay(rec.db, stream(csv()));
+  const h = longHistory()!;
+  expect(h.months[0]).toMatchObject({ month: "2026-09", pct: 66.7, cancelled: 1 }); // 2 of the 3 observed trains, the cancelled S3 apart
+});
