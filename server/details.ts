@@ -2,6 +2,7 @@
 import { Budget, Busy, upstream } from "./upstream";
 import { db } from "./record";
 import { download, latestResource } from "./gtfs";
+import { zurichDate } from "./time";
 import type { Trip } from "./gtfs";
 
 // GTFS agency_id -> Formation Service EVU code (all 11 the service covers). Others have no formation data.
@@ -36,9 +37,10 @@ export type Formation = {
   stops: { uic: string; track: string; moved: boolean }[]; // where the train calls, its platform, platform changed
   goals: [from: number, to: number, uic: string][]; // coach positions -> destination, when the train splits
 };
-/** ok: here it is · none: the operator doesn't publish it · unsupported: operator not in the service · window: only looked up around the trip
- * busy/budget: request quota (per minute / per day) in use · error: upstream failed, retried in 2 min */
-export type FormationStatus = "ok" | "none" | "unsupported" | "window" | "busy" | "budget" | "error";
+/** ok: here it is · none: not published (yet) · unsupported: operator not in the service · window: only looked up around the trip
+ * past: the service only answers for today, this run started yesterday · busy/budget: request quota (per minute / per day) in use
+ * error: upstream failed, retried in 2 min */
+export type FormationStatus = "ok" | "none" | "unsupported" | "window" | "past" | "busy" | "budget" | "error";
 export type FormationResult = { status: FormationStatus; f: Formation | null; retryAfter?: number };
 
 const inflight = new Map<string, Promise<FormationResult>>(); // one upstream call per train, however many ask at once
@@ -89,14 +91,15 @@ async function fetchFormation(evu: string, num: string, date: string, background
   return parseFormation(await res.json());
 }
 
-const ERROR_RETRY = 120_000;
+const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
 export function formationFor(trip: Trip, { fetch = true, background = false } = {}): Promise<FormationResult> {
   const evu = EVU[trip.agency];
   if (!evu || !trip.num) return Promise.resolve({ status: "unsupported", f: null });
   const key = `${evu}:${trip.num}:${trip.date}`;
   const row = db.query("SELECT status, t, json FROM formation_cache WHERE key = ?").get(key) as { status: FormationStatus; t: number; json: string | null } | null;
-  if (row && (row.status !== "error" || Date.now() - row.t < ERROR_RETRY)) return Promise.resolve({ status: row.status, f: row.json ? JSON.parse(row.json) : null });
+  if (row && !(Date.now() - row.t > (RETRY[row.status] ?? Infinity))) return Promise.resolve({ status: row.status, f: row.json ? JSON.parse(row.json) : null });
+  if (trip.date < zurichDate(new Date())) return Promise.resolve({ status: "past", f: null }); // "dates older than today will not return results"
   if (!fetch) return Promise.resolve({ status: "window", f: null });
   if (!inflight.has(key)) {
     const store = (status: FormationStatus, f: Formation | null = null) => {

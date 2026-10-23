@@ -540,7 +540,7 @@ function setUrl() {
 
 // ---------- panel ----------
 const details = new Map(); // trip idx -> "loading" | { formation, formationStatus, occupancy, at }
-const RETRY = { busy: 20_000, window: 120_000, error: 120_000, offline: 60_000 }; // statuses worth asking again, and when
+const RETRY = { busy: 20_000, window: 120_000, error: 120_000, offline: 60_000, none: 4 * 3600_000 }; // statuses worth asking again, and when
 function loadDetails(i) {
   const d = details.get(i);
   if (d === "loading" || (d && !(Date.now() - d.at > (RETRY[d.formationStatus] ?? Infinity)))) return;
@@ -664,7 +664,8 @@ function trainHtml(i) {
 }
 
 const FORMATION_WHY = {
-  none: () => "Not published by the operator for this train.",
+  none: () => "Not published for this train (or not yet: asked again in a few hours).",
+  past: () => "Only available for today's trains; this run started yesterday.",
   unsupported: () => "This operator doesn't publish coach formations.",
   window: () => "Looked up from an hour before departure until two hours after arrival.",
   busy: (x) => `Lookups are busy right now (shared request quota). Retrying in ${Math.max(5, x.retryAfter ?? 20)} s…`,

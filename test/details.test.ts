@@ -1,6 +1,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import { details, formationFor, parseFormation } from "../server/details";
 import { initRecord } from "../server/record";
+import { addDays, zurichDate } from "../server/time";
 
 // trimmed real v2 response (IC 704, 2026-10-24): two coaches, two stops
 const V2 = {
@@ -25,7 +26,8 @@ Object.assign(process.env, { FORMATION_SERVICE_TOKEN: "x", FORMATION_SERVICE_per
 beforeEach(() => { initRecord(":memory:"); calls = 0; status = 200; });
 
 const base = Date.now() - 12 * 3600_000; // "now" is 12 h into the service day
-const trip = (num: string, depH: number, arrH: number, agency = "11"): any => ({ id: num, date: "2026-10-23", agency, num, stops: [0, depH * 3600, depH * 3600, 1, arrH * 3600, arrH * 3600] });
+const today = zurichDate(new Date());
+const trip = (num: string, depH: number, arrH: number, agency = "11", date = today): any => ({ id: num, date, agency, num, stops: [0, depH * 3600, depH * 3600, 1, arrH * 3600, arrH * 3600] });
 
 test("v2: units, coaches with sectors per stop, platforms, platform change, split destinations", () => {
   const f = parseFormation(V2)!;
@@ -56,6 +58,11 @@ test("'not published' is remembered for the day; unknown operators are never ask
   expect(calls).toBe(1);
   expect((await formationFor(trip("703", 11, 13, "87_LEX"))).status).toBe("unsupported");
   expect(calls).toBe(1);
+});
+
+test("yesterday's run is not asked: the service only answers for today", async () => {
+  expect((await details(trip("705", 11, 13, "11", addDays(today, -1)), base)).formationStatus).toBe("past");
+  expect(calls).toBe(0);
 });
 
 test("an upstream failure is retried later, not cached as 'none'", async () => {

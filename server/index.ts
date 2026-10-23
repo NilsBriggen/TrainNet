@@ -97,7 +97,7 @@ const server = Bun.serve({
       if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}`);
       const trip = day?.trips[Number(req.params.idx)];
       if (!trip) return new Response("unknown train", { status: 404 });
-      const r = await details(trip, day!.base), final = ["ok", "none", "unsupported"].includes(r.formationStatus);
+      const r = await details(trip, day!.base), final = ["ok", "unsupported", "past"].includes(r.formationStatus);
       return Response.json(r, { headers: { "Cache-Control": final ? "public, max-age=300" : "no-store" } }); // the URL carries the day version
     },
   },

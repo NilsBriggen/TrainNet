@@ -18,8 +18,8 @@ export async function crawlFleet(d: Day) {
   running = d.version;
   // "not published" or already recorded today, also before a restart: never asked again.
   // A formation a visitor looked up is in the cache but not yet recorded: the crawl records it without a new request.
-  const keys = (status: string) => new Set((db.query("SELECT key FROM formation_cache WHERE date = ? AND status = ?").all(d.date, status) as { key: string }[]).map((r) => r.key));
-  const none = keys("none"), cached = keys("ok");
+  const keys = (status: string, since = 0) => new Set((db.query("SELECT key FROM formation_cache WHERE date = ? AND status = ? AND t > ?").all(d.date, status, since) as { key: string }[]).map((r) => r.key));
+  const none = keys("none", Date.now() - 4 * 3600_000), cached = keys("ok"); // an old "none" may have been "not yet"
   const recorded = new Set((db.query("SELECT DISTINCT train_no FROM vehicle_run WHERE date = ?").all(d.date) as { train_no: string }[]).map((r) => r.train_no));
   const todo = new Map<string, Trip>();
   for (const t of d.trips) {
