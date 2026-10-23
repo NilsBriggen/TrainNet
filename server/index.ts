@@ -1,11 +1,11 @@
 import { loadDay, type Day } from "./gtfs";
-import { live, resetRealtime, startRealtime } from "./realtime";
+import { alertsBody, live, resetRealtime, startRealtime } from "./realtime";
 import { details, loadOccupancy } from "./details";
 import { zurichDate } from "./time";
 import { loadGraph, type Graph } from "./paths";
 import { buildRail } from "../scripts/rail";
 import { DATA_DIR } from "./gtfs";
-import { initRecord, maintain, startDay } from "./record";
+import { flushAll, initRecord, maintain, startDay } from "./record";
 import { crawlFleet } from "./fleet";
 import * as stats from "./stats";
 
@@ -48,17 +48,27 @@ async function refresh() {
 }
 refresh();
 setInterval(refresh, 10 * 60_000);
+// docker stop: store trips that finished within the grace period, they'd be lost otherwise
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { try { flushAll(); } finally { process.exit(0); } });
 if (!LIVE_FROM) startRealtime(() => day);
 
 const PUBLIC = new URL("../public/", import.meta.url).pathname;
 const gz = { "Content-Type": "application/json", "Content-Encoding": "gzip" };
-/** Stats JSON, gzipped when the client accepts it; 503 until the timetable is loaded, 404 for unknown keys. */
+/** Stats JSON, gzipped when the client accepts it; 503 until the timetable is loaded, 404 for unknown keys.
+ * Each URL's body is kept 20 s, so a burst of visitors costs one computation. */
+const memo = new Map<string, { t: number; body: Uint8Array | null }>();
 function statsJson(req: Request, fn: (d: Day) => unknown) {
   if (!day) return new Response("loading timetable", { status: 503, headers: { "Retry-After": "20" } });
-  const data = fn(day);
-  if (data === null) return new Response("not found", { status: 404 });
-  const body = JSON.stringify(data), headers = { "Content-Type": "application/json", "Cache-Control": "public, max-age=20" };
-  return /gzip/.test(req.headers.get("accept-encoding") ?? "") ? new Response(Bun.gzipSync(body), { headers: { ...headers, "Content-Encoding": "gzip" } }) : new Response(body, { headers });
+  const url = new URL(req.url), key = url.pathname + url.search;
+  let m = memo.get(key);
+  if (!m || Date.now() - m.t > 20_000) {
+    const data = fn(day);
+    memo.set(key, (m = { t: Date.now(), body: data === null ? null : Bun.gzipSync(JSON.stringify(data)) }));
+    if (memo.size > 300) memo.delete(memo.keys().next().value!);
+  }
+  if (!m.body) return new Response("not found", { status: 404 });
+  const headers = { "Content-Type": "application/json", "Cache-Control": "public, max-age=20" };
+  return /gzip/.test(req.headers.get("accept-encoding") ?? "") ? new Response(m.body, { headers: { ...headers, "Content-Encoding": "gzip" } }) : new Response(Bun.gunzipSync(m.body), { headers });
 }
 
 const server = Bun.serve({
@@ -71,7 +81,9 @@ const server = Bun.serve({
       if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 });
       return new Response(day.json, { headers: { ...gz, ETag: etag, "Cache-Control": "no-cache" } });
     },
-    "/api/live": () => LIVE_FROM ? borrow("/api/live") : new Response(live, { headers: { ...gz, "Cache-Control": "public, max-age=10" } }),
+    "/api/live": () => LIVE_FROM ? borrow("/api/live") : new Response(live, { headers: { ...gz, "Cache-Control": "public, max-age=14" } }),
+    // full alerts (track geometry, descriptions): the URL carries their version from /api/live, so it caches for good
+    "/api/alerts": () => LIVE_FROM ? borrow("/api/alerts") : new Response(alertsBody(), { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }),
     "/api/stats/overview": (req) => statsJson(req, stats.overview),
     "/api/stats/fleet": (req) => statsJson(req, stats.fleet),
     "/api/stats/incidents": (req) => statsJson(req, stats.incidents),
@@ -85,7 +97,8 @@ const server = Bun.serve({
       if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}`);
       const trip = day?.trips[Number(req.params.idx)];
       if (!trip) return new Response("unknown train", { status: 404 });
-      return Response.json(await details(trip, day!.base), { headers: { "Cache-Control": "public, max-age=300" } });
+      const r = await details(trip, day!.base), final = ["ok", "none", "unsupported"].includes(r.formationStatus);
+      return Response.json(r, { headers: { "Cache-Control": final ? "public, max-age=300" : "no-store" } }); // the URL carries the day version
     },
   },
   async fetch(req) {

@@ -179,6 +179,8 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   trips.forEach((t, i) => {
     const r = rows.get(i)?.sort((a, b) => a[0] - b[0]);
     if (!r || r.length < 2 || r[r.length - 1][2] < 0) return; // yesterday's trips that ended before today
+    // the Swiss feed also carries trips that never stop in Switzerland (French TER, German RE …): not ours to count or draw
+    if (!r.some((x) => stations[x[1]][3].startsWith("85"))) return;
     t.seq = r.map((x) => x[0]);
     t.stops = r.flatMap((x) => x.slice(1, 4));
     t.plat = r.map((x) => x[4]);
@@ -205,7 +207,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     }
   }
 
-  const base = serviceBase(date), version = `${date}_${name}_f3`; // deterministic per zip + date; bump the suffix when the payload shape changes (it is the ETag)
+  const base = serviceBase(date), version = `${date}_${name}_f4`; // deterministic per zip + date; bump the suffix when the payload shape changes (it is the ETag)
   const json = Bun.gzipSync(JSON.stringify({
     v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)),
     trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0]),

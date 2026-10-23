@@ -16,10 +16,11 @@ export type Alert = {
   from: number; to: number; s: number[]; r: number[]; t: number[]; seg?: number[][];
 };
 let alerts: Alert[] = [];
-// one sample per trip-update poll, 2 h: [feedTime, running, late ≥3 min, cancelled, stuck]
+// one sample per trip-update poll, 2 h: [feedTime, running, late ≥3 min, cancelled, stuck, running with realtime]
 const stats: number[][] = [];
 const STATS_KEEP = (2 * 3600_000) / RT_EVERY;
-const hist = new Map<number, [number, number][]>(); // trip -> [feedTime, delay at next stop], last 6 min
+type Hist = Map<number, { stop: number; h: [number, number][] }>;
+const hist: Hist = new Map(); // trip -> its next stop and [feedTime, delay there] while it heads for that stop, last 6 min
 
 // GTFS-SA carries no severity (effect is always UNKNOWN), so it comes from the wording.
 // 3 = service interrupted now, 2 = limited/delays now, 1 = planned works, notices, resumed.
@@ -60,23 +61,34 @@ export function markSudden(a: Alert, now: number) {
 }
 
 /**
- * A train that's stuck: its predicted delay keeps rising while it should be moving.
- * Predictions change about once a minute, and one-off jumps are common, so a single rise means little.
- * Flags (returns the start time) on ≥3 rises totalling ≥150 s within 5 min with no real drop and ≥3 min late,
- * or on a single jump of ≥5 min. Clears after 3 min without a rise.
+ * A train that's probably standing: its predicted delay at the *same* next stop keeps rising.
+ * Predictions change about once a minute and single jumps are often just a corrected data point, so one rise means little.
+ * Flags (returns the start time) on ≥3 rises totalling ≥150 s within 5 min with no real drop and ≥3 min late.
+ * Clears after 3 min without a rise. Only an inference: the map draws it quietly, never as an incident.
  */
 export function stuck(h: [number, number][], now: number): number {
   const w = h.filter(([t]) => now - t <= 300);
-  let ups = 0, growth = 0, maxDrop = 0, first = 0, lastUp = 0, jump = 0;
+  let ups = 0, growth = 0, maxDrop = 0, first = 0, lastUp = 0;
   for (let k = 1; k < w.length; k++) {
     const delta = w[k][1] - w[k - 1][1];
     if (delta > 0) { ups++; growth += delta; lastUp = w[k][0]; first ||= w[k][0]; }
-    if (delta >= 300) jump = w[k][0];
     if (delta < 0) maxDrop = Math.max(maxDrop, -delta);
   }
-  if (jump) return jump;
   const cur = w.at(-1)?.[1] ?? 0;
   return ups >= 3 && growth >= 150 && maxDrop <= 30 && cur >= 180 && now - lastUp <= 180 ? first : 0;
+}
+
+/** The period active at `now`. An unset end decodes to Long(0), which is truthy, so compare numbers: open-ended is the norm for fresh incidents. */
+export const activeAt = <P extends { start?: unknown; end?: unknown }>(periods: P[], now: number) =>
+  periods.find((p) => Number(p.start ?? 0) <= now && (!Number(p.end ?? 0) || now <= Number(p.end)));
+
+/** One sample of trip i heading for `stop`; returns stuck()'s start time. Passing a stop restarts the history: a new reference, not a rise. */
+export function observe(hist: Hist, i: number, stop: number, delay: number, now: number): number {
+  let x = hist.get(i);
+  if (!x || x.stop !== stop) hist.set(i, (x = { stop, h: [] }));
+  x.h.push([now, delay]);
+  while (x.h.length && now - x.h[0][0] > 360) x.h.shift();
+  return stuck(x.h, now);
 }
 
 /**
@@ -91,14 +103,21 @@ export function placeOf(h: string, entityStations: number[], byName: Map<string,
   return st === undefined ? {} : { at: st };
 }
 
-let feedTime = 0;
+let feedTime = 0, alertsGz = Bun.gzipSync("[]"), alertsVersion = "";
 export let live = Bun.gzipSync("{}");
+export const alertsBody = () => alertsGz;
 
 const decode = async (api: string, url: string) =>
   FeedMessage.decode(new Uint8Array(await (await upstream(api, url)).arrayBuffer()));
 
-function publish(day: Day) {
-  live = Bun.gzipSync(JSON.stringify({ v: day.version, time: feedTime, delays, alerts, stats }));
+/** The 15 s payload carries delays and only a version of the alerts; their geometry and texts change rarely and come from /api/alerts?v=… */
+function publish(day: Day, alertsChanged = false) {
+  if (alertsChanged) {
+    const json = JSON.stringify(alerts);
+    alertsGz = Bun.gzipSync(json);
+    alertsVersion = `${day.version}:${Bun.hash(json).toString(36)}`;
+  }
+  live = Bun.gzipSync(JSON.stringify({ v: day.version, time: feedTime, delays, av: alertsVersion, stats }));
 }
 
 async function pollTrips(day: () => Day | undefined) {
@@ -129,41 +148,43 @@ async function pollTrips(day: () => Day | undefined) {
   }
   delays = next;
   feedTime = Number(feed.header.timestamp);
-  const [run, late, canc] = sample(d, feedTime - d.base / 1000, (i, dl) => {
-    const h = hist.get(i) ?? [];
-    h.push([feedTime, dl]);
-    while (h.length && feedTime - h[0][0] > 360) h.shift();
-    hist.set(i, h);
-    const since = delays[i]?.u && !delays[i].c ? stuck(h, feedTime) : 0;
+  const [run, late, canc, obs] = sample(d, feedTime - d.base / 1000, (i, dl, stop) => {
+    const since = observe(hist, i, stop, dl, feedTime); // sample() only calls this for trips with realtime
     if (since) delays[i].x = since;
   });
-  for (const i of hist.keys()) if (!hist.get(i)!.length || feedTime - hist.get(i)!.at(-1)![0] > 60) hist.delete(i); // not running any more
+  for (const [i, x] of hist) if (!x.h.length || feedTime - x.h.at(-1)![0] > 60) hist.delete(i); // not running any more
   const nStuck = Object.values(delays).filter((v) => v.x).length;
-  stats.push([feedTime, run, late, canc, nStuck]);
+  stats.push([feedTime, run, late, canc, nStuck, obs]);
   if (stats.length > STATS_KEEP) stats.shift();
-  recordTrips(d, delays, feedTime, [run, late, canc, nStuck]);
+  recordTrips(d, delays, feedTime, [run, late, canc, nStuck, obs]);
   publish(d);
 }
 
-/** [running, late, cancelled] at service-day second t; `each` gets the delay at every running trip's next stop. */
-function sample(d: Day, t: number, each?: (i: number, delay: number) => void): [number, number, number] {
-  let run = 0, late = 0, canc = 0;
+/**
+ * [running, late, cancelled, running with realtime] at service-day second t. Punctuality = 1 − late / with realtime:
+ * a train without realtime is unknown, not on time, and a cancelled one isn't running.
+ * `each` gets the delay at every running trip's next stop, and that stop.
+ */
+function sample(d: Day, t: number, each?: (i: number, delay: number, stop: number) => void): [number, number, number, number] {
+  let run = 0, late = 0, canc = 0, obs = 0;
   d.trips.forEach((trip, i) => {
     const s = trip.stops, u = delays[i]?.u;
     if (t < s[2] || t > s[s.length - 2] + 3 * 3600) return;
-    let dl = 0, k = 0;
-    for (let p = 0; p < s.length / 3; p++) { // carry the last update forward, like applyDelays() client-side
+    let dl = 0, k = 0, p = 0;
+    for (; p < s.length / 3; p++) { // carry the last update forward, like applyDelays() client-side
       while (k < (u?.length ?? 0) && u![k][0] < p) k++;
       if (u && k < u.length && u[k][0] === p) dl = u[k][1] ?? u[k][2] ?? dl;
       if (s[p * 3 + 1] + dl >= t) break;
     }
     if (t > s[s.length - 2] + dl) return;
+    if (delays[i]?.c) return void canc++;
     run++;
-    if (delays[i]?.c) canc++;
-    else if (dl >= 180) late++;
-    each?.(i, dl);
+    if (!u) return;
+    obs++;
+    if (dl >= 180) late++;
+    each?.(i, dl, p);
   });
-  return [run, late, canc];
+  return [run, late, canc, obs];
 }
 
 async function pollAlerts(day: () => Day | undefined) {
@@ -178,7 +199,7 @@ async function pollAlerts(day: () => Day | undefined) {
   for (const e of feed.entity) {
     const a = e.alert;
     if (!a) continue;
-    const period = (a.activePeriod ?? []).find((p) => Number(p.start ?? 0) <= now && (!p.end || now <= Number(p.end)));
+    const period = activeAt(a.activePeriod ?? [], now);
     if (a.activePeriod?.length && !period) continue;
     const s = new Set<number>(), r = new Set<number>(), t = new Set<number>();
     for (const ie of a.informedEntity ?? []) {
@@ -190,8 +211,10 @@ async function pollAlerts(day: () => Day | undefined) {
       if (tr !== undefined) t.add(tr);
     }
     if (!s.size && !r.size && !t.size) continue; // not about rail
-    // keyed by header + start, not description: the description carries the expected end, which SBB keeps moving
-    const h = text(a.headerText), dsc = text(a.descriptionText), key = `${h}|${Number(period?.start ?? 0)}`, prev = next.get(key), u = text(a.url);
+    // keyed by header + first start, not description (it carries the expected end, which SBB keeps moving)
+    // and not the active period (nightly works have one per night: same alert)
+    const first = Math.min(...(a.activePeriod ?? []).map((p) => Number(p.start ?? 0)), Infinity);
+    const h = text(a.headerText), dsc = text(a.descriptionText), key = `${h}|${first === Infinity ? 0 : first}`, prev = next.get(key), u = text(a.url);
     const cause = String(GtfsRealtimeBindings.transit_realtime.Alert.Cause[a.cause as number] ?? a.cause ?? "");
     next.set(key, {
       id: Bun.hash(key).toString(36), h, d: dsc, u: /^https?:/.test(u) ? u : undefined,
@@ -215,7 +238,7 @@ async function pollAlerts(day: () => Day | undefined) {
   recordAlerts(d, alerts, now);
   const n = alerts.filter((a) => a.sudden).length;
   if (n) console.log(`[realtime] ${n} sudden incident(s): ${alerts.filter((a) => a.sudden).map((a) => `${a.kind}: ${a.h.slice(0, 60)}`).join(" | ")}`);
-  publish(d);
+  publish(d, true);
 }
 
 function loop(fn: () => Promise<void>, every: number, name: string) {
@@ -237,7 +260,7 @@ export function resetRealtime(day: Day) {
   delays = {};
   alerts = [];
   hist.clear();
-  publish(day);
+  publish(day, true);
 }
 
 /** Current state for the stats API. */

@@ -13,7 +13,9 @@ CREATE INDEX IF NOT EXISTS trip_day_no ON trip_day (train_no, date);
 CREATE TABLE IF NOT EXISTS stop_obs (date TEXT, trip TEXT, train_no TEXT, line TEXT, idx INTEGER, uic TEXT,
   sched_arr INTEGER, sched_dep INTEGER, arr_delay INTEGER, dep_delay INTEGER, skipped INTEGER, PRIMARY KEY (date, trip, idx));
 CREATE INDEX IF NOT EXISTS stop_obs_uic ON stop_obs (uic, date);
-CREATE TABLE IF NOT EXISTS net_sample (t INTEGER PRIMARY KEY, running INTEGER, late INTEGER, cancelled INTEGER, stuck INTEGER);
+CREATE INDEX IF NOT EXISTS stop_obs_no ON stop_obs (train_no);
+CREATE INDEX IF NOT EXISTS stop_obs_line ON stop_obs (line);
+CREATE TABLE IF NOT EXISTS net_sample (t INTEGER PRIMARY KEY, running INTEGER, late INTEGER, cancelled INTEGER, stuck INTEGER, observed INTEGER);
 CREATE TABLE IF NOT EXISTS alert_log (id TEXT PRIMARY KEY, first_seen INTEGER, last_seen INTEGER, since INTEGER, sev_max INTEGER,
   sudden INTEGER, kind TEXT, cause TEXT, why TEXT, h TEXT, d TEXT, stations TEXT, lines TEXT);
 CREATE TABLE IF NOT EXISTS vehicle_run (date TEXT, unit TEXT, class TEXT, type TEXT, train_no TEXT, trip TEXT, pos INTEGER,
@@ -28,7 +30,10 @@ CREATE TABLE IF NOT EXISTS agg_station_day (date TEXT, uic TEXT, deps INTEGER, d
   PRIMARY KEY (date, uic));
 CREATE TABLE IF NOT EXISTS agg_line_day (date TEXT, line TEXT, cat TEXT, trips INTEGER, observed INTEGER, punctual INTEGER,
   cancelled INTEGER, avg_delay REAL, km REAL, PRIMARY KEY (date, line));
-CREATE TABLE IF NOT EXISTS crawl_done (date TEXT, train TEXT, PRIMARY KEY (date, train));
+CREATE TABLE IF NOT EXISTS upstream_call (api TEXT, t INTEGER);
+CREATE INDEX IF NOT EXISTS upstream_call_t ON upstream_call (api, t);
+CREATE TABLE IF NOT EXISTS formation_cache (key TEXT PRIMARY KEY, date TEXT, status TEXT, t INTEGER, json TEXT);
+DROP TABLE IF EXISTS crawl_done;
 CREATE TABLE IF NOT EXISTS agg_vehicle_day (date TEXT, unit TEXT, class TEXT, type TEXT, runs INTEGER, km REAL, PRIMARY KEY (date, unit));
 `;
 const KEEP_DAYS = 30;
@@ -46,6 +51,7 @@ export function initRecord(file: string) {
   db = new Database(file, { create: true });
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
   db.exec(SCHEMA);
+  try { db.exec("ALTER TABLE net_sample ADD COLUMN observed INTEGER"); } catch {} // databases from before the column
   return db;
 }
 
@@ -64,7 +70,7 @@ export function startDay(d: Day, nowSec = Date.now() / 1000) {
 }
 
 /** Every trip-update poll: merge realtime state, store the network sample, flush finished trips every 5 min. */
-export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number | null)[][]; x?: number }>, feedTime: number, sample: [number, number, number, number]) {
+export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number | null)[][]; x?: number }>, feedTime: number, sample: [number, number, number, number, number]) {
   if (dayOf !== d) startDay(d, feedTime);
   for (const [i, v] of Object.entries(delays)) {
     const st = state.get(+i) ?? { stuck: 0 };
@@ -73,7 +79,7 @@ export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number 
     if (v.x) st.stuck += 0.25; // minutes: one poll every 15 s
     state.set(+i, st);
   }
-  db.query("INSERT OR REPLACE INTO net_sample VALUES (?, ?, ?, ?, ?)").run(feedTime, ...sample);
+  db.query("INSERT OR REPLACE INTO net_sample VALUES (?, ?, ?, ?, ?, ?)").run(feedTime, ...sample);
   if (feedTime - lastFlush >= 300) {
     lastFlush = feedTime;
     flush(d, feedTime, GRACE);
@@ -98,8 +104,8 @@ export function flush(d: Day, nowSec: number, grace: number) {
       for (let p = 0; p <= last; p++) {
         const arr = p ? e.stops[p * 3 + 1] - s[p * 3 + 1] : null, dep = p < last ? e.stops[p * 3 + 2] - s[p * 3 + 2] : null;
         if (p && !e.skipped[p]) { stops++; if (arr! < LATE) ok++; max = Math.max(max, arr!); }
-        // per-stop rows only carry delays; a trip realtime never mentioned would just be timetable copies
-        if (observed) insStop.run(trip.date, trip.id, trip.num, line, p, stations[s[p * 3]][3], p ? base + s[p * 3 + 1] : null, p < last ? base + s[p * 3 + 2] : null,
+        // per-stop rows only carry delays: a trip realtime never mentioned, or a cancelled one, would just be timetable copies
+        if (observed && !st!.c) insStop.run(trip.date, trip.id, trip.num, line, p, stations[s[p * 3]][3], p ? base + s[p * 3 + 1] : null, p < last ? base + s[p * 3 + 2] : null,
           arr, dep, e.skipped[p] ? 1 : 0);
       }
       const final = e.stops[last * 3 + 1] - s[last * 3 + 1];
@@ -124,18 +130,26 @@ export function recordAlerts(d: Day, alerts: Alert[], nowSec = Date.now() / 1000
   })();
 }
 
+/** Write what's finished, e.g. before the process stops: trips that ended within the grace period are otherwise lost. */
+export const flushAll = () => dayOf && flush(dayOf, Date.now() / 1000, 0);
+
 /** Aggregate finished days, then drop detail older than 30 days. Cheap; called every 10 min. */
 export function maintain(now = new Date()) {
-  const today = zurichDate(now), yesterday = addDays(today, -1);
+  const today = zurichDate(now), yesterday = addDays(today, -1), hour = (now.getTime() - serviceBase(today)) / 3600_000;
   // yesterday's last trips run until ~03:00 today, so wait until 04:00 before summarising it
-  const ready = (date: string) => date < yesterday || (date === yesterday && now.getTime() > serviceBase(today) + 4 * 3600_000);
-  const pending = db.query("SELECT DISTINCT date FROM trip_day WHERE date < ? AND date NOT IN (SELECT date FROM agg_net_day)").all(today) as { date: string }[];
+  const ready = (date: string) => date < yesterday || (date === yesterday && hour > 4);
+  // a day only seen as the after-midnight tail of the first start (nothing observed) isn't a day of data
+  const pending = db.query(`SELECT date FROM trip_day WHERE date < ? AND date NOT IN (SELECT date FROM agg_net_day)
+    GROUP BY date HAVING sum(observed) > 0`).all(today) as { date: string }[];
   for (const { date } of pending) if (ready(date)) aggregate(date);
+  // night trains dated yesterday arrive until ~10:00 and are stored after that: refresh yesterday's summary until noon
+  if (hour > 4 && hour < 12 && !pending.some((p) => p.date === yesterday) && db.query("SELECT 1 FROM agg_net_day WHERE date = ?").get(yesterday)) aggregate(yesterday);
   const cutoff = addDays(today, -KEEP_DAYS);
   db.query("DELETE FROM stop_obs WHERE date < ?").run(cutoff);
   db.query("DELETE FROM trip_day WHERE date < ?").run(cutoff);
   db.query("DELETE FROM vehicle_run WHERE date < ?").run(cutoff);
-  db.query("DELETE FROM crawl_done WHERE date < ?").run(cutoff);
+  db.query("DELETE FROM formation_cache WHERE date < ?").run(addDays(today, -3));
+  db.query("DELETE FROM upstream_call WHERE t < ?").run(now.getTime() - 2 * 86400_000);
   db.query("DELETE FROM net_sample WHERE t < ?").run(serviceBase(cutoff) / 1000);
 }
 
@@ -144,15 +158,15 @@ export function aggregate(date: string) {
   db.transaction(() => {
     const finals = (db.query("SELECT final_delay f FROM trip_day WHERE date = ? AND observed = 1 AND cancelled = 0 ORDER BY final_delay").all(date) as { f: number }[]).map((r) => r.f);
     const p90 = finals.length ? finals[Math.floor(finals.length * 0.9)] : null;
-    db.query(`INSERT OR REPLACE INTO agg_net_day SELECT date, count(*), sum(observed), sum(${P}), sum(cancelled), sum(km),
+    db.query(`INSERT OR REPLACE INTO agg_net_day SELECT date, count(*), sum(observed), sum(${P}), sum(cancelled), sum(km * (1 - cancelled)),
       avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), $p90,
       (SELECT count(*) FROM stop_obs WHERE date = $date AND arr_delay IS NOT NULL AND skipped = 0),
       (SELECT count(*) FROM stop_obs WHERE date = $date AND arr_delay < ${LATE} AND skipped = 0)
       FROM trip_day WHERE date = $date`).run({ $date: date, $p90: p90 });
     db.query(`INSERT OR REPLACE INTO agg_train_day SELECT date, train_no, line, cat, agency, count(*), sum(observed), sum(${P}), sum(cancelled),
-      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), max(max_delay), sum(km) FROM trip_day WHERE date = ? GROUP BY train_no, line`).run(date);
+      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), max(max_delay), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY train_no, line`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_line_day SELECT date, line, cat, count(*), sum(observed), sum(${P}), sum(cancelled),
-      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), sum(km) FROM trip_day WHERE date = ? GROUP BY line`).run(date);
+      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY line`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_station_day SELECT date, uic, count(sched_dep), count(dep_delay), sum(dep_delay < ${LATE}), avg(dep_delay)
       FROM stop_obs WHERE date = ? AND sched_dep IS NOT NULL GROUP BY uic`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_vehicle_day SELECT date, unit, class, type, count(*), sum(km) FROM vehicle_run WHERE date = ? GROUP BY unit`).run(date);

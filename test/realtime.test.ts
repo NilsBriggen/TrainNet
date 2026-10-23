@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { classify, markSudden, placeOf, stuck, type Alert } from "../server/realtime";
+import Long from "long";
+import { activeAt, classify, markSudden, observe, placeOf, stuck, type Alert } from "../server/realtime";
 
 test("classify reads the reason sentence from real feed texts", () => {
   expect(classify("Interrupted service on the Visp - Brig line between Visp and Brig [train]", "This is due to a defect in the overhead line. The restriction lasts until approx. 18:00.", "TECHNICAL_PROBLEM"))
@@ -54,11 +55,20 @@ test("stuck: a single correction or a steady delay does not flag", () => {
   expect(stuck(series([60, 90, 120, 150, 140]), now)).toBe(0); // only 2 min late
 });
 
-test("stuck: a single jump of 5+ min flags; growth that stopped 3+ min ago clears", () => {
-  const h = series([1518, 1518, 1992, 1992]);
-  expect(stuck(h, now)).toBe(h[2][0]);
+test("stuck: a single jump, even of 5+ min, is not enough; growth that stopped 3+ min ago clears", () => {
+  expect(stuck(series([1518, 1518, 1992, 1992]), now)).toBe(0); // often one corrected data point
   const old = series([300, 400, 500, 600, ...Array(15).fill(600)]); // last rise 3:45 ago
   expect(stuck(old, now)).toBe(0);
+});
+
+test("stuck: passing stops with different delays is not a rise (IC51 1640: stop 7 at +90, stop 8 at +354)", () => {
+  const h = new Map();
+  const steps: [number, number][] = [[6, 30], [7, 90], [7, 90], [8, 354], [8, 354], [9, 420], [9, 420], [10, 480]];
+  const flags = steps.map(([stop, d], k) => observe(h, 1, stop, d, now - (steps.length - 1 - k) * 15));
+  expect(flags.every((f) => f === 0)).toBe(true);
+  const same = new Map(); // the same delays while heading for one stop: standing
+  const at = [1014, 1110, 1110, 1188, 1188, 1230, 1284].map((d, k, a) => observe(same, 1, 5, d, now - (a.length - 1 - k) * 15));
+  expect(at.at(-1)).toBeGreaterThan(0);
 });
 
 test("a sudden storm alert naming two trips but no span is about the place, not those trains", () => {
@@ -78,4 +88,11 @@ test("placeOf reads the span or the place from real headers", () => {
   expect(placeOf("Limited train services at Jenaz.", [], byName)).toEqual({ at: 7 });
   expect(placeOf("Information on IC 1 727", [3, 5], byName)).toEqual({ pair: [3, 5] }); // no span in the header: the two named stations
   expect(placeOf("Interrupted service between Nowhere and Elsewhere [train]", [], byName)).toEqual({});
+});
+
+test("an alert with no end (decoded as Long 0) is active", () => {
+  const open = { start: Long.fromNumber(now - 600, true), end: Long.fromNumber(0, true) };
+  expect(activeAt([open], now)).toBe(open);
+  expect(activeAt([{ start: Long.fromNumber(now - 600, true), end: Long.fromNumber(now - 60, true) }], now)).toBeUndefined();
+  expect(activeAt([{ start: Long.fromNumber(now + 600, true) }], now)).toBeUndefined();
 });

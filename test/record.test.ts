@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
-import { aggregate, db, flush, initRecord, recordAlerts, recordTrips, startDay } from "../server/record";
+import { aggregate, db, flush, initRecord, maintain, recordAlerts, recordTrips, startDay } from "../server/record";
 
 // two stations, one IC: A 10:00 → B 10:30 → C 11:00; base = 2026-10-23 00:00 CEST
 const base = Date.parse("2026-10-22T22:00:00Z");
@@ -19,7 +19,7 @@ beforeEach(() => {
 
 test("a finished trip is stored with final delay, punctuality and km", () => {
   // t1: +4 min at B, +2 min at C (punctual at the end); t2 never in the feed
-  recordTrips(day, { 0: { u: [[1, 240, 240, 0], [2, 120, null, 0]] } }, at("1000"), [2, 0, 0, 0]);
+  recordTrips(day, { 0: { u: [[1, 240, 240, 0], [2, 120, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
   flush(day, at("1130"), 20 * 60);
   const t1: any = db.query("SELECT * FROM trip_day WHERE trip = 't1'").get();
   expect(t1).toMatchObject({ observed: 1, final_delay: 120, max_delay: 240, stops: 2, stops_ok: 1, km: 100, line: "IC1", origin: "A", dest: "C" });
@@ -31,13 +31,13 @@ test("a finished trip is stored with final delay, punctuality and km", () => {
 });
 
 test("running trips are not written; the grace period is respected", () => {
-  recordTrips(day, { 0: { u: [[2, 600, null, 0]] } }, at("1000"), [2, 1, 0, 0]);
+  recordTrips(day, { 0: { u: [[2, 600, null, 0]] } }, at("1000"), [2, 1, 0, 0, 2]);
   flush(day, at("1115"), 20 * 60); // arrives 11:10 with +10 → 11:10 + 20 min grace not yet over
   expect(db.query("SELECT count(*) n FROM trip_day WHERE trip = 't1'").get()).toEqual({ n: 0 });
 });
 
 test("a restart does not overwrite stored trips with empty state", () => {
-  recordTrips(day, { 0: { u: [[2, 300, null, 0]] } }, at("1000"), [2, 1, 0, 0]);
+  recordTrips(day, { 0: { u: [[2, 300, null, 0]] } }, at("1000"), [2, 1, 0, 0, 2]);
   flush(day, at("1200"), 0);
   startDay({ ...day }, at("1201")); // new process, same timetable
   flush(day, at("1202"), 0);
@@ -45,10 +45,10 @@ test("a restart does not overwrite stored trips with empty state", () => {
 });
 
 test("daily aggregates: punctuality counts only observed, uncancelled trips", () => {
-  recordTrips(day, { 0: { u: [[2, 600, null, 0]] }, 1: { c: 1 } }, at("1000"), [2, 1, 1, 0]);
+  recordTrips(day, { 0: { u: [[2, 600, null, 0]] }, 1: { c: 1 } }, at("1000"), [2, 1, 1, 0, 1]);
   flush(day, at("1200"), 0);
   aggregate("2026-10-23");
-  expect(db.query("SELECT trips, observed, punctual, cancelled, km FROM agg_net_day").get()).toEqual({ trips: 2, observed: 2, punctual: 0, cancelled: 1, km: 200 });
+  expect(db.query("SELECT trips, observed, punctual, cancelled, km FROM agg_net_day").get()).toEqual({ trips: 2, observed: 2, punctual: 0, cancelled: 1, km: 100 }); // a cancelled train runs no km
   expect(db.query("SELECT train_no, punctual, avg_delay FROM agg_train_day WHERE train_no = '700'").get()).toEqual({ train_no: "700", punctual: 0, avg_delay: 600 });
 });
 
@@ -59,4 +59,17 @@ test("alerts are upserted: first_seen stays, last_seen and severity move", () =>
   expect(db.query("SELECT first_seen, last_seen, sev_max, sudden, d, stations, lines FROM alert_log").all()).toEqual([{
     first_seen: at("1000"), last_seen: at("1010"), sev_max: 3, sudden: 1, d: "The restriction lasts until approx. 19:00.", stations: '["8500001","8500002"]', lines: '["IC1"]',
   }]);
+});
+
+test("a cancelled trip writes no per-stop rows (they would read as on time)", () => {
+  recordTrips(day, { 1: { c: 1 } }, at("1000"), [1, 0, 1, 0, 0]);
+  flush(day, at("1200"), 0);
+  expect(db.query("SELECT cancelled, observed FROM trip_day WHERE trip = 't2'").get()).toEqual({ cancelled: 1, observed: 1 });
+  expect(db.query("SELECT count(*) n FROM stop_obs WHERE trip = 't2'").get()).toEqual({ n: 0 });
+});
+
+test("a day with nothing observed (the tail of the first start) is not aggregated", () => {
+  flush(day, at("1200"), 0); // both trips stored, realtime never seen
+  maintain(new Date(Date.parse("2026-10-25T10:00:00Z")));
+  expect(db.query("SELECT count(*) n FROM agg_net_day").get()).toEqual({ n: 0 });
 });

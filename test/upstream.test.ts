@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
-import { upstream } from "../server/upstream";
+import { Budget, Busy, upstream } from "../server/upstream";
+import { db, initRecord } from "../server/record";
 import { serviceBase, timetableYear } from "../server/time";
+
+initRecord(":memory:");
 
 let status = 200;
 globalThis.fetch = (async () => new Response("ok", { status })) as any;
@@ -9,6 +12,8 @@ Object.assign(process.env, {
   B_TOKEN: "x", B_per_Minute: "2",
   C_TOKEN: "x", C_per_Minute: "5", C_per_Day: "1",
   D_TOKEN: "x", D_per_Minute: "5",
+  E_TOKEN: "x", E_per_Minute: "5",
+  F_TOKEN: "x", F_per_Minute: "5",
 });
 const settled = async (p: Promise<unknown>) => {
   let done = false;
@@ -26,7 +31,20 @@ test("call over the per-minute limit waits; other APIs are not blocked", async (
 
 test("daily cap rejects", async () => {
   await upstream("C", "u");
-  expect(upstream("C", "u")).rejects.toThrow("daily limit");
+  expect(upstream("C", "u")).rejects.toBeInstanceOf(Budget);
+});
+
+test("calls made before a restart still count: the log lives in the database", async () => {
+  const t = Date.now() - 20_000;
+  for (let k = 0; k < 5; k++) db.query("INSERT INTO upstream_call VALUES ('E', ?)").run(t);
+  expect(await settled(upstream("E", "u"))).toBe(false);
+});
+
+test("visitors get the slots the background crawl leaves free, and hear why when there are none", async () => {
+  for (let k = 0; k < 4; k++) await upstream("F", "u", { background: true });
+  expect(await settled(upstream("F", "u", { background: true }))).toBe(false); // 4 of 5 is the crawl's share
+  await upstream("F", "u", { maxWait: 10 }); // the visitor's slot
+  expect(upstream("F", "u", { maxWait: 10 })).rejects.toBeInstanceOf(Busy);
 });
 
 test("429 pauses that API", async () => {

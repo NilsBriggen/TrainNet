@@ -1,10 +1,14 @@
 // Per-train extras: coach formation with vehicle identities (on demand + nightly crawl) and occupancy forecast (daily file).
-import { upstream } from "./upstream";
+import { Budget, Busy, upstream } from "./upstream";
+import { db } from "./record";
 import { download, latestResource } from "./gtfs";
 import type { Trip } from "./gtfs";
 
-// GTFS agency_id -> Formation Service EVU code. Others have no formation data.
-export const EVU: Record<string, string> = { "11": "SBBP", "33": "BLSP", "65": "THURBO", "82": "SOB", "72": "RhB", "86": "ZB" };
+// GTFS agency_id -> Formation Service EVU code (all 11 the service covers). Others have no formation data.
+export const EVU: Record<string, string> = {
+  "11": "SBBP", "33": "BLSP", "65": "THURBO", "82": "SOB", "72": "RhB", "86": "ZB", "29": "MBC", "53": "TPF",
+  "44": "TRN", "73": "TRN", "153": "TRN", "81____": "OeBB", "817000": "OeBB", "9014": "VDBB",
+};
 const LEVEL: Record<string, number> = { manySeatsAvailable: 1, fewSeatsAvailable: 2, standingRoomOnly: 3 };
 
 // series -> name; the 3 digits after the country code in an EVN (94 85 x SSS NNN-c)
@@ -21,19 +25,41 @@ export function unitOf(evn: string): { id: string; cls: string; type: string } |
   return { id: `${cls}-${d.slice(8, 11)}`, cls, type: TYPES[cls] ?? `Class ${cls}` };
 }
 
-export type Coach = { n: number | null; c: string; wr: boolean; bike: boolean; wc: boolean; closed: boolean; unit: string | null };
+export type Coach = {
+  n: number | null; c: string; wr: boolean; bike: boolean; wc: boolean; closed: boolean; unit: string | null;
+  low?: 1; fam?: 1; biz?: 1; wct?: 1; st?: string; // low floor, family zone, business zone, wheelchair toilet, unusual trolley status
+  sec: string[]; // sector letters at each of Formation.stops ("" = not there)
+};
 export type Unit = { id: string; cls: string; type: string; cars: number; length: number; seats1: number; seats2: number; wr: boolean; from: string; to: string };
-export type Formation = { coaches: Coach[]; units: Unit[] };
+export type Formation = {
+  coaches: Coach[]; units: Unit[];
+  stops: { uic: string; track: string; moved: boolean }[]; // where the train calls, its platform, platform changed
+  goals: [from: number, to: number, uic: string][]; // coach positions -> destination, when the train splits
+};
+/** ok: here it is · none: the operator doesn't publish it · unsupported: operator not in the service · window: only looked up around the trip
+ * busy/budget: request quota (per minute / per day) in use · error: upstream failed, retried in 2 min */
+export type FormationStatus = "ok" | "none" | "unsupported" | "window" | "busy" | "budget" | "error";
+export type FormationResult = { status: FormationStatus; f: Formation | null; retryAfter?: number };
 
-const formations = new Map<string, Promise<Formation | null>>();
+const inflight = new Map<string, Promise<FormationResult>>(); // one upstream call per train, however many ask at once
 let occupancy = new Map<string, { byStop: Record<string, [number, number]>; sec: [string, number, number][] }>(); // "agency:train"
 
-async function fetchFormation(evu: string, num: string, date: string): Promise<Formation | null> {
-  const res = await upstream("FORMATION_SERVICE",
-    `https://api.opentransportdata.swiss/formation/v1/formations_full?evu=${evu}&operationDate=${date}&trainNumber=${encodeURIComponent(num)}`);
-  const j: any = await res.json();
+const TRACK_MOVED = 0b1111 << 4; // stopModifications bits #5–#8: track change on arrival or departure
+const STATUS: Record<string, string> = {
+  GeschlossenTechnisch: "closed", GeschlossenBetrieblich: "closed", RestaurantUnbedient: "restaurant not served",
+  RestaurantUnbedientDeklassiert: "restaurant not served, open to all classes", Deklassiert: "open to all classes",
+};
+
+/** Parse a v2 formations_full response (v1 was switched off; the vehicle part kept its shape). */
+export function parseFormation(j: any): Formation | null {
   const vehicles: any[] = j.formations?.[0]?.formationVehicles ?? [];
   if (!vehicles.length) return null;
+  const atStops: any[] = j.formationsAtScheduledStops ?? [];
+  const stops = atStops.map((x) => ({
+    uic: String(x.scheduledStop?.stopPoint?.uic ?? ""), track: x.scheduledStop?.track && x.scheduledStop.track !== "N/A" ? String(x.scheduledStop.track) : "",
+    moved: !!((x.scheduledStop?.stopModifications ?? 0) & TRACK_MOVED),
+  }));
+  const goals = (atStops[0]?.formationShort?.vehicleGoals ?? []).map((g: any) => [g.fromVehicleAtPosition, g.toVehicleAtPosition, String(g.destinationStopPoint?.uic ?? "")] as [number, number, string]);
   const units = new Map<string, Unit>();
   const coaches = vehicles.sort((a, b) => a.position - b.position).map((v): Coach => {
     const p = v.vehicleProperties ?? {}, u = unitOf(v.vehicleIdentifier?.evn ?? "");
@@ -43,36 +69,62 @@ async function fetchFormation(evu: string, num: string, date: string): Promise<F
       x.cars++; x.length += p.length ?? 0; x.seats1 += p.number1class ?? 0; x.seats2 += p.number2class ?? 0; x.wr ||= wr;
       units.set(u.id, x);
     }
+    const ap = p.accessibilityProperties ?? {}, pp = p.pictoProperties ?? {}, at = new Map((v.formationVehicleAtScheduledStops ?? []).map((x: any) => [String(x.stopPoint?.uic), x.sectors]));
     return {
-      n: v.number ?? null, c: (p.number1class ? "1" : "") + (p.number2class ? "2" : ""), wr,
-      bike: p.numberBikeHooks > 0 || !!p.pictoProperties?.bikePicto,
-      wc: (p.accessibilityProperties?.numberWheelchairSpaces ?? 0) > 0, closed: !!p.closed, unit: u?.id ?? null,
+      n: v.number || null, c: (p.number1class ? "1" : "") + (p.number2class ? "2" : ""), wr,
+      bike: p.numberBikeHooks > 0 || !!pp.bikePicto,
+      wc: (ap.numberWheelchairSpaces ?? 0) > 0, closed: !!p.closed, unit: u?.id ?? null,
+      ...(p.lowFloorTrolley && { low: 1 }), ...(pp.familyZonePicto && { fam: 1 }), ...(pp.businessZonePicto && { biz: 1 }), ...(ap.wheelchairToilet && { wct: 1 }),
+      ...(STATUS[p.trolleyStatus] && { st: STATUS[p.trolleyStatus] }),
+      sec: stops.map((x) => { const sc = at.get(x.uic) as string | undefined; return sc && sc !== "N/A" ? sc.replaceAll(",", "") : ""; }),
     };
   });
-  return { coaches, units: [...units.values()] };
+  return { coaches, units: [...units.values()], stops, goals };
 }
 
-/** Formation of a trip, fetched once per train and day; shared by panel clicks and the nightly crawl. */
-export function formationFor(trip: Trip, fetchIfMissing = true): Promise<Formation | null> {
+async function fetchFormation(evu: string, num: string, date: string, background: boolean): Promise<Formation | null> {
+  const res = await upstream("FORMATION_SERVICE",
+    `https://api.opentransportdata.swiss/formation/v2/formations_full?evu=${evu}&operationDate=${date}&trainNumber=${encodeURIComponent(num)}`,
+    background ? { background } : { maxWait: 8000 }); // a visitor waits a few seconds at most, then hears why
+  return parseFormation(await res.json());
+}
+
+const ERROR_RETRY = 120_000;
+/** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
+export function formationFor(trip: Trip, { fetch = true, background = false } = {}): Promise<FormationResult> {
   const evu = EVU[trip.agency];
-  if (!evu || !trip.num) return Promise.resolve(null);
+  if (!evu || !trip.num) return Promise.resolve({ status: "unsupported", f: null });
   const key = `${evu}:${trip.num}:${trip.date}`;
-  if (!formations.has(key)) {
-    if (!fetchIfMissing) return Promise.resolve(null);
-    formations.set(key, fetchFormation(evu, trip.num, trip.date).catch((e) => {
-      console.error(`[details] formation ${key}: ${e.message}`);
-      setTimeout(() => formations.delete(key), 60_000); // retry after a minute, not on every click
-      return null;
-    }));
+  const row = db.query("SELECT status, t, json FROM formation_cache WHERE key = ?").get(key) as { status: FormationStatus; t: number; json: string | null } | null;
+  if (row && (row.status !== "error" || Date.now() - row.t < ERROR_RETRY)) return Promise.resolve({ status: row.status, f: row.json ? JSON.parse(row.json) : null });
+  if (!fetch) return Promise.resolve({ status: "window", f: null });
+  if (!inflight.has(key)) {
+    const store = (status: FormationStatus, f: Formation | null = null) => {
+      db.query("INSERT OR REPLACE INTO formation_cache VALUES (?, ?, ?, ?, ?)").run(key, trip.date, status, Date.now(), f && JSON.stringify(f));
+      return { status, f };
+    };
+    inflight.set(key, fetchFormation(evu, trip.num, trip.date, background)
+      .then((f) => store(f ? "ok" : "none", f))
+      .catch((e): FormationResult => {
+        if (e instanceof Busy) return { status: "busy", f: null, retryAfter: e.retryAfter }; // not cached: nothing was asked
+        if (e instanceof Budget) return { status: "budget", f: null };
+        if (/HTTP 40[034]/.test(e.message)) return store("none"); // 400 "no formation data", 403 not published, 404 unknown
+        console.error(`[details] formation ${key}: ${e.message}`);
+        return store("error");
+      })
+      .finally(() => inflight.delete(key)));
   }
-  return formations.get(key)!;
+  return inflight.get(key)!;
 }
 
 export async function details(trip: Trip, base: number) {
   // an open endpoint must not let anyone drain the formation quota: only trains running around now are fetched
   const t = Date.now() / 1000 - base / 1000, s = trip.stops;
-  const f = await formationFor(trip, t >= s[2] - 3600 && t <= s[s.length - 2] + 2 * 3600);
-  return { formation: f?.coaches ?? null, units: f?.units ?? [], occupancy: occupancy.get(`${trip.agency}:${trip.num}`)?.byStop ?? null };
+  const r = await formationFor(trip, { fetch: t >= s[2] - 3600 && t <= s[s.length - 2] + 2 * 3600 });
+  return {
+    formation: r.f?.coaches ?? null, units: r.f?.units ?? [], stops: r.f?.stops ?? [], goals: r.f?.goals ?? [],
+    formationStatus: r.status, retryAfter: r.retryAfter, occupancy: occupancy.get(`${trip.agency}:${trip.num}`)?.byStop ?? null,
+  };
 }
 
 export const occupancyAll = () => occupancy;
@@ -95,6 +147,5 @@ export async function loadOccupancy(date: string) {
     }
   }
   occupancy = next;
-  formations.clear();
   console.log(`[details] occupancy for ${next.size} trains on ${date}`);
 }

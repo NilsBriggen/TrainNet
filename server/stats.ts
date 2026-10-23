@@ -3,7 +3,7 @@ import { applyDelays, locate } from "../public/position.js";
 import { db, lineOf } from "./record";
 import { current } from "./realtime";
 import { occupancyAll } from "./details";
-import { addDays } from "./time";
+import { addDays, zurichDate } from "./time";
 import { dist } from "./paths";
 import type { Day } from "./gtfs";
 
@@ -23,7 +23,8 @@ const zurich = (epoch: number) => {
 const cache = new Map<string, { t: number; v: unknown }>();
 function cached<T>(key: string, ttlSec: number, fn: () => T): T {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.t < ttlSec * 1000) return hit.v as T;
+  cache.delete(key); // re-inserted below: the map's order is least recently used first
+  if (hit && Date.now() - hit.t < ttlSec * 1000) return cache.set(key, hit), hit.v as T;
   const v = fn();
   cache.set(key, { t: Date.now(), v });
   if (cache.size > 500) cache.delete(cache.keys().next().value!);
@@ -36,22 +37,23 @@ const pct = (ok: number, n: number) => (n ? Math.round((1000 * ok) / n) / 10 : n
 const nameOfUic = (d: Day) => cached(`uic:${d.version}`, 86400, () => new Map(d.stations.map((s, i) => [s[3], i])));
 const station = (d: Day, uic: string) => { const i = nameOfUic(d).get(uic); return i === undefined ? null : { i, name: d.stations[i][0], uic, lon: d.stations[i][1], lat: d.stations[i][2] }; };
 
-/** Where every trip is now, by the live delays. */
-function nowState(d: Day) {
+/** Where every trip (or those passing `only`) is now, by the live delays. */
+function nowState(d: Day, only?: (t: Day["trips"][number]) => boolean) {
   const { delays } = current(), t = Date.now() / 1000 - d.base / 1000;
-  return d.trips.map((trip, i) => {
+  return d.trips.flatMap((trip, i) => {
+    if (only && !only(trip)) return [];
     const e = applyDelays(trip.stops, delays[i]?.u), p = locate(e.stops, t);
-    return { i, trip, e, p, c: !!delays[i]?.c, x: delays[i]?.x ?? 0 };
+    return [{ i, trip, e, p, c: !!delays[i]?.c, x: delays[i]?.x ?? 0, rt: !!delays[i]?.u }];
   });
 }
 
 // ---------- overview ----------
 function live(d: Day) {
   const { alerts } = current(), t = Date.now() / 1000 - d.base / 1000;
-  let running = 0, late = 0, cancelled = 0, stuck = 0, km = 0, kmRate = 0;
+  let running = 0, observed = 0, late = 0, cancelled = 0, stuck = 0, km = 0, kmRate = 0;
   const byCat: Record<string, number> = {}, buckets = [0, 0, 0, 0, 0, 0, 0];
   const edges = [60, 180, 300, 600, 1200, 1800]; // <1, 1–3, 3–5, 5–10, 10–20, 20–30, 30+ min
-  for (const { trip, e, p, c, x } of nowState(d)) {
+  for (const { trip, e, p, c, x, rt } of nowState(d)) {
     const last = trip.stops.length / 3 - 1;
     if (trip.date === d.date && !c) { // train-km of today's service day
       if (t >= e.stops[last * 3 + 1]) km += trip.km[last];
@@ -62,16 +64,18 @@ function live(d: Day) {
       }
     }
     if (!p) continue;
+    if (c) { cancelled++; continue; } // drawn faintly on the map, but not running
     running++;
     const dl = e.delay[p.b], cat = category(d, trip.route);
     byCat[cat] = (byCat[cat] ?? 0) + 1;
-    if (c) { cancelled++; continue; }
+    if (!rt) continue; // no realtime: unknown, not on time (same rule as the map and the sparkline)
+    observed++;
     if (dl >= 180) late++;
     if (x) stuck++;
     buckets[edges.findIndex((b) => dl < b) === -1 ? 6 : edges.findIndex((b) => dl < b)]++;
   }
   return {
-    running, late, cancelled, stuck, km: Math.round(km), kmRate, punctual: pct(running - late - cancelled, running - cancelled),
+    running, observed, late, cancelled, stuck, km: Math.round(km), kmRate, punctual: pct(observed - late, observed),
     byCat: Object.entries(byCat).map(([cat, n]) => ({ cat, n })).sort((a, b) => b.n - a.n),
     delayHist: ["< 1", "1–3", "3–5", "5–10", "10–20", "20–30", "30+"].map((bucket, k) => ({ bucket, n: buckets[k] })),
     incidents: alerts.filter((a) => a.sudden).length,
@@ -82,7 +86,7 @@ function live(d: Day) {
 function today(d: Day) {
   const date = d.date, base = d.base / 1000;
   const tot = one(`SELECT count(*) trips, sum(observed) observed, sum(observed AND NOT cancelled AND final_delay < 180) punctual,
-    sum(cancelled) cancelled, round(sum(km)) km, avg(CASE WHEN observed AND NOT cancelled THEN final_delay END) avg_delay FROM trip_day WHERE date = ?`, date);
+    sum(cancelled) cancelled, round(sum(km * (1 - cancelled))) km, avg(CASE WHEN observed AND NOT cancelled THEN final_delay END) avg_delay FROM trip_day WHERE date = ?`, date);
   const P = `sum(observed AND NOT cancelled) obs, sum(observed AND NOT cancelled AND final_delay < 180) ok`;
   const cats = new Map<string, { cat: string; obs: number; ok: number }>();
   for (const r of all(`SELECT cat, agency, ${P} FROM trip_day WHERE date = ? GROUP BY cat, agency`, date)) {
@@ -119,9 +123,9 @@ function today(d: Day) {
 /** Static per timetable day. */
 function facts(d: Day) {
   return cached(`facts:${d.version}`, 86400, () => {
-    // the Swiss feed also carries foreign domestic trains (French TGVs …): facts are about trains that stop in Switzerland (UIC 85…)
+    // every trip stops in Switzerland (loadDay drops the others), but cross-border ones also have foreign stops and sections
     const swiss = (st: number) => d.stations[st][3].startsWith("85");
-    const trips = d.trips.filter((t) => t.date === d.date && t.stops.some((v, k) => k % 3 === 0 && swiss(v)));
+    const trips = d.trips.filter((t) => t.date === d.date);
     const seg = new Map<string, { a: number; b: number; n: number; km: number; sane: boolean; best?: any }>();
     const ops = new Map<string, number>(), plats = new Map<number, Set<number>>();
     let first = Infinity, lastArr = 0, km = 0, night = 0;
@@ -182,7 +186,7 @@ function crowding(d: Day) {
 }
 
 function history() {
-  return cached("history", 300, () => {
+  return cached("history", 1800, () => { // the heatmap scans 30 days of stop_obs
     const cutoff = addDays(new Date().toISOString().slice(0, 10), -30);
     const heat = new Map<string, { dow: number; hour: number; n: number; sum: number; late: number }>();
     for (const r of all(`SELECT sched_dep / 3600 h, count(*) n, sum(dep_delay) s, sum(dep_delay >= 180) late FROM stop_obs
@@ -195,20 +199,31 @@ function history() {
       days: all(`SELECT date, trips, observed, punctual, cancelled, km, avg_delay, p90_delay FROM agg_net_day ORDER BY date`)
         .map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled) })),
       heat: [...heat.values()].map((x) => ({ dow: DOW[x.dow], hour: x.hour, avg: x.sum / x.n / 60, late: pct(x.late, x.n), n: x.n })),
-      incidentsByWeek: all(`SELECT date(first_seen, 'unixepoch', '-6 days', 'weekday 1') week, kind, count(*) n FROM alert_log WHERE sev_max >= 2 GROUP BY week, kind ORDER BY week`),
+      incidentsByWeek: byWeek(all(`SELECT first_seen, kind FROM alert_log WHERE sev_max >= 2 ORDER BY first_seen`)),
     };
   });
 }
 
+/** Monday of the Zurich week, so an incident early on Monday morning isn't counted in the week before (UTC). */
+function byWeek(rows: { first_seen: number; kind: string }[]) {
+  const n = new Map<string, number>();
+  for (const r of rows) {
+    const date = zurichDate(new Date(r.first_seen * 1000)), week = addDays(date, -((new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7));
+    n.set(`${week}|${r.kind}`, (n.get(`${week}|${r.kind}`) ?? 0) + 1);
+  }
+  return [...n].map(([k, count]) => { const [week, kind] = k.split("|"); return { week, kind, n: count }; });
+}
+
 export const overview = (d: Day) => cached(`overview:${d.version}`, 20, () => ({
   date: d.date, live: live(d), facts: facts(d), today: today(d), crowding: crowding(d), history: history(),
-  series: all(`SELECT t, running, late, cancelled, stuck FROM net_sample WHERE t >= ? GROUP BY t / 60 ORDER BY t`, d.base / 1000), // one per minute
+  series: all(`SELECT t, running, late, cancelled, stuck, observed FROM net_sample WHERE t >= ? GROUP BY t / 60 ORDER BY t`, d.base / 1000), // one per minute
 }));
 
 // ---------- train number ----------
 export function train(d: Day, num: string) {
   return cached(`train:${d.version}:${num}`, 20, () => {
-    const runs = nowState(d).filter((x) => x.trip.num === num && x.trip.date === d.date).map(({ trip, e, p, c, x }) => ({
+    // yesterday's run counts while it's still running after midnight; the one running now first
+    const runs = nowState(d, (t) => t.num === num).filter((x) => x.trip.date === d.date || x.p).sort((a, b) => +!!b.p - +!!a.p).map(({ trip, e, p, c, x }) => ({
       line: lineOf(d, trip.route), cat: category(d, trip.route), operator: d.agencies[trip.agency] ?? trip.agency, cancelled: c, stuckSince: x,
       running: !!p, at: p ? (p.at ? p.a : p.a + p.f) : null,
       stops: Array.from({ length: trip.stops.length / 3 }, (_, k) => ({
@@ -232,8 +247,12 @@ export function train(d: Day, num: string) {
 // ---------- vehicle ----------
 export function vehicle(d: Day, unit: string) {
   return cached(`vehicle:${d.version}:${unit}`, 20, () => {
-    const t = Date.now() / 1000, state = nowState(d), byId = new Map(state.map((s) => [`${s.trip.id}|${s.trip.date}`, s]));
-    const runs = all(`SELECT * FROM vehicle_run WHERE unit = ? AND date = ? ORDER BY dep`, unit, d.date).map((r) => {
+    const t = Date.now() / 1000;
+    // today's runs, plus yesterday's while still running after midnight
+    const rows = all(`SELECT * FROM vehicle_run WHERE unit = ? AND (date = ? OR arr > ?) ORDER BY dep`, unit, d.date, t - 3600);
+    const ids = new Set(rows.map((r) => `${r.trip}|${r.date}`));
+    const byId = new Map(nowState(d, (x) => ids.has(`${x.id}|${x.date}`)).map((s) => [`${s.trip.id}|${s.trip.date}`, s]));
+    const runs = rows.map((r) => {
       const s = byId.get(`${r.trip}|${r.date}`);
       const delay = s ? (s.p ? s.e.delay[s.p.b] : s.e.delay.at(-1)) : null;
       return {
@@ -352,8 +371,9 @@ export function incidents(d: Day) {
 }
 
 // ---------- search (stats page) ----------
+const fold = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase(); // "zurich" finds Zürich, "geneve" Genève
 export function search(d: Day, q: string) {
-  q = q.trim().toLowerCase();
+  q = fold(q.trim());
   if (!q) return [];
   const out: { kind: string; key: string; label: string; sub: string }[] = [];
   if (/^\d{3}-?\d{0,3}$/.test(q)) for (const r of all(`SELECT unit, type, count(*) n FROM vehicle_run WHERE unit LIKE ? GROUP BY unit ORDER BY unit LIMIT 5`, `${q.replace(/^(\d{3})(\d)/, "$1-$2")}%`))
@@ -366,9 +386,9 @@ export function search(d: Day, q: string) {
     }
   }
   const lines = new Set<string>();
-  for (const t of d.trips) { const l = lineOf(d, t.route); if (l.toLowerCase().startsWith(q)) lines.add(l); }
+  for (const t of d.trips) { const l = lineOf(d, t.route); if (fold(l).startsWith(q)) lines.add(l); }
   for (const l of [...lines].sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 5)) out.push({ kind: "line", key: l, label: l, sub: "line" });
-  for (const s of d.stations.filter((s) => s[0].toLowerCase().includes(q)).sort((a, b) => +b[0].toLowerCase().startsWith(q) - +a[0].toLowerCase().startsWith(q) || b[4] - a[4]).slice(0, 8))
+  for (const s of d.stations.filter((s) => s[4] && fold(s[0]).includes(q)).sort((a, b) => +fold(b[0]).startsWith(q) - +fold(a[0]).startsWith(q) || b[4] - a[4]).slice(0, 8))
     out.push({ kind: "station", key: s[3], label: s[0], sub: `${s[4]} trains today` });
   return out.slice(0, 12);
 }
