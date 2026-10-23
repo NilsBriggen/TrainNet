@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, locate } from "../public/position.js";
+import { applyDelays, locate, motion } from "../public/position.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -87,4 +87,16 @@ test("slice follows the track across a station, without duplicate points", () =>
   expect(b[3]).toBeCloseTo(47.0181, 3); // the station point appears once
   expect(b[1]).toBeCloseTo(b[5], 4); // 500 m before and after the far end, on the same leg
   expect(slice(route, cum, -100, 0)).toEqual([]); // nothing behind the start
+});
+
+test("motion: starts and ends at the stations, never runs backwards, slow at both ends", () => {
+  for (const dur of [60, 120, 600, 3600]) {
+    let prev = 0;
+    for (let f = 0; f <= 1.0001; f += 0.01) { const x = motion(f, dur); expect(x).toBeGreaterThanOrEqual(prev - 1e-12); prev = x; }
+    expect(motion(0, dur)).toBe(0);
+    expect(motion(1, dur)).toBe(1);
+    expect(motion(0.5, dur)).toBeCloseTo(0.5, 10); // symmetric
+    expect(motion(0.05, dur)).toBeLessThan(0.05); // still accelerating
+  }
+  expect(motion(0.1, 3600)).toBeCloseTo(0.1 / (1 - 45 / 3600) - (45 / 3600 / 2) / (1 - 45 / 3600), 6); // long segment: cruising at 10 %
 });

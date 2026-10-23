@@ -42,6 +42,20 @@ export function locate(stops, t) {
   return { a: lo, b: lo + 1, f: arr > dep ? (t - dep) / (arr - dep) : 1, at: false };
 }
 
+/**
+ * Share of a segment covered at time share f (0..1) of its running time `dur` (s): accelerate, cruise, brake.
+ * Trains visibly slow into stations and pull away instead of gliding at one speed. Acceleration takes
+ * ~45 s (at most 30 % of the segment each way), the same for every train: a look, not physics.
+ */
+export function motion(f, dur) {
+  const a = Math.min(0.3, 45 / Math.max(dur, 1)), v = 1 / (1 - a); // cruise speed so the whole segment takes exactly dur
+  if (f <= 0) return 0;
+  if (f >= 1) return 1;
+  if (f < a) return (0.5 * v * f * f) / a;
+  if (f > 1 - a) return 1 - (0.5 * v * (1 - f) * (1 - f)) / a;
+  return v * (f - a / 2);
+}
+
 /** Decode a server path (delta-encoded ints at 1e-5°) into { pts: [lon,lat,...], cum: [0, m, ...] }. */
 export function unpackPath(packed) {
   const pts = new Float64Array(packed.length), n = packed.length / 2, cum = new Float64Array(n);

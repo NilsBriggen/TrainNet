@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>TrainNet — live Swiss trains</title>
   <meta name="description" content="Every Swiss train, live, on a map.">
+  <meta name="theme-color" content="#040a18">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -28,7 +30,7 @@
     </div>
     <div class="search" role="search">
       <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 13l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-      <input id="q" type="search" placeholder="Search station or train" autocomplete="off" spellcheck="false" aria-label="Search station or train" aria-controls="results">
+      <input id="q" type="search" placeholder="Station, train or line" autocomplete="off" spellcheck="false" aria-label="Search station, train or line" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="results">
       <kbd>⌘K</kbd>
       <ul id="results" role="listbox" hidden></ul>
     </div>
@@ -40,6 +42,7 @@
       <span id="issues"></span>
       <svg id="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-label="Punctuality over the last two hours"><path class="area"/><path class="line"/></svg>
       <a class="icon" href="/stats" title="Stats" aria-label="Stats"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9M10 16V4M16 16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></a>
+      <button id="key-btn" class="icon" title="What the colours mean (?)" aria-label="Map key" aria-expanded="false" aria-controls="key"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 8a2 2 0 1 1 3 1.7c-.7.4-1 .8-1 1.6M10 14v.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
       <button id="zen" class="icon" title="Zen mode (Z)" aria-label="Zen mode"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
   </header>
@@ -58,15 +61,44 @@
 
   <div id="tip" hidden></div>
 
-  <aside id="panel" class="ui" hidden aria-live="polite">
+  <section id="key" class="ui" hidden tabindex="-1" aria-label="Map key">
+    <button class="icon" data-close aria-label="Close the key"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <h2>Map key</h2>
+    <h3>Trains</h3>
+    <ul>
+      <li><span class="ki"><span class="k-train" style="--c:#ff3d5a"></span>Long distance</span><span class="ki"><span class="k-train" style="--c:#ff9f1c"></span>InterRegio</span><span class="ki"><span class="k-train" style="--c:#2ee6a6"></span>RegioExpress</span></li>
+      <li><span class="ki"><span class="k-train" style="--c:#5cc8ff"></span>Regional (SBB)</span><span class="ki"><span class="k-train" style="--c:#c792ff"></span>other railways</span><span class="ki"><span class="k-train" style="--c:#ffd166"></span>Panorama</span></li>
+      <li><span class="ki"><span class="k-train rainbow"></span>S-Bahn: every line its own colour</span></li>
+      <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ffd23f"></span>3+ min late</span><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ff4d4d"></span>10+ min late</span><small>with "Delays" on</small></li>
+      <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ff9f5a;opacity:.75"></span>probably standing</span><small>its delay keeps rising: our inference, not a report</small></li>
+      <li><span class="ki"><span class="k-train blink" style="--c:#5cc8ff;--o:#ff4d4d"></span>an incident reported for this train</span></li>
+      <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;opacity:.3"></span>cancelled</span></li>
+    </ul>
+    <h3>Disruptions</h3>
+    <ul>
+      <li><span class="ki"><span class="k-line dashed"></span>planned works</span><span class="ki"><span class="k-line" style="--c:#ffb547"></span>limited service</span><span class="ki"><span class="k-line" style="--c:#ff4d4d"></span>interrupted</span></li>
+      <li><span class="ki"><span class="k-line blink" style="--c:#ff4d4d"></span>just happened</span><small>unplanned, first hour</small><span class="ki"><span class="k-diamond"></span>at a station</span></li>
+    </ul>
+    <h3>Map</h3>
+    <ul>
+      <li><span class="ki"><span class="k-hub"></span>major station</span><span class="ki"><span class="k-stn"></span>station</span><span class="ki"><span class="k-line tunnel"></span>tunnel: trains dim inside</span></li>
+    </ul>
+    <h3>Keys</h3>
+    <p><kbd>/</kbd> search · <kbd>Z</kbd> zen · <kbd>?</kbd> this key · <kbd>Esc</kbd> close</p>
+  </section>
+
+  <button id="zen-exit" hidden>Exit zen</button>
+  <div id="sr-status" class="sr-only" aria-live="polite"></div>
+
+  <aside id="panel" class="ui" hidden aria-label="Details">
     <button id="close" class="icon" aria-label="Close"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     <div id="panel-body"></div>
   </aside>
 
   <footer id="credits" class="ui">
     <a href="https://opentransportdata.swiss" target="_blank" rel="noopener">opentransportdata.swiss</a> ·
-    <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> ·
-    Natural Earth · Relief © swisstopo
+    <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a><span class="long"> contributors</span> ·
+    <span class="long">Natural Earth · Relief </span>© swisstopo
   </footer>
   <script type="module" src="app.js"></script>
 </body>

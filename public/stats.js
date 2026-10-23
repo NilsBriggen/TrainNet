@@ -47,6 +47,7 @@ const badge = (line) => `<span class="badge" style="background:${lineColor(line)
 const kpi = (label, value, note = "", cls = "") => `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
 const card = (title, hint, body, w = 6) => `<section class="card w${w}"><h2>${title}</h2>${hint ? `<p class="hint">${hint}</p>` : ""}${body}</section>`;
 const ch = (id) => `<div class="chart" id="${id}"></div>`;
+const grade = (p) => (p == null ? "" : p >= 90 ? "good" : p < 75 ? "bad" : ""); // KPI colour for a punctuality %
 const pctv = (p) => (p == null ? "–" : `${p}<small>%</small>`);
 const kindChip = (k) => `<span class="kind-chip" style="--c:${KIND[k]?.[1] ?? "#8396bf"}">${esc(KIND[k]?.[0] ?? k)}</span>`;
 const sevChip = (s) => `<span class="kind-chip" style="--c:${SEV[s][1]}">${SEV[s][0]}</span>`;
@@ -91,10 +92,10 @@ async function route(keepScroll = false) {
   timers.forEach(clearInterval);
   timers = [];
   const token = ++nav, h = location.hash || "#/";
-  for (const [re, nav, fn] of routes) {
+  for (const [re, tab, fn] of routes) {
     const m = h.match(re);
     if (!m) continue;
-    for (const a of document.querySelectorAll("[data-nav]")) a.dataset.nav === nav ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
+    for (const a of document.querySelectorAll("[data-nav]")) a.dataset.nav === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     if (!keepScroll) main.innerHTML = `<div class="loading">Loading…</div>`;
     try {
       await fn(...m.slice(1).map(decodeURIComponent), () => token === nav); // pages check `current()` before writing
@@ -127,9 +128,9 @@ async function overview(current) {
   <div class="page-head"><div><h1>Swiss rail, today</h1><p class="sub">${day(o.date)} · <span class="live-dot"></span>live, updated ${time(Date.now() / 1000)}, refreshes every 30 s</p></div></div>
   <div class="kpis">
     ${kpi("Running now", n0(L.running), `${n0(L.late)} at least 3 min late`)}
-    ${kpi("On time now", pctv(L.punctual), `running trains with live data (${n0(L.observed)}) < 3 min late`, L.punctual >= 90 ? "good" : L.punctual < 75 ? "bad" : "")}
+    ${kpi("On time now", pctv(L.punctual), `running trains with live data (${n0(L.observed)}) < 3 min late`, grade(L.punctual))}
     ${kpi("Train-km today", `<span id="km">${n0(L.km)}</span>`, `the network is doing ${n0(L.kmRate * 3600)} km/h`)}
-    ${kpi("Punctuality today", pctv(T.punctualPct), finished > 0 ? `${n0(finished)} finished trains with live data · ${n0(T.cancelled)} cancelled` : "fills in as trains finish", T.punctualPct >= 90 ? "good" : T.punctualPct < 75 ? "bad" : "")}
+    ${kpi("Punctuality today", pctv(T.punctualPct), finished > 0 ? `${n0(finished)} finished trains with live data · ${n0(T.cancelled)} cancelled` : "fills in as trains finish", grade(T.punctualPct))}
     ${kpi("Incidents now", L.incidents, `reported in the last hour${L.stuck ? ` · ${L.stuck} train${L.stuck === 1 ? "" : "s"} probably standing (inferred)` : ""}`, L.incidents ? "alarm" : "")}
     ${kpi("Disruptions", L.alerts[2] + L.alerts[1], `${L.alerts[2]} interrupted · ${L.alerts[1]} limited · ${L.alerts[0]} planned`)}
   </div>
