@@ -429,7 +429,7 @@ function everyMonth(rows) {
 }
 
 /** A "since 2018" card: monthly punctuality from the official actual data. */
-const sinceCard = (x, what, w = 12) => card(`Since ${x ? x.from.slice(0, 4) : 2018}`, x ? `${what}, official actual data: ${pctv(x.pct)} on time over ${n0(x.n)} ${what.includes("departure") ? "departures" : "runs"}` : "",
+const sinceCard = (x, what, w = 12) => card(`Since ${x ? x.from.slice(0, 4) : 2018}`, x ? `${what}, official actual data: ${pctv(x.pct)} on time over ${n0(x.n)} ${/departure/i.test(what) ? "departures" : "runs"}` : "",
   x ? ch("c-since") : empty("Not in the official history (yet): it's imported month by month."), w);
 const drawSince = (x) => {
   if (!x) return;
@@ -442,7 +442,7 @@ const drawSince = (x) => {
 
 // ---------- history ----------
 async function historyPage(current) {
-  const h = await api("history");
+  const h = await api("history", true); // 404 = nothing imported yet
   if (!current()) return;
   document.title = "TrainNet — History";
   if (!h) { main.innerHTML = `<div class="empty-page">The official history (actual data since 2018) is being imported. Check back in a few hours.</div>`; return; }

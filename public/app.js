@@ -186,7 +186,8 @@ function setStatic() {
   })));
   // size by passengers where SBB counts them (a busy station with few trains is still a big station), else by trains
   const tier = (s) => { const p = pax[s[3]]?.[0]; return p ? (p >= 40000 ? 2 : p >= 2500 || s[4] >= 60 ? 1 : 0) : s[4] >= 400 ? 2 : s[4] >= 60 ? 1 : 0; };
-  map.getSource("stations").setData(fc(st.map((s, i) => { const t = tier(s); return point(s.slice(1, 3), { i, name: s[0], n: t === 2 ? Math.max(s[4], 400) : t ? Math.max(60, Math.min(s[4], 399)) : Math.min(s[4], 59), hub: t === 2 ? 1 : 0 }, i); })));
+  // stations without a train today (foreign stops of trips that never reach Switzerland) aren't drawn
+  map.getSource("stations").setData(fc(st.flatMap((s, i) => { if (!s[4]) return []; const t = tier(s); return [point(s.slice(1, 3), { i, name: s[0], n: t === 2 ? Math.max(s[4], 400) : t ? Math.max(60, Math.min(s[4], 399)) : Math.min(s[4], 59), hub: t === 2 ? 1 : 0 }, i)]; })));
 }
 
 function setAlerts() {
