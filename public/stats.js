@@ -417,13 +417,28 @@ async function fleetPage(current) {
   draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line) }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
 }
 
+/** Every month from the first to the last row, missing ones as gaps (pct null), so a line breaks instead of bridging them. */
+function everyMonth(rows) {
+  if (!rows.length) return [];
+  const by = new Map(rows.map((r) => [r.month, r])), out = [];
+  for (let [y, m] = rows[0].month.split("-").map(Number); `${y}-${String(m).padStart(2, "0")}` <= rows.at(-1).month; m === 12 ? (y++, (m = 1)) : m++) {
+    const month = `${y}-${String(m).padStart(2, "0")}`;
+    out.push({ ...(by.get(month) ?? { pct: null, perDay: null }), month, date: new Date(`${month}-15`) });
+  }
+  return out;
+}
+
 /** A "since 2018" card: monthly punctuality from the official actual data. */
 const sinceCard = (x, what, w = 12) => card(`Since ${x ? x.from.slice(0, 4) : 2018}`, x ? `${what}, official actual data: ${pctv(x.pct)} on time over ${n0(x.n)} ${what.includes("departure") ? "departures" : "runs"}` : "",
   x ? ch("c-since") : empty("Not in the official history (yet): it's imported month by month."), w);
-const drawSince = (x) => x && draw("c-since", { height: 200, x: { type: "time", label: null }, y: { grid: true, label: "%", domain: [Math.min(70, d3.min(x.months, (m) => m.pct) ?? 70), 100] }, marks: [
-  Plot.lineY(x.months, { x: (m) => new Date(`${m.month}-15`), y: "pct", stroke: "#3ddc97", strokeWidth: 1.6, curve: "monotone-x" }),
-  Plot.tip(x.months, Plot.pointerX({ x: (m) => new Date(`${m.month}-15`), y: "pct", title: (m) => `${m.month}: ${m.pct} % of ${n0(m.n)}` })),
-] });
+const drawSince = (x) => {
+  if (!x) return;
+  const M = everyMonth(x.months);
+  draw("c-since", { height: 200, x: { type: "time", label: null }, y: { grid: true, label: "%", domain: [Math.min(70, d3.min(M, (m) => m.pct) ?? 70), 100] }, marks: [
+    Plot.lineY(M, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6 }),
+    Plot.tip(M.filter((m) => m.pct != null), Plot.pointerX({ x: "date", y: "pct", title: (m) => `${m.month}: ${m.pct} % of ${n0(m.n)}` })),
+  ] });
+};
 
 // ---------- history ----------
 async function historyPage(current) {
@@ -435,11 +450,11 @@ async function historyPage(current) {
   main.innerHTML = `
   <div class="page-head"><div><h1>Since ${esc(h.first.slice(0, 4))}</h1><p class="sub">Every train of every day from the official actual data (Ist-Daten): ${n0(h.days)} days, ${esc(h.first)} to ${esc(h.last)}</p></div></div>
   <div class="kpis">
-    ${kpi("On time, last month", pctv(last.pct), `${esc(last.month)} · arrival less than 3 min late at the last stop`, grade(last.pct))}
+    ${kpi(`On time, ${esc(last.month)}`, pctv(last.pct), `latest month imported (${last.days} days) · arrival less than 3 min late at the last stop`, grade(last.pct))}
     ${best ? kpi("Best year", esc(best.year), `${best.pct} % on time`, "good") : ""}
     ${worst ? kpi("Worst year", esc(worst.year), `${worst.pct} % on time`) : ""}
     ${kpi("Trains a day", n0(last.perDay), `in ${esc(last.month)}`)}
-    ${kpi("Cancelled, last month", pctv(last.cancelledPct), `${n0(last.cancelled)} trains`)}
+    ${kpi(`Cancelled, ${esc(last.month)}`, pctv(last.cancelledPct), `${n0(last.cancelled)} trains`)}
   </div>
   <div class="grid">
     ${card("Punctuality by month", "Trains arriving less than 3 min late at their last Swiss stop", ch("c-months"), 12)}
@@ -448,13 +463,13 @@ async function historyPage(current) {
     ${card("When it's worst", "Share of departures 3+ min late, by month of the year and hour", ch("c-season"), 12)}
     ${card("Lines by year", "Lines with at least 3,000 runs that year: least and most punctual", `<div class="filters"><select id="h-year" aria-label="Year">${h.lines.map((l) => `<option>${l.year}</option>`).join("")}</select></div><div id="h-lines"></div>`, 12)}
   </div>`;
-  const M = h.months.map((m) => ({ ...m, date: new Date(`${m.month}-15`) }));
+  const M = everyMonth(h.months), have = M.filter((m) => m.pct != null);
   draw("c-months", { height: 260, x: { type: "time", label: null }, y: { grid: true, label: "%", domain: [Math.min(80, d3.min(M, (m) => m.pct) ?? 80), 100] }, marks: [
-    Plot.areaY(M, { x: "date", y1: Math.min(80, d3.min(M, (m) => m.pct) ?? 80), y2: "pct", fill: "#3ddc97", fillOpacity: 0.12, curve: "monotone-x" }),
-    Plot.lineY(M, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6, curve: "monotone-x" }),
-    Plot.tip(M, Plot.pointerX({ x: "date", y: "pct", title: (m) => `${m.month}: ${m.pct} % on time\n${n0(m.perDay)} trains a day · ${m.cancelledPct} % cancelled\naverage final delay ${mins(m.avgDelay)}` })),
+    Plot.areaY(M, { x: "date", y1: Math.min(80, d3.min(M, (m) => m.pct) ?? 80), y2: "pct", fill: "#3ddc97", fillOpacity: 0.12 }),
+    Plot.lineY(M, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6 }),
+    Plot.tip(have, Plot.pointerX({ x: "date", y: "pct", title: (m) => `${m.month}: ${m.pct} % on time\n${n0(m.perDay)} trains a day · ${m.cancelledPct} % cancelled\naverage final delay ${mins(m.avgDelay)}` })),
   ] });
-  draw("c-perday", { x: { type: "time", label: null }, y: { grid: true, label: null }, marks: [Plot.areaY(M, { x: "date", y: "perDay", fill: "#2b56b0", fillOpacity: 0.5 }), Plot.lineY(M, { x: "date", y: "perDay", stroke: "#5cc8ff" }), Plot.tip(M, Plot.pointerX({ x: "date", y: "perDay", title: (m) => `${m.month}: ${n0(m.perDay)} trains a day` }))] });
+  draw("c-perday", { x: { type: "time", label: null }, y: { grid: true, label: null }, marks: [Plot.areaY(M, { x: "date", y: "perDay", fill: "#2b56b0", fillOpacity: 0.5 }), Plot.lineY(M, { x: "date", y: "perDay", stroke: "#5cc8ff" }), Plot.tip(have, Plot.pointerX({ x: "date", y: "perDay", title: (m) => `${m.month}: ${n0(m.perDay)} trains a day` }))] });
   const Y = h.years.flatMap((y) => [{ year: y.year, kind: "cancelled", n: y.cancelled }, { year: y.year, kind: "extra", n: y.extra }]);
   draw("c-years", { x: { axis: null }, fx: { label: null }, y: { grid: true, label: null }, color: { domain: ["cancelled", "extra"], range: ["#ff4d4d", "#5cc8ff"], legend: true },
     marks: [Plot.barY(Y, { x: "kind", fx: "year", y: "n", fill: "kind", tip: true }), Plot.ruleY([0])] });
