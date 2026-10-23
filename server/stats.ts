@@ -214,10 +214,57 @@ function byWeek(rows: { first_seen: number; kind: string }[]) {
   return [...n].map(([k, count]) => { const [week, kind] = k.split("|"); return { week, kind, n: count }; });
 }
 
+/** Punctuality on the same weekday over the last 8 weeks of official data: "today vs a typical Saturday". */
+function typical(d: Day) {
+  return cached(`typical:${d.date}`, 3600, () => {
+    const dow = new Date(`${d.date}T12:00:00Z`).getUTCDay(), dates = Array.from({ length: 8 }, (_, k) => addDays(d.date, -7 * (k + 1)));
+    const r = one(`SELECT count(*) days, sum(punctual) ok, sum(observed - cancelled) n, avg(trips) trips FROM hist_net_day WHERE date IN (${dates.map(() => "?").join(",")})`, ...dates);
+    return r.days ? { weekday: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dow], days: r.days, pct: pct(r.ok, r.n), trips: Math.round(r.trips) } : null;
+  });
+}
+
 export const overview = (d: Day) => cached(`overview:${d.version}`, 20, () => ({
-  date: d.date, live: live(d), facts: facts(d), today: today(d), crowding: crowding(d), history: history(),
+  date: d.date, live: live(d), facts: facts(d), today: today(d), crowding: crowding(d), history: history(), typical: typical(d),
   series: all(`SELECT t, running, late, cancelled, stuck, observed FROM net_sample WHERE t >= ? GROUP BY t / 60 ORDER BY t`, d.base / 1000), // one per minute
 }));
+
+// ---------- history since 2018 (official actual data) ----------
+export function longHistory() {
+  return cached("long", 3600, () => {
+    const months = all(`SELECT substr(date, 1, 7) month, count(*) days, sum(trips) trips, sum(observed) observed, sum(punctual) punctual, sum(cancelled) cancelled,
+      sum(extra) extra, sum(sum_final_delay) sum_delay FROM hist_net_day GROUP BY month ORDER BY month`)
+      .map((m) => ({ month: m.month, days: m.days, perDay: Math.round(m.trips / m.days), pct: pct(m.punctual, m.observed - m.cancelled), cancelled: m.cancelled, extra: m.extra,
+        cancelledPct: pct(m.cancelled, m.trips), avgDelay: m.observed ? m.sum_delay / m.observed : null }));
+    if (!months.length) return null;
+    const years = new Map<string, any>();
+    for (const m of months) {
+      const y = years.get(m.month.slice(0, 4)) ?? years.set(m.month.slice(0, 4), { year: m.month.slice(0, 4), days: 0, cancelled: 0, extra: 0 }).get(m.month.slice(0, 4));
+      y.days += m.days; y.cancelled += m.cancelled; y.extra += m.extra;
+    }
+    const yearPct = all(`SELECT substr(date, 1, 4) year, sum(punctual) ok, sum(observed - cancelled) n FROM hist_net_day GROUP BY year`);
+    for (const r of yearPct) Object.assign(years.get(r.year), { pct: pct(r.ok, r.n) });
+    // lines: only those with real traffic in a year, so a line with three trains doesn't top the list
+    const lineYears = all(`SELECT substr(month, 1, 4) year, line, max(cat) cat, sum(trips) trips, sum(punctual) ok, sum(observed - cancelled) n FROM hist_line_month
+      GROUP BY year, line HAVING n >= 3000`).map((r) => ({ year: r.year, line: r.line, trips: r.trips, pct: pct(r.ok, r.n) }));
+    const byYear = d3group(lineYears, (r) => r.year);
+    return {
+      first: (one("SELECT min(date) d FROM hist_done") as any).d, last: (one("SELECT max(date) d FROM hist_done") as any).d, days: (one("SELECT count(*) n FROM hist_done") as any).n,
+      months, years: [...years.values()],
+      season: all(`SELECT CAST(substr(month, 6, 2) AS INTEGER) m, hour, sum(late) late, sum(n) n FROM hist_hour_month GROUP BY m, hour`).map((r) => ({ month: r.m, hour: r.hour, late: pct(r.late, r.n) })),
+      lines: [...byYear].sort((a, b) => b[0].localeCompare(a[0])).map(([year, rows]) => {
+        const sorted = rows.sort((a, b) => a.pct - b.pct);
+        return { year, worst: sorted.slice(0, 5), best: sorted.slice(-5).reverse() };
+      }),
+    };
+  });
+}
+const d3group = <T>(rows: T[], key: (r: T) => string) => { const m = new Map<string, T[]>(); for (const r of rows) (m.get(key(r)) ?? m.set(key(r), []).get(key(r))!).push(r); return m; };
+/** Monthly punctuality of one train number / line / station's departures since 2018, and the whole span's share. */
+const since = (rows: any[]) => {
+  if (!rows.length) return null;
+  const ok = rows.reduce((a, r) => a + r.ok, 0), n = rows.reduce((a, r) => a + r.n, 0);
+  return { months: rows.map((r) => ({ month: r.month, pct: pct(r.ok, r.n), n: r.n })), pct: pct(ok, n), n, from: rows[0].month };
+};
 
 // ---------- train number ----------
 export function train(d: Day, num: string) {
@@ -240,6 +287,7 @@ export function train(d: Day, num: string) {
       profile: all(`SELECT idx, uic, count(arr_delay) n, avg(arr_delay) arr, avg(dep_delay) dep, sum(arr_delay >= 180) late FROM stop_obs WHERE train_no = ? GROUP BY idx, uic ORDER BY idx`, num)
         .map((r) => ({ ...r, name: station(d, r.uic)?.name ?? r.uic })),
       vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num),
+      since: since(all(`SELECT month, sum(punctual) ok, sum(observed - cancelled) n FROM hist_train_month WHERE train_no = ? GROUP BY month ORDER BY month`, num)),
     };
   });
 }
@@ -390,6 +438,7 @@ export function stationStats(d: Day, uic: string) {
       lines: [...lines].map(([line, n]) => ({ line, n })).sort((a, b) => b.n - a.n).slice(0, 20),
       daily: all(`SELECT date, deps, dep_obs, dep_ok, avg_dep_delay FROM agg_station_day WHERE uic = ? ORDER BY date`, uic).map((r) => ({ ...r, pct: pct(r.dep_ok, r.dep_obs) })),
       incidents: all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why FROM alert_log WHERE stations LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 30`, `%"${uic}"%`),
+      since: since(all(`SELECT month, dep_ok ok, dep_obs n FROM hist_station_month WHERE uic = ? ORDER BY month`, uic)),
     };
   });
 }
@@ -409,6 +458,7 @@ export function lineStats(d: Day, name: string) {
       today: all(`SELECT train_no, origin, dest, final_delay, cancelled, observed, arr FROM trip_day WHERE line = ? AND date = ? ORDER BY arr`, name, d.date),
       daily: all(`SELECT date, trips, observed, punctual, cancelled, avg_delay FROM agg_line_day WHERE line = ? ORDER BY date`, name).map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled) })),
       incidents: all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why FROM alert_log WHERE lines LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 30`, `%"${name}"%`),
+      since: since(all(`SELECT month, punctual ok, observed - cancelled n FROM hist_line_month WHERE line = ? ORDER BY month`, name)),
     };
   });
 }

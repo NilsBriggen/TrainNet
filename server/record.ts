@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { applyDelays } from "../public/position.js";
 import { addDays, serviceBase, zurichDate } from "./time";
 import type { Day } from "./gtfs";
+import { initHistory } from "./history";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS trip_day (date TEXT, trip TEXT, train_no TEXT, line TEXT, cat TEXT, agency TEXT, origin TEXT, dest TEXT,
@@ -52,8 +53,9 @@ let lastFlush = 0;
 
 export function initRecord(file: string) {
   db = new Database(file, { create: true });
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;"); // the history backfill may write meanwhile
   db.exec(SCHEMA);
+  initHistory(db);
   try { db.exec("ALTER TABLE net_sample ADD COLUMN observed INTEGER"); } catch {} // databases from before the column
   return db;
 }

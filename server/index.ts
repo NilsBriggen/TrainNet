@@ -5,7 +5,8 @@ import { zurichDate } from "./time";
 import { loadGraph, type Graph } from "./paths";
 import { buildRail } from "../scripts/rail";
 import { DATA_DIR } from "./gtfs";
-import { flushAll, initRecord, maintain, startDay } from "./record";
+import { db, flushAll, initRecord, maintain, startDay } from "./record";
+import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
 import { loadSbbData, stationPax, useRegisterNames } from "./sbbdata";
 import * as stats from "./stats";
@@ -33,6 +34,8 @@ async function loadRail() {
 async function refresh() {
   const date = zurichDate(new Date());
   try { maintain(); } catch (e: any) { console.error(`[record] ${e.message}`); }
+  // yesterday's official actual data, published next morning (hourly at most; the dev instance leaves it to production)
+  if (!LIVE_FROM) importRecentDays(db).catch((e) => console.error(`[history] ${e.message}`));
   if (loading || day?.date === date) return;
   loading = true;
   try {
@@ -98,6 +101,7 @@ const server = Bun.serve({
     "/stats": () => new Response(Bun.file(PUBLIC + "stats.html")),
     "/api/pax": () => Response.json(Object.fromEntries(stationPax().map((r) => [r.uic, [r.daily, r.year]])), { headers: { "Cache-Control": "public, max-age=86400" } }),
     "/api/stats/types": (req) => statsJson(req, stats.types),
+    "/api/stats/history": (req) => statsJson(req, stats.longHistory),
     "/api/stats/type/:cls": (req) => statsJson(req, (d) => stats.trainType(d, req.params.cls)),
     "/api/train/:idx": async (req) => {
       if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}`);

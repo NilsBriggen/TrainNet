@@ -87,7 +87,7 @@ let timers = [], nav = 0;
 const routes = [
   [/^#?\/?$/, "overview", overview], [/^#\/fleet$/, "fleet", fleetPage], [/^#\/incidents$/, "incidents", incidentsPage],
   [/^#\/train\/(.+)$/, "", trainPage], [/^#\/vehicle\/(.+)$/, "fleet", vehiclePage], [/^#\/station\/(.+)$/, "", stationPage], [/^#\/line\/(.+)$/, "", linePage],
-  [/^#\/types$/, "types", typesPage], [/^#\/type\/(\d{3})$/, "types", typePage],
+  [/^#\/types$/, "types", typesPage], [/^#\/type\/(\d{3})$/, "types", typePage], [/^#\/history$/, "history", historyPage],
 ];
 async function route(keepScroll = false) {
   timers.forEach(clearInterval);
@@ -131,7 +131,8 @@ async function overview(current) {
     ${kpi("Running now", n0(L.running), `${n0(L.late)} at least 3 min late`)}
     ${kpi("On time now", pctv(L.punctual), `running trains with live data (${n0(L.observed)}) < 3 min late`, grade(L.punctual))}
     ${kpi("Train-km today", `<span id="km">${n0(L.km)}</span>`, `the network is doing ${n0(L.kmRate * 3600)} km/h`)}
-    ${kpi("Punctuality today", pctv(T.punctualPct), finished > 0 ? `${n0(finished)} finished trains with live data · ${n0(T.cancelled)} cancelled` : "fills in as trains finish", grade(T.punctualPct))}
+    ${kpi("Punctuality today", pctv(T.punctualPct), (finished > 0 ? `${n0(finished)} finished trains with live data · ${n0(T.cancelled)} cancelled` : "fills in as trains finish")
+      + (o.typical ? `<br>a typical ${o.typical.weekday}: ${o.typical.pct} % (official data, last ${o.typical.days} weeks)` : ""), grade(T.punctualPct))}
     ${kpi("Incidents now", L.incidents, `reported in the last hour${L.stuck ? ` · ${L.stuck} train${L.stuck === 1 ? "" : "s"} probably standing (inferred)` : ""}`, L.incidents ? "alarm" : "")}
     ${kpi("Disruptions", L.alerts[2] + L.alerts[1], `${L.alerts[2]} interrupted · ${L.alerts[1]} limited · ${L.alerts[0]} planned`)}
   </div>
@@ -304,6 +305,7 @@ async function trainPage(num, current) {
     ${card("Crowding forecast", "2nd class per section: 1 many seats · 2 few seats · 3 standing", t.crowding.length ? ch("c-crowd") : empty("No forecast for this train."), 6)}
     ${card("Every day", "Final delay per recorded day", t.history.length ? ch("c-days") : empty("History starts with the first finished run."), 6)}
     ${card("Where it usually loses time", "Average arrival delay per stop across recorded days", t.profile.length ? ch("c-prof") : empty("Fills in as runs finish."), 12)}
+    ${sinceCard(t.since, `Train ${esc(num)}`)}
     ${card("Stops", "", table([
       { h: "Time", f: (s) => time(s.dep || s.arr) }, { h: "Station", f: (s) => esc(s.name) }, { h: "Pl.", f: (s) => esc(s.platform ?? "") },
       { h: "km", num: 1, f: (s) => n0(s.km) }, { h: "Delay", num: 1, f: (s) => (s.skipped ? `<span style="color:#ff4d4d">skipped</span>` : `<span style="color:${delayColor(s.delay)}">${mins(s.delay)}</span>`) },
@@ -327,6 +329,7 @@ async function trainPage(num, current) {
       Plot.ruleY([0]),
     ] });
   }
+  drawSince(t.since);
   if (t.profile.length) draw("c-prof", { height: 240, marginBottom: 90, x: { type: "point", domain: t.profile.map((p) => `${p.idx}·${p.name}`), tickRotate: -40, tickFormat: (s) => short(18)(s.split("·")[1]), label: null }, y: { grid: true, label: "min" }, marks: [
     Plot.areaY(t.profile, { x: (p) => `${p.idx}·${p.name}`, y: (p) => (p.arr ?? 0) / 60, fill: "#ffb547", fillOpacity: 0.2 }),
     Plot.lineY(t.profile, { x: (p) => `${p.idx}·${p.name}`, y: (p) => (p.arr ?? 0) / 60, stroke: "#ffb547", tip: true, title: (p) => `${p.name}: ${mins(p.arr)} on average over ${p.n} runs` }),
@@ -412,6 +415,58 @@ async function fleetPage(current) {
   draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line) }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
 }
 
+/** A "since 2018" card: monthly punctuality from the official actual data. */
+const sinceCard = (x, what, w = 12) => card(`Since ${x ? x.from.slice(0, 4) : 2018}`, x ? `${what}, official actual data: ${pctv(x.pct)} on time over ${n0(x.n)} ${what.includes("departure") ? "departures" : "runs"}` : "",
+  x ? ch("c-since") : empty("Not in the official history (yet): it's imported month by month."), w);
+const drawSince = (x) => x && draw("c-since", { height: 200, x: { type: "time", label: null }, y: { grid: true, label: "%", domain: [Math.min(70, d3.min(x.months, (m) => m.pct) ?? 70), 100] }, marks: [
+  Plot.lineY(x.months, { x: (m) => new Date(`${m.month}-15`), y: "pct", stroke: "#3ddc97", strokeWidth: 1.6, curve: "monotone-x" }),
+  Plot.tip(x.months, Plot.pointerX({ x: (m) => new Date(`${m.month}-15`), y: "pct", title: (m) => `${m.month}: ${m.pct} % of ${n0(m.n)}` })),
+] });
+
+// ---------- history ----------
+async function historyPage(current) {
+  const h = await api("history");
+  if (!current()) return;
+  document.title = "TrainNet — History";
+  if (!h) { main.innerHTML = `<div class="empty-page">The official history (actual data since 2018) is being imported. Check back in a few hours.</div>`; return; }
+  const full = h.years.filter((y) => y.days >= 360), best = d3.greatest(full, (y) => y.pct), worst = d3.least(full, (y) => y.pct), last = h.months.at(-1);
+  main.innerHTML = `
+  <div class="page-head"><div><h1>Since ${esc(h.first.slice(0, 4))}</h1><p class="sub">Every train of every day from the official actual data (Ist-Daten): ${n0(h.days)} days, ${esc(h.first)} to ${esc(h.last)}</p></div></div>
+  <div class="kpis">
+    ${kpi("On time, last month", pctv(last.pct), `${esc(last.month)} · arrival less than 3 min late at the last stop`, grade(last.pct))}
+    ${best ? kpi("Best year", esc(best.year), `${best.pct} % on time`, "good") : ""}
+    ${worst ? kpi("Worst year", esc(worst.year), `${worst.pct} % on time`) : ""}
+    ${kpi("Trains a day", n0(last.perDay), `in ${esc(last.month)}`)}
+    ${kpi("Cancelled, last month", pctv(last.cancelledPct), `${n0(last.cancelled)} trains`)}
+  </div>
+  <div class="grid">
+    ${card("Punctuality by month", "Trains arriving less than 3 min late at their last Swiss stop", ch("c-months"), 12)}
+    ${card("Trains a day", "Average per month: you can see 2020", ch("c-perday"), 6)}
+    ${card("Cancelled and extra trains", "Per year (the current year so far)", ch("c-years"), 6)}
+    ${card("When it's worst", "Share of departures 3+ min late, by month of the year and hour", ch("c-season"), 12)}
+    ${card("Lines by year", "Lines with at least 3,000 runs that year: least and most punctual", `<div class="filters"><select id="h-year" aria-label="Year">${h.lines.map((l) => `<option>${l.year}</option>`).join("")}</select></div><div id="h-lines"></div>`, 12)}
+  </div>`;
+  const M = h.months.map((m) => ({ ...m, date: new Date(`${m.month}-15`) }));
+  draw("c-months", { height: 260, x: { type: "time", label: null }, y: { grid: true, label: "%", domain: [Math.min(80, d3.min(M, (m) => m.pct) ?? 80), 100] }, marks: [
+    Plot.areaY(M, { x: "date", y1: Math.min(80, d3.min(M, (m) => m.pct) ?? 80), y2: "pct", fill: "#3ddc97", fillOpacity: 0.12, curve: "monotone-x" }),
+    Plot.lineY(M, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6, curve: "monotone-x" }),
+    Plot.tip(M, Plot.pointerX({ x: "date", y: "pct", title: (m) => `${m.month}: ${m.pct} % on time\n${n0(m.perDay)} trains a day · ${m.cancelledPct} % cancelled\naverage final delay ${mins(m.avgDelay)}` })),
+  ] });
+  draw("c-perday", { x: { type: "time", label: null }, y: { grid: true, label: null }, marks: [Plot.areaY(M, { x: "date", y: "perDay", fill: "#2b56b0", fillOpacity: 0.5 }), Plot.lineY(M, { x: "date", y: "perDay", stroke: "#5cc8ff" }), Plot.tip(M, Plot.pointerX({ x: "date", y: "perDay", title: (m) => `${m.month}: ${n0(m.perDay)} trains a day` }))] });
+  const Y = h.years.flatMap((y) => [{ year: y.year, kind: "cancelled", n: y.cancelled }, { year: y.year, kind: "extra", n: y.extra }]);
+  draw("c-years", { x: { axis: null }, fx: { label: null }, y: { grid: true, label: null }, color: { domain: ["cancelled", "extra"], range: ["#ff4d4d", "#5cc8ff"], legend: true },
+    marks: [Plot.barY(Y, { x: "kind", fx: "year", y: "n", fill: "kind", tip: true }), Plot.ruleY([0])] });
+  draw("c-season", { height: 300, marginLeft: 40, x: { label: "hour", domain: d3.range(24) }, y: { label: null, domain: d3.range(1, 13), tickFormat: (m) => ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1] },
+    color: { scheme: "YlOrRd", legend: true, label: "% of departures 3+ min late" }, marks: [Plot.cell(h.season, { x: "hour", y: "month", fill: "late", inset: 1, tip: true })] });
+  const lines = () => {
+    const y = h.lines.find((l) => l.year === document.getElementById("h-year").value);
+    const t = (rows) => table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Runs", num: 1, f: (r) => n0(r.trips) }, { h: "On time", num: 1, f: (r) => pctv(r.pct) }], rows.map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` })));
+    document.getElementById("h-lines").innerHTML = y ? `<div class="two"><div><h3 class="mini">Least punctual</h3>${t(y.worst)}</div><div><h3 class="mini">Most punctual</h3>${t(y.best)}</div></div>` : "";
+  };
+  document.getElementById("h-year").addEventListener("input", lines);
+  lines();
+}
+
 // ---------- train types ----------
 async function typesPage(current) {
   const list = await api("types");
@@ -475,8 +530,10 @@ async function stationPage(uic, current) {
     ${card("Platforms", "Departures per platform today", s.platforms.length ? ch("c-plat") : empty("–"), 4)}
     ${card("Lines", "Departures per line today", table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Departures", num: 1, f: (r) => r.n }], s.lines.map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))), 4)}
     ${card("Daily punctuality", "Departures less than 3 min late; hover for the average departure delay", s.daily.length ? ch("c-days") : empty("History builds up day by day."), 8)}
+    ${sinceCard(s.since, "Departures here")}
     ${card("Disruptions here", "Last 30 days", incidentTable(s.incidents.map((r) => ({ ...r, sudden: 0 }))), 12)}
   </div>`;
+  drawSince(s.since);
   draw("c-hour", { x: { label: "hour", type: "band" }, y: { grid: true, label: null }, marks: [
     Plot.barY(s.perHour, { x: "hour", y: "today", fill: "#2b56b0", tip: true }), Plot.lineY(s.perHour, { x: "hour", y: "typical", stroke: "#5cc8ff", curve: "step" }),
   ] });
@@ -506,8 +563,10 @@ async function linePage(name, current) {
       { h: "Delay", num: 1, f: (t) => (t.cancelled ? `<span style="color:#ff4d4d">cancelled</span>` : t.observed ? `<span style="color:${delayColor(t.final_delay)}">${mins(t.final_delay)}</span>` : "–") },
     ], l.today.map((t) => ({ ...t, _href: `#/train/${t.train_no}` })), "None finished yet."), 6)}
     ${card("Daily punctuality", "", l.daily.length ? ch("c-days") : empty("History builds up day by day."), 6)}
+    ${sinceCard(l.since, `Line ${esc(l.line)}`)}
     ${card("Disruptions on this line", "Last 30 days", incidentTable(l.incidents.map((r) => ({ ...r, sudden: 0 }))), 12)}
   </div>`;
+  drawSince(l.since);
   const lx = (s, k) => `${k}·${s.name}`, stops = l.stops.map((s, k) => ({ ...s, x: lx(s, k) })), maxArr = Math.max(3, d3.max(stops, (s) => (s.arr ?? 0) / 60) ?? 3);
   if (l.stops.some((s) => s.n)) draw("c-stops", { height: 260, marginBottom: 90, marginRight: 40, x: { type: "band", domain: stops.map((s) => s.x), tickRotate: -40, label: null, tickFormat: (v) => short(18)(v.split("·")[1]) }, y: { domain: [0, 100], grid: true, label: "%" }, marks: [
     Plot.barY(stops.filter((s) => s.n), { x: "x", y: "pct", fill: (s) => (s.pct >= 90 ? "#3ddc97" : s.pct >= 75 ? "#ffd23f" : "#ff4d4d"), tip: true, title: (s) => `${s.name}: ${s.pct} % on time · average ${mins(s.arr)} · ${s.n} arrivals` }),

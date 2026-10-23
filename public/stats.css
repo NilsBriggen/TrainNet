@@ -87,6 +87,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 28px 24px 40px; }
 .type-facts b { color: var(--text); }
 .type-lines { display: flex; flex-wrap: wrap; gap: 4px; }
 .type-lines .badge { font-size: 11px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.mini { margin: 4px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); }
+@media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
 /* Plot tooltips in the page's dark theme */
 .chart [aria-label="tip"] { color: var(--text); }
 .chart [aria-label="tip"] path { fill: #0d1834; stroke: rgba(120, 150, 220, 0.35); }
