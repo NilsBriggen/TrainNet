@@ -4,7 +4,7 @@ import { EVU, formationFor, type Unit } from "./details";
 import type { Day, Trip } from "./gtfs";
 
 const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX|IR|RE|PE)$/;
-let running: string | null = null; // day version being crawled
+let latest = "", busy = false, last = 0; // newest day version asked for; a crawl running; when the last one started
 
 /** Stop indexes a unit runs between (it may only cover part of the trip when trains split or join). */
 export function unitSpan(trip: Trip, stationUic: (st: number) => string, u: Pick<Unit, "from" | "to">) {
@@ -13,9 +13,20 @@ export function unitSpan(trip: Trip, stationUic: (st: number) => string, u: Pick
   return [a, b > a ? b : uics.length - 1] as const;
 }
 
+/**
+ * Called every 10 min; crawls at most hourly. Formations get published through the day, so each pass asks again for
+ * what wasn't there (a "none" after 4 h) and records what visitors looked up meanwhile. A new day stops an older crawl.
+ */
 export async function crawlFleet(d: Day) {
-  if (running === d.version) return;
-  running = d.version;
+  const fresh = latest !== d.version;
+  latest = d.version;
+  if (busy || (!fresh && Date.now() - last < 3600_000)) return;
+  busy = true;
+  last = Date.now();
+  try { await crawl(d); } finally { busy = false; }
+}
+
+async function crawl(d: Day) {
   // "not published" or already recorded today, also before a restart: never asked again.
   // A formation a visitor looked up is in the cache but not yet recorded: the crawl records it without a new request.
   const keys = (status: string, since = 0) => new Set((db.query("SELECT key FROM formation_cache WHERE date = ? AND status = ? AND t > ?").all(d.date, status, since) as { key: string }[]).map((r) => r.key));
@@ -31,7 +42,7 @@ export async function crawlFleet(d: Day) {
   console.log(`[fleet] crawling ${todo.size} formations for ${d.date}`);
   let n = 0, units = 0;
   for (const [k, trip] of todo) {
-    if (running !== d.version) return; // a new day started meanwhile
+    if (latest !== d.version) return; // a new day started meanwhile
     const { status, f } = await formationFor(trip, { background: true }); // waits for slots visitors don't need
     if (status === "budget") return console.log(`[fleet] stopped at ${n}/${todo.size}: the day's share of the formation quota is used`);
     if (!cached.has(k)) await Bun.sleep(1500); // spread out, so a visitor rarely meets a full minute

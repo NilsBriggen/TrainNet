@@ -36,6 +36,7 @@ async function refresh() {
   try { maintain(); } catch (e: any) { console.error(`[record] ${e.message}`); }
   // yesterday's official actual data, published next morning (hourly at most; the dev instance leaves it to production)
   if (!LIVE_FROM) importRecentDays(db).catch((e) => console.error(`[history] ${e.message}`));
+  if (!LIVE_FROM && day) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // hourly; it skips what's known
   if (loading || day?.date === date) return;
   loading = true;
   try {
@@ -45,7 +46,7 @@ async function refresh() {
     resetRealtime(day);
     await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`));
     await loadSbbData().catch((e) => console.error(`[sbbdata] ${e.message}`)); // weekly; before the crawl, which names unit types
-    if (!LIVE_FROM) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // runs in the background for about an hour
+    if (!LIVE_FROM) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // the new day's first pass, right away
   } catch (e: any) {
     console.error(`[gtfs] ${e.message}`); // keep serving the previous day, retry next check
   } finally {
