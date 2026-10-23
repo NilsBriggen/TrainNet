@@ -25,9 +25,11 @@ async function api(p, missingOk = false) {
     const r = await fetch(`/api/stats/${p}`).catch(() => null);
     if (r?.ok) return r.json();
     if (r?.status === 404 && missingOk) return null;
-    if (r && ![502, 503, 504].includes(r.status) || attempt >= 6) throw new Error(r ? `HTTP ${r.status}` : "no connection");
+    // while the container restarts the proxy answers 404 (no backend) or 502: on pages that always exist, that means "wait"
+    if ((r && ![404, 502, 503, 504].includes(r.status)) || attempt >= 6) throw new Error(r ? `HTTP ${r.status}` : "no connection");
     const wait = Math.min(20, Number(r?.headers.get("retry-after")) || 5);
     if (!main.querySelector(".kpis")) main.innerHTML = `<div class="loading">The server is restarting or loading today's timetable. Retrying in ${wait} s…</div>`;
+    else if (!main.querySelector(".refresh-note")) main.insertAdjacentHTML("afterbegin", `<div class="callout refresh-note">The server is restarting. Showing the last data; retrying…</div>`);
     await new Promise((res) => setTimeout(res, wait * 1000));
   }
 }
