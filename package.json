@@ -1,0 +1,12 @@
+{
+  "name": "trainnet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun server/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "protobufjs": "7.6.6"
+  }
+}

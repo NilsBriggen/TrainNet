@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>TrainNet — Stats</title>
+  <meta name="description" content="Punctuality, incidents, timetable records and the trainsets behind every Swiss long-distance train.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="stats.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js" integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.16/dist/plot.umd.min.js" integrity="sha384-XzQ+KW4LBWHv6FLjiPA1vjDz//oGlY8We4XROgpir5jHgg2+Qvo/6fT5TjbnqyYi" crossorigin="anonymous"></script>
+</head>
+<body class="stats-page">
+  <header class="topbar">
+    <a class="brand" href="/" title="Live map">
+      <svg class="mark" viewBox="0 0 40 20" aria-hidden="true"><path d="M3 10a7 7 0 0 1 7-7h18l9 7-9 7H10a7 7 0 0 1-7-7z"/></svg>
+      <span>TrainNet</span>
+    </a>
+    <nav class="tabs-nav" aria-label="Stats sections">
+      <a href="#/" data-nav="overview">Overview</a>
+      <a href="#/fleet" data-nav="fleet">Fleet</a>
+      <a href="#/incidents" data-nav="incidents">Incidents</a>
+    </nav>
+    <div class="search" role="search">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 13l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="q" type="search" placeholder="Train, line, station or trainset (502-229)" autocomplete="off" spellcheck="false" aria-label="Search" aria-controls="results">
+      <ul id="results" role="listbox" hidden></ul>
+    </div>
+    <a class="maplink" href="/">Live map →</a>
+  </header>
+  <main id="page" aria-live="polite"><div class="loading">Loading…</div></main>
+  <footer class="foot">Data: opentransportdata.swiss (timetable, GTFS-RT, alerts, formation, occupancy forecast) · track geometry © OpenStreetMap contributors · punctuality = arrival less than 3 min late, not passenger-weighted</footer>
+  <script type="module" src="stats.js"></script>
+</body>
+</html>

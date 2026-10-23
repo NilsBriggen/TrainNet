@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>TrainNet — live Swiss trains</title>
+  <meta name="description" content="Every Swiss train, live, on a map.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="anonymous">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="map" role="application" aria-label="Live map of trains in Switzerland"></div>
+  <div id="vignette" aria-hidden="true"></div>
+
+  <div id="loading" aria-live="polite">
+    <svg class="mark" viewBox="0 0 40 20" aria-hidden="true"><path d="M3 10a7 7 0 0 1 7-7h18l9 7-9 7H10a7 7 0 0 1-7-7z"/></svg>
+    <span>Loading the timetable…</span>
+  </div>
+
+  <header id="bar" class="ui">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 40 20" aria-hidden="true"><path d="M3 10a7 7 0 0 1 7-7h18l9 7-9 7H10a7 7 0 0 1-7-7z"/></svg>
+      <span>TrainNet</span>
+    </div>
+    <div class="search" role="search">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 13l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="q" type="search" placeholder="Search station or train" autocomplete="off" spellcheck="false" aria-label="Search station or train" aria-controls="results">
+      <kbd>⌘K</kbd>
+      <ul id="results" role="listbox" hidden></ul>
+    </div>
+    <div class="stats">
+      <span id="live" class="dot" title="Live feed"></span>
+      <span id="clock" class="mono"></span>
+      <span class="sep"></span>
+      <span id="status-text">—</span>
+      <span id="issues"></span>
+      <svg id="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-label="Punctuality over the last two hours"><path class="area"/><path class="line"/></svg>
+      <a class="icon" href="/stats" title="Stats" aria-label="Stats"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9M10 16V4M16 16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></a>
+      <button id="zen" class="icon" title="Zen mode (Z)" aria-label="Zen mode"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    </div>
+  </header>
+
+  <nav id="chips" class="ui" aria-label="Train categories">
+    <button data-cat="long" style="--c:#ff3d5a">Long distance</button>
+    <button data-cat="ir" style="--c:#ff9f1c">InterRegio</button>
+    <button data-cat="re" style="--c:#2ee6a6">RegioExpress</button>
+    <button data-cat="reg" style="--c:#5cc8ff">Regional</button>
+    <button data-cat="s" class="rainbow">S-Bahn</button>
+    <button data-cat="priv" style="--c:#c792ff">Private</button>
+    <button data-cat="pe" style="--c:#ffd166">Panorama</button>
+    <span class="gap"></span>
+    <button data-cat="delays" style="--c:#ffd23f">Delays</button>
+  </nav>
+
+  <div id="tip" hidden></div>
+
+  <aside id="panel" class="ui" hidden aria-live="polite">
+    <button id="close" class="icon" aria-label="Close"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <div id="panel-body"></div>
+  </aside>
+
+  <footer id="credits" class="ui">
+    <a href="https://opentransportdata.swiss" target="_blank" rel="noopener">opentransportdata.swiss</a> ·
+    <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> ·
+    Natural Earth · Relief © swisstopo
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
