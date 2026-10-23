@@ -102,7 +102,7 @@ button.pill:hover, button.pill:focus-visible { background: color-mix(in srgb, va
 .chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: rgba(61, 220, 151, 0.12); color: var(--ok); }
 .chip.late { background: rgba(255, 210, 63, 0.14); color: var(--late); }
 .chip.very-late, .chip.off { background: rgba(255, 77, 77, 0.14); color: var(--very-late); }
-.late { color: var(--late); } .very-late { color: var(--very-late); }
+.late { color: var(--late); } .very-late { color: var(--very-late); } .standing { color: #ff9f5a; }
 .progress { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); margin: 6px 0 12px; overflow: hidden; }
 .progress i { display: block; height: 100%; width: calc(var(--p) * 100%); background: var(--line); border-radius: 2px; transition: width 1s linear; }
 .actions { display: flex; gap: 6px; margin: 0 0 6px; }
@@ -138,6 +138,8 @@ a.inline { color: var(--accent); text-decoration: none; }
 .arrow { color: var(--dim); }
 .banner { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; border: 1px solid rgba(255, 77, 77, 0.35); background: rgba(255, 77, 77, 0.09); color: var(--text); border-radius: 10px; padding: 9px 12px; margin: 6px 0 10px; font: inherit; }
 button.banner { cursor: pointer; }
+.banner.quiet { border-color: color-mix(in srgb, #ff9f5a 30%, transparent); background: color-mix(in srgb, #ff9f5a 7%, transparent); }
+.banner.quiet strong { color: #ff9f5a; }
 button.banner:hover { background: rgba(255, 77, 77, 0.15); }
 .banner strong { color: var(--very-late); font-weight: 600; }
 .banner span { color: var(--muted); font-size: 12.5px; }

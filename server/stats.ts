@@ -116,7 +116,7 @@ function today(d: Day) {
       .map((r) => ({ ...station(d, r.uic), n: r.n, avg: r.avg })),
     hotspots: hot.map((r) => ({ a: station(d, r.ua), b: station(d, r.ub), n: r.n, gain: r.gain })).filter((r) => r.a && r.b),
     cancelledByLine: all(`SELECT line, sum(cancelled) n FROM trip_day WHERE date = ? GROUP BY line HAVING n > 0 ORDER BY n DESC LIMIT 12`, date),
-    incidents: all(`SELECT id, kind, sev_max, sudden, since, first_seen, last_seen, h, why FROM alert_log WHERE last_seen >= ? AND sev_max >= 2 ORDER BY coalesce(since, first_seen)`, base),
+    incidents: all(`SELECT id, kind, cause, sev_max, sudden, since, first_seen, last_seen, h, why, d FROM alert_log WHERE last_seen >= ? AND sev_max >= 2 ORDER BY coalesce(since, first_seen)`, base),
   };
 }
 
@@ -359,7 +359,7 @@ export function lineStats(d: Day, name: string) {
 // ---------- incidents ----------
 export function incidents(d: Day) {
   return cached(`incidents:${d.version}`, 60, () => {
-    const rows = all(`SELECT id, kind, cause, sev_max, sudden, since, first_seen, last_seen, h, why, stations, lines FROM alert_log
+    const rows = all(`SELECT id, kind, cause, sev_max, sudden, since, first_seen, last_seen, h, why, d, stations, lines FROM alert_log
       WHERE first_seen >= ? ORDER BY first_seen DESC`, Date.now() / 1000 - 30 * 86400).map((r) => ({ ...r, stations: JSON.parse(r.stations), lines: JSON.parse(r.lines) }));
     const spots = new Map<string, number>();
     for (const r of rows) if (r.sev_max >= 2) for (const u of r.stations) spots.set(u, (spots.get(u) ?? 0) + 1);

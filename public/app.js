@@ -1,10 +1,11 @@
 import { applyDelays, atDistance, cumStops, cut, locate, slice, unpackPath } from "./position.js";
+import { routeStyle } from "./colors.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const hhmm = (t) => new Date(day.base + t * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" });
-const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX)$/;
 const SEV = { 1: "#5a6b8c", 2: "#ffb547", 3: "#ff4d4d" };
+const STANDING = "#ff9f5a"; // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const SEV_NAME = { 1: "Planned", 2: "Limited service", 3: "Interrupted" };
 const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", other: "Disruption" };
 const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
@@ -16,17 +17,6 @@ const ICON = {
   wr: `<svg viewBox="0 0 20 20"><path d="M6 3v6a2 2 0 0 0 4 0V3M8 9v8M14 3c-2 1-2 5-2 7h2v7"/></svg>`,
 };
 
-function routeStyle([name, cat, agency]) {
-  if (LONG.test(cat)) return { c: "#ff3d5a", s: 1, glow: 1, cat: "long" };
-  if (cat === "IR") return { c: "#ff9f1c", s: 0.85, glow: 0, cat: "ir" };
-  if (cat === "PE") return { c: "#ffd166", s: 0.85, glow: 0, cat: "pe" };
-  if (cat === "S" || cat === "SN") {
-    const n = parseInt(name.replace(/\D/g, ""), 10) || name.length;
-    return { c: `hsl(${(n * 67) % 360} 80% 68%)`, s: 0.65, glow: 0, cat: "s" };
-  }
-  if (cat === "RE") return { c: "#2ee6a6", s: 0.85, glow: 0, cat: "re" };
-  return agency === "11" ? { c: "#5cc8ff", s: 0.65, glow: 0, cat: "reg" } : { c: "#c792ff", s: 0.65, glow: 0, cat: "priv" };
-}
 
 let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = [], paths = [], segIndex = new Map();
 const expCache = new Map(), routeCache = new Map(), shown = new Map(); // trip -> expected times / track model / eased distance
@@ -36,7 +26,8 @@ let follow = false, zen = false;
 const hidden = new Set(); // chip keys switched off
 try { for (const k of JSON.parse(localStorage.getItem("trainnet.hidden") ?? "[]")) hidden.add(k); } catch {}
 
-const now = () => (Date.now() - day.base) / 1000;
+let clockSkew = 0; // server minus this device, from the Date header: a phone minutes off would shift every train
+const now = () => (Date.now() + clockSkew - day.base) / 1000;
 function expected(i) {
   let e = expCache.get(i);
   if (!e) expCache.set(i, (e = applyDelays(day.trips[i][3], live.delays[i]?.u)));
@@ -67,7 +58,7 @@ async function fetchDay() {
 }
 
 function indexDay() {
-  styles = day.routes.map(routeStyle);
+  styles = day.routes.map((r) => routeStyle(...r));
   byStation = day.stations.map(() => []);
   day.trips.forEach((t, i) => {
     for (let p = 0; p < t[3].length / 3; p++) byStation[t[3][p * 3]].push([i, p]);
@@ -81,20 +72,35 @@ function indexDay() {
   for (const m of [expCache, routeCache, shown, details]) m.clear(); // trip indexes changed
 }
 
+let polling = false, alertsV = "";
 async function pollLive() {
-  const j = await fetch("/api/live").then((r) => r.json()).catch(() => null);
-  if (!j?.v) return;
-  if (j.v !== day.v) {
-    day = await fetchDay();
-    indexDay();
-    setStatic();
+  if (polling || document.hidden) return; // a background tab doesn't need trains; the next visible tick catches up
+  polling = true;
+  try {
+    const r = await fetch("/api/live").catch(() => null), j = await r?.json().catch(() => null);
+    if (!j?.v) return;
+    const server = Date.parse(r.headers.get("date") ?? "");
+    if (server) { const skew = server - Date.now(); clockSkew = Math.abs(skew) > 3000 ? skew : 0; }
+    if (j.v !== day.v) {
+      day = await fetchDay();
+      indexDay();
+      setStatic();
+    }
+    // alerts (geometry, texts) change rarely: fetched only when their version moves, from a URL that caches for good
+    if (j.av !== alertsV) {
+      const a = await fetch(`/api/alerts?v=${encodeURIComponent(j.av)}`).then((x) => x.json()).catch(() => null);
+      if (a) { live.alerts = a; alertsV = j.av; }
+    }
+    live = { ...j, alerts: live.alerts };
+    expCache.clear();
+    setAlerts();
+    drawSpark();
+    renderPanel();
+  } finally {
+    polling = false;
   }
-  live = j;
-  expCache.clear();
-  setAlerts();
-  drawSpark();
-  renderPanel();
 }
+document.addEventListener("visibilitychange", () => !document.hidden && day && pollLive());
 
 // ---------- map ----------
 const dayPromise = fetchDay(); // in parallel with the map style and relief tiles, not after them
@@ -158,9 +164,10 @@ function setAlerts() {
   renderIssues();
 }
 const trainScoped = (a) => a.train === 1; // decided once on the server (markSudden)
-const stuckTrains = () => Object.entries(live.delays).filter(([, v]) => v.x && !v.c).map(([i]) => +i);
+const standingTrains = () => Object.entries(live.delays).filter(([, v]) => v.x && !v.c).map(([i]) => +i);
+const standing = (i) => !!live.delays[i]?.x && !live.delays[i]?.c;
 const whyText = (a) => (a.why ? a.why[0].toUpperCase() + a.why.slice(1) : KIND[a.kind] ?? "Disruption");
-const trainIssue = (i) => (incidentTrains.has(i) ? whyText(incidentTrains.get(i)) : live.delays[i]?.x && !live.delays[i]?.c ? "Unscheduled stop" : "");
+const trainIssue = (i) => (incidentTrains.has(i) ? whyText(incidentTrains.get(i)) : "");
 
 /** Point halfway along a flat [lon,lat,...] line. */
 function midpoint(flat) {
@@ -182,10 +189,11 @@ function midpoint(flat) {
 function renderIssues() {
   const n = [0, 0, 0, 0];
   for (const a of live.alerts) n[a.sev]++;
-  const now_ = live.alerts.filter((a) => a.sudden).length + stuckTrains().length;
+  const now_ = live.alerts.filter((a) => a.sudden).length, st = standingTrains().length; // reported incidents only; standing is a guess
   $("issues").innerHTML = (now_ ? `<button class="pill alarm" data-issues="now" style="--c:${SEV[3]}">${now_} incident${now_ > 1 ? "s" : ""}</button>` : "")
     + [[3, "interrupted"], [2, "limited"], [1, "planned"]].filter(([s]) => n[s])
-      .map(([s, w]) => `<button class="pill" data-issues="${s}" style="--c:${SEV[s]}">${n[s]} ${w}</button>`).join("");
+      .map(([s, w]) => `<button class="pill" data-issues="${s}" style="--c:${SEV[s]}">${n[s]} ${w}</button>`).join("")
+    + (st ? `<button class="pill quiet" data-issues="standing" style="--c:${STANDING}" title="Delay rising while heading for the same stop: probably standing. An inference, not a report.">${st} standing</button>` : "");
   for (const b of $("issues").children) b.onclick = () => open("issues", b.dataset.issues);
 }
 
@@ -195,7 +203,7 @@ function drawSpark() {
   const W = 120, H = 26, x = (k) => (k / (st.length - 1)) * W;
   const maxRun = Math.max(...st.map((s) => s[1]), 1);
   const area = st.map((s, k) => `${k ? "L" : "M"}${x(k).toFixed(1)},${(H - (s[1] / maxRun) * (H - 4)).toFixed(1)}`).join("") + `L${W},${H}L0,${H}Z`;
-  const pct = (s) => (s[1] ? 1 - (s[2] + s[3]) / s[1] : 1);
+  const pct = (s) => (s[5] ? 1 - s[2] / s[5] : 1); // late of the running trains with realtime
   const lo = Math.min(0.8, ...st.map(pct));
   const lineD = st.map((s, k) => `${k ? "L" : "M"}${x(k).toFixed(1)},${(2 + (1 - (pct(s) - lo) / (1 - lo)) * (H - 4)).toFixed(1)}`).join("");
   $("spark").querySelector(".area").setAttribute("d", area);
@@ -221,7 +229,7 @@ function trainFeatures(dt, ts, withTrails) {
   const t = now(), feats = [], trails = [], alarms = [], z = map.getZoom();
   const L = Math.min(15000, Math.max(400, (48 * 107160) / 2 ** z)); // ~48 px of track behind each train
   const blinkOn = CALM || ts % 1000 < 550;
-  let running = 0, late = 0;
+  let running = 0, observed = 0, late = 0;
   const dimOthers = selected?.type === "train";
   for (let i = 0; i < day.trips.length; i++) {
     const s = day.trips[i][3], style = styles[day.trips[i][0]];
@@ -230,16 +238,16 @@ function trainFeatures(dt, ts, withTrails) {
     if (!r) continue;
     const { p, e, q, dist } = r;
     const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && selected.idx === i;
-    const flagged = !cancelled && (live.delays[i]?.x || incidentTrains.has(i));
-    running++;
-    if (d >= 180 && !cancelled) late++;
-    const o = cancelled ? 0.3 : dimOthers && !sel ? 0.4 : 1, showDelay = CHIP_DELAYS() && !cancelled;
+    const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
+    if (!cancelled) running++;
+    if (!cancelled && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
+    const o = cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1, showDelay = CHIP_DELAYS() && !cancelled;
     if (flagged) alarms.push(point([q.lon, q.lat], {}));
     feats.push(point([q.lon, q.lat], {
       i, c: style.c, s: style.s, g: style.glow, r: q.bearing - 90,
-      // a dark outline separates the body from track and trail; flagged trains blink red
-      h: sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18",
-      hw: sel ? 2.2 : flagged ? 2.4 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9,
+      // a dark outline separates the body from track and trail; reported incidents blink red, inferred standing is a steady orange line
+      h: sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : still ? STANDING : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18",
+      hw: sel ? 2.2 : flagged ? 2.4 : still ? 1.6 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9,
       o, z: flagged ? 3 : style.glow ? 2 : style.s > 0.7 ? 1 : 0,
     }, i));
     if (withTrails && !cancelled && !p.at && (style.glow || z >= 8)) {
@@ -250,7 +258,7 @@ function trainFeatures(dt, ts, withTrails) {
       }
     }
   }
-  const pct = running ? Math.round((1 - late / running) * 100) : 100;
+  const pct = observed ? Math.round((1 - late / observed) * 100) : 100;
   $("status-text").textContent = `${running.toLocaleString("de-CH")} trains · ${pct} % on time`;
   return { trains: fc(feats), trails: withTrails ? fc(trails) : null, alarms };
 }
@@ -411,7 +419,7 @@ function trainTip(i) {
   const [route, head, num] = day.trips[i];
   const ex = expected(i), p = locate(ex.stops, now()), d = p ? ex.delay[p.b] : 0, pl = p ? platform(i, p.b) : "", issue = trainIssue(i);
   return `${badge(route)} <span>${esc(num)}</span><span class="sub">→ ${esc(head)}</span>${pl ? `<span class="sub">Pl. ${esc(pl)}</span>` : ""}`
-    + (live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : delayText(d)) + (issue ? `<span class="very-late">${esc(issue)}</span>` : "");
+    + (live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : delayText(d)) + (issue ? `<span class="very-late">${esc(issue)}</span>` : standing(i) ? `<span class="standing">probably standing</span>` : "");
 }
 function alertTip(id) {
   const a = live.alerts.find((x) => x.id === id);
@@ -531,12 +539,17 @@ function setUrl() {
 }
 
 // ---------- panel ----------
-const details = new Map(); // trip idx -> "loading" | { formation, occupancy }
+const details = new Map(); // trip idx -> "loading" | { formation, formationStatus, occupancy, at }
+const RETRY = { busy: 20_000, window: 120_000, error: 120_000, offline: 60_000 }; // statuses worth asking again, and when
 function loadDetails(i) {
-  if (details.has(i)) return;
+  const d = details.get(i);
+  if (d === "loading" || (d && !(Date.now() - d.at > (RETRY[d.formationStatus] ?? Infinity)))) return;
   details.set(i, "loading");
-  fetch(`/api/train/${i}`).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((x) => {
-    details.set(i, x ?? { formation: null, occupancy: null });
+  // the URL carries the day version: trip indexes change daily and the response is cached for minutes
+  fetch(`/api/train/${i}?v=${encodeURIComponent(day.v)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((x) => {
+    const r = x ?? { formation: null, occupancy: null, formationStatus: "offline" };
+    if (r.formationStatus === "busy") RETRY.busy = Math.max(5, r.retryAfter ?? 20) * 1000;
+    details.set(i, { ...r, at: Date.now() });
     if (selected?.type === "train" && selected.idx === i) renderPanel();
   });
 }
@@ -546,7 +559,7 @@ function open(type, idx, fly = false) {
   selected = { type, idx, tab: "dep" };
   const a = type === "alert" ? live.alerts.find((x) => x.id === idx) : null;
   $("panel").hidden = false;
-  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : a ? (a.sudden ? SEV[3] : SEV[a.sev]) : type === "issues" ? SEV[idx === "now" ? 3 : idx] : "#5cc8ff");
+  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : a ? (a.sudden ? SEV[3] : SEV[a.sev]) : type === "issues" ? (idx === "standing" ? STANDING : SEV[idx === "now" ? 3 : idx]) : "#5cc8ff");
   if (type !== "train") map.getSource("route").setData(fc([]));
   setUrl();
   renderPanel();
@@ -611,11 +624,13 @@ function trainHtml(i) {
   const chip = cancelled ? `<span class="chip off">Cancelled</span>` : d >= 60 ? `<span class="chip ${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)} min</span>` : `<span class="chip">On time</span>`;
   const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}` : t < sched[2] ? `Departs ${hhmm(sched[2])}` : "Arrived";
   const prog = !p ? (t < sched[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1);
-  const inc = incidentTrains.get(i), stuckSince = !cancelled && live.delays[i]?.x;
+  const inc = incidentTrains.get(i), stuckSince = !cancelled && standing(i) && live.delays[i].x;
   const banner = inc ? `<button class="banner" data-alert="${inc.id}"><strong>${esc(whyText(inc))}</strong><span>${esc(inc.h)} · Details →</span></button>`
-    : stuckSince ? `<div class="banner"><strong>Unscheduled stop</strong><span>Its delay has been rising since ${clock(stuckSince)}. The train is probably standing or crawling.</span></div>` : "";
+    : stuckSince ? `<div class="banner quiet"><strong>Probably standing</strong><span>Its expected delay at the next stop has been rising since ${clock(stuckSince)}. That's our inference from the forecasts, not a report.</span></div>` : "";
   let formation = "";
+  const why = FORMATION_WHY[extra.formationStatus];
   if (extra.formation === undefined) formation = `<h3>Formation</h3><div class="sub">Loading…</div>`;
+  else if (!extra.formation && why) formation = `<h3>Formation</h3><div class="sub">${why(extra)}</div>`;
   else if (extra.formation) {
     const f = extra.formation, facts = [];
     const seats = (k) => f.filter((c) => c.c.includes(k)).length;
@@ -648,6 +663,16 @@ function trainHtml(i) {
     <h3>Stops</h3><ol class="stops stem" style="--p:${prog.toFixed(4)}">${p && !cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>`;
 }
 
+const FORMATION_WHY = {
+  none: () => "Not published by the operator for this train.",
+  unsupported: () => "This operator doesn't publish coach formations.",
+  window: () => "Looked up from an hour before departure until two hours after arrival.",
+  busy: (x) => `Lookups are busy right now (shared request quota). Retrying in ${Math.max(5, x.retryAfter ?? 20)} s…`,
+  budget: () => "Today's formation lookups are used up (daily request quota). They reset at midnight.",
+  error: () => "The formation service didn't answer. Trying again in a couple of minutes.",
+  offline: () => "Couldn't reach the server. Trying again in a minute.",
+};
+
 function stationHtml(si) {
   const [name] = day.stations[si], t = now(), arr = selected.tab === "arr";
   const rows = byStation[si].flatMap(([i, p]) => {
@@ -670,7 +695,7 @@ function stationHtml(si) {
 /** One clickable train row: time, line, destination, platform, state. */
 function tripRow(i, sched, ex, where, pf = "") {
   const issue = trainIssue(i);
-  const state = live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : issue ? `<span class="very-late">${esc(issue)}</span>` : delayText(ex - sched);
+  const state = live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : issue ? `<span class="very-late">${esc(issue)}</span>` : delayText(ex - sched) + (standing(i) ? ` <span class="standing" title="Probably standing (inferred)">●</span>` : "");
   return `<li data-trip="${i}" tabindex="0"><span>${hhmm(sched)}</span>${badge(day.trips[i][0])}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
 }
 /** Trains of these trips/lines that are running right now, with their current delay. */
@@ -707,13 +732,15 @@ function alertPanelHtml(id) {
 }
 
 function issuesHtml(which) {
+  if (which === "standing") {
+    const rows = runningRows(standingTrains()).join("");
+    return `<h2>Probably standing</h2><div class="sub">Trains whose expected delay at their next stop keeps rising. An inference from the forecasts, not a reported incident: often a short wait for a connection or a slot.</div>
+      ${rows ? `<ol class="stops deps">${rows}</ol>` : `<div class="empty">None right now.</div>`}`;
+  }
   const list = which === "now" ? live.alerts.filter((a) => a.sudden) : live.alerts.filter((a) => a.sev === +which);
   const items = list.map((a) => `<li data-alert="${a.id}" tabindex="0" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"><span class="sev-dot"></span>
     <div><strong>${esc(a.h)}</strong><small>${esc(whyText(a))}${a.from ? ` · since ${clock(a.from)}` : ""}</small></div></li>`).join("");
-  const stuck = which === "now" ? runningRows(stuckTrains()).join("") : "";
   const title = which === "now" ? "Incidents right now" : SEV_NAME[which];
-  return `<h2>${title}</h2><div class="sub">${list.length} disruption${list.length === 1 ? "" : "s"}${which === "now" ? ` · ${stuckTrains().length} stuck train${stuckTrains().length === 1 ? "" : "s"}` : ""}</div>
-    ${items ? `<ol class="issues">${items}</ol>` : ""}
-    ${stuck ? `<h3>Stuck trains</h3><ol class="stops deps">${stuck}</ol>` : ""}
-    ${!items && !stuck ? `<div class="empty">Nothing right now.</div>` : ""}`;
+  return `<h2>${title}</h2><div class="sub">${list.length} disruption${list.length === 1 ? "" : "s"}</div>
+    ${items ? `<ol class="issues">${items}</ol>` : `<div class="empty">Nothing right now.</div>`}`;
 }
