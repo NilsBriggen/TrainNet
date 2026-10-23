@@ -128,6 +128,8 @@ export function serviceDays(days: string[]) {
 
 export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   const t0 = Date.now();
+  // shortcut: on the December change Sunday the new year's zip doesn't know Saturday's services, so trains still running
+  // after midnight from the old timetable are missing for those few hours; reading both zips that day would fix it
   const { url, name } = await latestResource(`timetable-${timetableYear(date)}-gtfs2020`);
   const zip = await download(url, name, "gtfs_");
 
