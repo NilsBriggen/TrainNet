@@ -17,7 +17,7 @@ const mins = (sec) => (sec == null ? "–" : `${sec >= 30 ? "+" : ""}${Math.roun
 const day = (date) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 
 /**
- * Stats JSON. While the server restarts (502/503/504, or no answer at all) it retries for about half a minute and says so,
+ * Stats JSON. While the server restarts (404/502/503/504 from the proxy, or no answer at all) it retries for up to two minutes and says so,
  * instead of failing the page. `missingOk`: a 404 means "unknown train/station", not an error.
  */
 async function api(p, missingOk = false) {
@@ -26,8 +26,8 @@ async function api(p, missingOk = false) {
     if (r?.ok) return r.json();
     if (r?.status === 404 && missingOk) return null;
     // while the container restarts the proxy answers 404 (no backend) or 502: on pages that always exist, that means "wait"
-    if ((r && ![404, 502, 503, 504].includes(r.status)) || attempt >= 6) throw new Error(r ? `HTTP ${r.status}` : "no connection");
-    const wait = Math.min(20, Number(r?.headers.get("retry-after")) || 5);
+    if ((r && ![404, 502, 503, 504].includes(r.status)) || attempt >= 15) throw new Error(r ? `HTTP ${r.status}` : "no connection");
+    const wait = Math.min(8, Number(r?.headers.get("retry-after")) || 5); // short steps: the timetable is usually back within ~30 s
     if (!main.querySelector(".kpis")) main.innerHTML = `<div class="loading">The server is restarting or loading today's timetable. Retrying in ${wait} s…</div>`;
     else if (!main.querySelector(".refresh-note")) main.insertAdjacentHTML("afterbegin", `<div class="callout refresh-note">The server is restarting. Showing the last data; retrying…</div>`);
     await new Promise((res) => setTimeout(res, wait * 1000));
