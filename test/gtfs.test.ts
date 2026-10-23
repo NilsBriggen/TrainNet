@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { serviceDays } from "../server/gtfs";
+import { serviceDays, throughRunning } from "../server/gtfs";
 
 // calendar.txt: service_id, mon … sun, start_date, end_date
 const cal = (id: string, week: string, start = "20251214", end = "20261212") => [id, ...week.split(""), start, end];
@@ -22,4 +22,16 @@ test("date exceptions add and remove services on top of the calendar", () => {
   exception(["EXTRA", "20261030", "1"]); // another day: ignored
   expect([...running[0]]).toEqual(["EXTRA"]);
   expect([...running[1]]).toEqual([]);
+});
+
+test("through-running links today's instances, on the link's own service days", () => {
+  const { running, calendar } = serviceDays(["2026-10-24", "2026-10-23"]);
+  calendar(cal("SAT", "0000010"));
+  const tripIndex = new Map([["IR2536|20261024", 0], ["IR2537|20261024", 1], ["IC5|20261023", 2], ["IC6|20261023", 3]]);
+  const t = throughRunning(["2026-10-24", "2026-10-23"], running, tripIndex);
+  const row = (from: string, to: string, type: string, svc: string) => ["8503000", "8503000", "", "", from, to, type, "", svc];
+  t.row(row("IR2536", "IR2537", "4", "SAT")); // runs Saturdays: linked for the 24th
+  t.row(row("IC5", "IC6", "4", "SAT")); // the 23rd is a Friday: not linked
+  t.row(row("IR2536", "IR2537", "2", "")); // a minimum transfer time, not a through train
+  expect(t.pairs).toEqual([0, 1]);
 });

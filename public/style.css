@@ -120,7 +120,9 @@ body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #credits {
 .actions a:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
 a.inline { color: var(--accent); text-decoration: none; }
 .unit-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.unit-row a { padding: 4px 9px; border-radius: 7px; border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.04); color: var(--muted); font-size: 12px; text-decoration: none; }
+.unit-row .unit { display: inline-flex; border-radius: 7px; border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.04); overflow: hidden; }
+.unit-row a { padding: 4px 8px; color: var(--muted); font-size: 12px; text-decoration: none; }
+.unit-row a + a { border-left: 1px solid var(--hairline); }
 .unit-row a b { color: var(--text); font-weight: 600; }
 .unit-row a:hover { background: rgba(255, 255, 255, 0.08); }
 
@@ -183,6 +185,11 @@ h3::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .coach.closed { opacity: 0.3; }
 .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px; }
 .facts span { display: inline-flex; align-items: center; gap: 5px; }
+.facts.hints { margin: 8px 0 2px; }
+.facts.hints span:not(:last-child)::after { content: "·"; margin-left: 14px; color: var(--dim); }
+.facts.hints span { gap: 0; }
+.through { display: flex; align-items: center; gap: 7px; width: 100%; margin: 6px 0; padding: 8px 10px; border-radius: 9px; border: 1px dashed var(--border); background: transparent; color: var(--muted); font-size: 12.5px; cursor: pointer; text-align: left; }
+.through:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
 .facts svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 .stops { list-style: none; margin: 0; padding: 0; position: relative; --p: 0; }

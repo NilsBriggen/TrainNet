@@ -7,6 +7,7 @@ import { buildRail } from "../scripts/rail";
 import { DATA_DIR } from "./gtfs";
 import { flushAll, initRecord, maintain, startDay } from "./record";
 import { crawlFleet } from "./fleet";
+import { loadSbbData, stationPax, useRegisterNames } from "./sbbdata";
 import * as stats from "./stats";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
@@ -20,6 +21,7 @@ let day: Day | undefined;
 let loading = false;
 let graph: Graph | null = null;
 initRecord(`${DATA_DIR}/stats.db`);
+useRegisterNames();
 
 const RAIL = `${DATA_DIR}/rail.json`;
 async function loadRail() {
@@ -39,6 +41,7 @@ async function refresh() {
     startDay(day); // stores the previous day's remaining finished trips first
     resetRealtime(day);
     await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`));
+    await loadSbbData().catch((e) => console.error(`[sbbdata] ${e.message}`)); // weekly; before the crawl, which names unit types
     if (!LIVE_FROM) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // runs in the background for about an hour
   } catch (e: any) {
     console.error(`[gtfs] ${e.message}`); // keep serving the previous day, retry next check
@@ -93,6 +96,9 @@ const server = Bun.serve({
     "/api/stats/station/:uic": (req) => statsJson(req, (d) => stats.stationStats(d, req.params.uic)),
     "/api/stats/line/:name": (req) => statsJson(req, (d) => stats.lineStats(d, decodeURIComponent(req.params.name))),
     "/stats": () => new Response(Bun.file(PUBLIC + "stats.html")),
+    "/api/pax": () => Response.json(Object.fromEntries(stationPax().map((r) => [r.uic, [r.daily, r.year]])), { headers: { "Cache-Control": "public, max-age=86400" } }),
+    "/api/stats/types": (req) => statsJson(req, stats.types),
+    "/api/stats/type/:cls": (req) => statsJson(req, (d) => stats.trainType(d, req.params.cls)),
     "/api/train/:idx": async (req) => {
       if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}`);
       const trip = day?.trips[Number(req.params.idx)];

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { astar, makeGraph, route, simplify, snap } from "../server/paths";
+import { astar, makeGraph, route, routeWith, simplify, snap } from "../server/paths";
 
 // square-ish graph: 0 -(east)- 1 -(north)- 2, and a direct diagonal 0 - 3 - 2 that is longer via a detour
 const nodes = [8.5, 47.0, 8.51, 47.0, 8.51, 47.01, 8.49, 47.02];
@@ -33,4 +33,15 @@ test("route rejects absurd detours caused by gaps in the data", () => {
   const nodes = [8.5, 47.0, 8.5, 47.5, 8.51, 47.01], edges = [0, 1, 1, 2];
   const gg = makeGraph(nodes, edges);
   expect(route(gg, [8.5, 47.0], [8.51, 47.01])).toBeNull();
+});
+
+test("tunnels and bridges come out as shares of the path, OSM pieces of one tunnel merged", () => {
+  // 5 nodes due east, ~760 m apart: open, tunnel "T" (two OSM ways), bridge
+  const nodes = [8.5, 47, 8.51, 47, 8.52, 47, 8.53, 47, 8.54, 47];
+  const gg = makeGraph(nodes, [0, 1, 1, 2, 2, 3, 3, 4], [], [0, 1, 1, 2], [-1, 0, 0, -1], ["T"]);
+  const r = routeWith(gg, [8.5, 47], [8.54, 47])!;
+  expect(r.t.map(([, , kind, name]) => [kind, name])).toEqual([[1, "T"], [2, ""]]);
+  expect(r.t[0][0]).toBeCloseTo(0.25, 2);
+  expect(r.t[0][1]).toBeCloseTo(0.75, 2);
+  expect(r.t[1][1]).toBeCloseTo(1, 2);
 });

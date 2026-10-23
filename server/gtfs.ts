@@ -26,6 +26,7 @@ export type Trip = {
   seq: number[]; // GTFS stop_sequence per stop, to match realtime updates
   plat: number[]; // index into Day.platforms per stop, 0 = unknown
   km: number[]; // cumulative track km at each stop (from our own geometry; straight line where unrouted)
+  hints: string; // HRDF attribute codes from trips.txt, e.g. "2 NF VR WR" (2nd class only, low floor, bikes: reservation, restaurant)
 };
 export type Day = {
   date: string; base: number;
@@ -95,6 +96,25 @@ const ymd = (date: string) => date.replaceAll("-", "");
 /** Delta-encode a path to ints at 1e-5° (gzips ~3x better than floats). */
 const packPath = (p: Path) => p.map((v, i) => Math.round(v * 1e5) - (i < 2 ? 0 : Math.round(p[i - 2] * 1e5)));
 
+/**
+ * Through-running ("stay seated", transfers.txt type 4): the train continues under another number.
+ * Feed it transfers rows; `pairs` collects [from trip index, to trip index] for the instances running on `days`.
+ */
+export function throughRunning(days: string[], running: Set<string>[], tripIndex: Map<string, number>) {
+  const pairs: number[] = [], keys = days.map(ymd);
+  return {
+    pairs,
+    row: (c: string[]) => {
+      if (c[6] !== "4") return;
+      keys.forEach((k, i) => {
+        if (c[8] && !running[i].has(c[8])) return; // the link has its own service days
+        const a = tripIndex.get(`${c[4]}|${k}`), b = tripIndex.get(`${c[5]}|${k}`);
+        if (a !== undefined && b !== undefined && a !== b) pairs.push(a, b);
+      });
+    },
+  };
+}
+
 /** Service ids running on each of `days`, fed row by row (calendar_dates.txt is ~290 MB, so it stays streamed). */
 export function serviceDays(days: string[]) {
   const keys = days.map(ymd), running = days.map(() => new Set<string>());
@@ -126,12 +146,12 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
 
   const shift = [0, (serviceBase(days[1]) - serviceBase(date)) / 1000];
   const trips: Trip[] = [], wanted = new Map<string, number[]>();
-  await eachRow(zip, "trips.txt", ([routeId, svc, id, head, num]) => {
+  await eachRow(zip, "trips.txt", ([routeId, svc, id, head, num, , , , hints]) => {
     const route = routeIndex.get(routeId);
     if (route === undefined) return;
     running.forEach((set, i) => {
       if (!set.has(svc)) return;
-      const idx = trips.push({ id, date: days[i], route, agency: routes[route][2], head, num, stops: [], seq: [], plat: [], km: [] }) - 1;
+      const idx = trips.push({ id, date: days[i], route, agency: routes[route][2], head, num, stops: [], seq: [], plat: [], km: [], hints: hints ?? "" }) - 1;
       wanted.set(id, [...(wanted.get(id) ?? []), idx]);
     });
   });
@@ -191,7 +211,9 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     tripIndex.set(`${t.id}|${ymd(t.date)}`, kept.push(t) - 1);
   });
   const segments = [...seg].flatMap((k) => [Math.floor(k / 100000), k % 100000]);
-  const paths = await segmentPaths(graph, segments, stations.map((s) => ({ uic: s[3], lon: s[1], lat: s[2] })), `${DATA_DIR}/paths.json`);
+  const through = throughRunning(days, running, tripIndex);
+  await eachRow(zip, "transfers.txt", through.row);
+  const { paths, structs } = await segmentPaths(graph, segments, stations.map((s) => ({ uic: s[3], lon: s[1], lat: s[2] })), `${DATA_DIR}/paths.json`);
   const segKm = new Map<number, number>();
   paths.forEach((p, k) => {
     const a = segments[k * 2], b = segments[k * 2 + 1], pts = p ?? [stations[a][1], stations[a][2], stations[b][1], stations[b][2]];
@@ -207,10 +229,13 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     }
   }
 
-  const base = serviceBase(date), version = `${date}_${name}_f4`; // deterministic per zip + date; bump the suffix when the payload shape changes (it is the ETag)
+  const hintSets = [""], hintIdx = new Map([["", 0]]);
+  const hintSet = (h: string) => hintIdx.get(h) ?? (hintIdx.set(h, hintSets.push(h) - 1), hintSets.length - 1);
+  const base = serviceBase(date), version = `${date}_${name}_f5`; // deterministic per zip + date; bump the suffix when the payload shape changes (it is the ETag)
   const json = Bun.gzipSync(JSON.stringify({
-    v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)),
-    trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0]),
+    v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)), structs, // tunnels and bridges per path
+    trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0, hintSet(t.hints)]),
+    hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));
   console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${(json.length / 1e6).toFixed(1)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   return { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,

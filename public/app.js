@@ -1,5 +1,6 @@
 import { applyDelays, atDistance, cumStops, locate, motion, slice, unpackPath } from "./position.js";
 import { routeStyle } from "./colors.js";
+import { HINTS } from "./hints.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -22,6 +23,9 @@ const ICON = {
 
 
 let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = [], paths = [], segIndex = new Map();
+const nextTrip = new Map(), prevTrip = new Map(); // through-running: the same train continues under another number
+let pax = {}; // station UIC -> [average daily passengers, year] (SBB stations only)
+const paxPromise = fetch("/api/pax").then((r) => r.json()).catch(() => ({}));
 const expCache = new Map(), routeCache = new Map(), shown = new Map(); // trip -> expected times / track model / eased distance
 let selected = null; // { type: "train" | "station" | "alert" | "issues", idx, tab? }
 let incidentTrains = new Map(), rippleAlerts = []; // trip -> its sudden alert; where sudden things happened
@@ -72,9 +76,13 @@ function indexDay() {
   paths = day.paths.map((p, k) => {
     const a = day.segments[k * 2], b = day.segments[k * 2 + 1];
     segIndex.set(segKey(a, b), k);
-    return p ? unpackPath(p) : straight(day.stations[a], day.stations[b]);
+    const path = p ? unpackPath(p) : straight(day.stations[a], day.stations[b]), total = path.cum[path.cum.length - 1];
+    // tunnels and bridges as metres along the stored path (min → max station)
+    path.structs = (day.structs?.[k] ?? []).map(([f0, f1, kind, name]) => ({ d0: f0 * total, d1: f1 * total, kind, name }));
+    return path;
   });
-  for (const m of [expCache, routeCache, shown, details]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, details, nextTrip, prevTrip]) m.clear(); // trip indexes changed
+  for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
 let polling = false, alertsV = "";
@@ -162,11 +170,23 @@ function setStatic() {
     const k = segKey(t[3][p - 3], t[3][p]);
     count.set(k, (count.get(k) ?? 0) + 1);
   }
-  map.getSource("rail").setData(fc(paths.map((p, k) => {
-    const n = count.get(segKey(day.segments[k * 2], day.segments[k * 2 + 1])) ?? 0;
-    return line(p.pts, { w: n >= 150 ? 2 : n >= 40 ? 1 : 0 });
+  map.getSource("rail").setData(fc(paths.flatMap((p, k) => {
+    const n = count.get(segKey(day.segments[k * 2], day.segments[k * 2 + 1])) ?? 0, w = n >= 150 ? 2 : n >= 40 ? 1 : 0;
+    if (!p.structs.length) return [line(p.pts, { w, k: 0 })];
+    // cut the path at its tunnels and bridges: open track, tunnel, open track …
+    const total = p.cum[p.cum.length - 1], one = [{ path: p, reverse: false }], cum = [0, total], out = [];
+    let at = 0;
+    for (const x of p.structs) {
+      if (x.d0 > at) out.push(line(slice(one, cum, at, x.d0), { w, k: 0 }));
+      out.push(line(slice(one, cum, x.d0, x.d1), { w, k: x.kind, name: x.name, km: Math.round((x.d1 - x.d0) / 100) / 10 }));
+      at = x.d1;
+    }
+    if (at < total) out.push(line(slice(one, cum, at, total), { w, k: 0 }));
+    return out.filter((f) => f.geometry.coordinates.length > 1);
   })));
-  map.getSource("stations").setData(fc(st.map((s, i) => point(s.slice(1, 3), { i, name: s[0], n: s[4], hub: s[4] >= 400 ? 1 : 0 }, i))));
+  // size by passengers where SBB counts them (a busy station with few trains is still a big station), else by trains
+  const tier = (s) => { const p = pax[s[3]]?.[0]; return p ? (p >= 40000 ? 2 : p >= 2500 || s[4] >= 60 ? 1 : 0) : s[4] >= 400 ? 2 : s[4] >= 60 ? 1 : 0; };
+  map.getSource("stations").setData(fc(st.map((s, i) => { const t = tier(s); return point(s.slice(1, 3), { i, name: s[0], n: t === 2 ? Math.max(s[4], 400) : t ? Math.max(60, Math.min(s[4], 399)) : Math.min(s[4], 59), hub: t === 2 ? 1 : 0 }, i); })));
 }
 
 function setAlerts() {
@@ -235,6 +255,17 @@ function drawSpark() {
   $("spark").setAttribute("aria-label", `Punctuality over the last two hours, now ${Math.round(pct(st[st.length - 1]) * 100)}%`);
 }
 
+/** Is trip i, `d` metres along its route, inside a tunnel? */
+function inTunnel(i, d) {
+  const { route, cum } = tripRoute(i);
+  let k = 0;
+  while (k < route.length - 1 && cum[k + 1] <= d) k++;
+  const { path, reverse } = route[k];
+  if (!path.structs.length) return false;
+  const x = reverse ? cum[k + 1] - d : d - cum[k]; // metres along the stored path
+  return path.structs.some((s) => s.kind === 1 && x >= s.d0 && x <= s.d1);
+}
+
 /** Position of a trip eased along its own track (never across it) so delay corrections roll instead of jump. */
 function positionOf(i, t, dt) {
   const e = expected(i), p = locate(e.stops, t);
@@ -266,7 +297,7 @@ function trainFeatures(dt, ts, withTrails) {
     const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
     if (!cancelled) running++;
     if (!cancelled && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
-    const o = cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1, showDelay = CHIP_DELAYS() && !cancelled;
+    const o = (cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1) * (!sel && inTunnel(i, dist) ? 0.45 : 1), showDelay = CHIP_DELAYS() && !cancelled; // underground: dimmed
     if (flagged) alarms.push(point([q.lon, q.lat], {}));
     feats.push(point([q.lon, q.lat], {
       i, c: style.c, s: style.s, g: style.glow, r: q.bearing - 90,
@@ -360,12 +391,16 @@ map.on("load", async () => {
   map.addLayer({ id: "lakes-line", type: "line", source: "lakes", paint: { "line-color": "#17305e", "line-width": 0.6 } });
   map.addLayer({ id: "ch-line", type: "line", source: "ch", paint: { "line-color": "#3a6fd8", "line-width": 1.1, "line-opacity": 0.75 } });
 
-  map.addLayer({ id: "rail-glow", type: "line", source: "rail", filter: ["==", ["get", "w"], 2], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": 0.22 } });
+  const railWidth = ["interpolate", ["linear"], ["zoom"], 7, ["match", ["get", "w"], 2, 1.3, 1, 0.9, 0.5], 12, ["match", ["get", "w"], 2, 2.6, 1, 1.8, 1.2]];
+  map.addLayer({ id: "rail-glow", type: "line", source: "rail", filter: ["all", ["==", ["get", "w"], 2], ["!=", ["get", "k"], 1]], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": 0.22 } });
+  // bridges: a faint light casing under the track; tunnels: thin dashes instead of the line
+  map.addLayer({ id: "rail-bridge", type: "line", source: "rail", minzoom: 9, filter: ["==", ["get", "k"], 2], paint: { "line-color": "#8fb0ff", "line-opacity": 0.3, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 3, 13, 6] } });
+  map.addLayer({ id: "rail-tunnel", type: "line", source: "rail", filter: ["==", ["get", "k"], 1], paint: { "line-color": "#4a74c9", "line-opacity": 0.55, "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 12, 1.6] } });
   map.addLayer({
-    id: "rail", type: "line", source: "rail",
+    id: "rail", type: "line", source: "rail", filter: ["!=", ["get", "k"], 1],
     paint: {
       "line-color": ["match", ["get", "w"], 2, "#4a74c9", 1, "#34579d", "#294a82"],
-      "line-width": ["interpolate", ["linear"], ["zoom"], 7, ["match", ["get", "w"], 2, 1.3, 1, 0.9, 0.5], 12, ["match", ["get", "w"], 2, 2.6, 1, 1.8, 1.2]],
+      "line-width": railWidth,
       "line-opacity": ["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6],
     },
   });
@@ -410,6 +445,7 @@ map.on("load", async () => {
 
 
   day = await dayPromise;
+  pax = await paxPromise;
   indexDay();
   setStatic();
   await pollLive();
@@ -432,13 +468,15 @@ function hitAt(pt) {
   const s = map.queryRenderedFeatures(box, { layers: ["stations-hub", "stations-mid", "stations-minor"] })[0];
   if (s) return { type: "station", idx: s.properties.i };
   const a = map.queryRenderedFeatures(box, { layers: ["alert-pts", "alert-hit"] })[0];
-  return a ? { type: "alert", idx: a.properties.id } : null;
+  if (a) return { type: "alert", idx: a.properties.id };
+  const tn = map.queryRenderedFeatures(box, { layers: ["rail-tunnel"] }).find((f) => f.properties.name);
+  return tn ? { type: "tunnel", idx: tn.properties } : null;
 }
 // re-checked every frame: trains drive away from a still cursor, which fires no mouse events
 function updateTip() {
   const hit = hoverPt && !zen ? hitAt(hoverPt) : null;
-  map.getCanvas().style.cursor = hit ? "pointer" : "";
-  const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : stationTip(hit.idx);
+  map.getCanvas().style.cursor = hit && hit.type !== "tunnel" ? "pointer" : "";
+  const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : hit.type === "tunnel" ? `<span>${esc(hit.idx.name)}</span><span class="sub">tunnel · ${hit.idx.km} km</span>` : stationTip(hit.idx);
   if (!html) { $("tip").hidden = true; tipHtml = ""; return; }
   if (html !== tipHtml) $("tip").innerHTML = tipHtml = html;
   $("tip").hidden = false;
@@ -466,7 +504,7 @@ function alertTip(id) {
 map.on("click", (e) => {
   if (zen) return showZenExit();
   const hit = hitAt(e.point);
-  if (hit) open(hit.type, hit.idx, hit.type === "alert");
+  if (hit && hit.type !== "tunnel") open(hit.type, hit.idx, hit.type === "alert");
   else if (selected) closePanel(); // empty map: deselect, un-dim the other trains
 });
 map.on("dragstart", () => setFollow(false));
@@ -769,9 +807,12 @@ function trainHtml(i) {
     const first = st[sched[0]][3], lastUic = st[sched[(n - 1) * 3]][3];
     const partial = units.filter((u) => (u.from && u.from !== first) || (u.to && u.to !== lastUic));
     formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3><div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
-      + (units.length ? `<div class="unit-row">${units.map((u) => `<a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history">${esc(u.type)} <b>${esc(u.id)}</b></a>`).join("")}</div>` : "")
+      + (units.length ? `<div class="unit-row">${units.map((u) => `<span class="unit"><a href="/stats#/type/${encodeURIComponent(u.cls)}" title="About this type">${esc(u.type)}</a><a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history"><b>${esc(u.id)}</b></a></span>`).join("")}</div>` : "")
       + (partial.length ? `<div class="sub">${partial.map((u) => `${esc(u.type)} ${esc(u.id)} only ${esc(nameOf(u.from || first))} → ${esc(nameOf(u.to || lastUic))}`).join(" · ")}</div>` : "");
   }
+  const hintCodes = (day.hints?.[day.trips[i][5]] ?? "").split(" ").filter((c) => HINTS[c]);
+  const onBoard = hintCodes.length ? `<div class="facts hints">${hintCodes.map((c) => `<span>${esc(HINTS[c])}</span>`).join("")}</div>` : "";
+  const link = (j, word) => (j === undefined ? "" : `<button class="through" data-trip="${j}">${word} ${badge(day.trips[j][0])} ${esc(day.trips[j][2])} ${word === "Continues as" ? `to ${esc(day.trips[j][1])} →` : `from ${esc(day.stations[day.trips[j][3][0]][0])}`}</button>`);
   const occ = extra.occupancy;
   const stops = Array.from({ length: n }, (_, k) => {
     const s = st[sched[k * 3]], pl = k === 0 ? sched[2] : sched[k * 3 + 1];
@@ -785,8 +826,8 @@ function trainHtml(i) {
     <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}${status ? ` · ${status}` : ""}${age !== null && live.delays[i] ? ` · <span class="age">live data ${age < 90 ? `${age} s` : `${Math.round(age / 60)} min`} old</span>` : ""}</div>
     <div class="progress"><i style="--p:${prog.toFixed(4)}"></i></div>
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
-    ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${formation}
-    <h3>Stops</h3><ol class="stops stem" style="--p:${prog.toFixed(4)}">${p && !cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>`;
+    ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
+    <h3>Stops</h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem" style="--p:${prog.toFixed(4)}">${p && !cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
 }
 
 const FORMATION_WHY = {
@@ -814,7 +855,8 @@ function stationHtml(si) {
     const where = arr ? `from ${esc(day.stations[s[0]][0])}` : esc(head);
     return `<li data-trip="${i}" tabindex="0"><span>${hhmm(sched)}</span>${badge(route)}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
   }).join("");
-  return `<h2>${esc(name)}</h2><div class="sub">${byStation[si].length} trains today · <a class="inline" href="/stats#/station/${encodeURIComponent(day.stations[si][3])}">Stats ↗</a></div>
+  const p = pax[day.stations[si][3]];
+  return `<h2>${esc(name)}</h2><div class="sub">${byStation[si].length} trains today${p ? ` · ≈ ${p[0].toLocaleString("de-CH")} passengers a day` : ""} · <a class="inline" href="/stats#/station/${encodeURIComponent(day.stations[si][3])}">Stats ↗</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.s.includes(si)))}
     <div class="tabs" role="tablist"><button role="tab" data-tab="dep" aria-selected="${!arr}">Departures</button><button role="tab" data-tab="arr" aria-selected="${arr}">Arrivals</button></div>
     <ol class="stops deps">${rows || `<li class="empty">Nothing in the next 90 minutes</li>`}</ol>`;

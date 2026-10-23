@@ -87,6 +87,7 @@ let timers = [], nav = 0;
 const routes = [
   [/^#?\/?$/, "overview", overview], [/^#\/fleet$/, "fleet", fleetPage], [/^#\/incidents$/, "incidents", incidentsPage],
   [/^#\/train\/(.+)$/, "", trainPage], [/^#\/vehicle\/(.+)$/, "fleet", vehiclePage], [/^#\/station\/(.+)$/, "", stationPage], [/^#\/line\/(.+)$/, "", linePage],
+  [/^#\/types$/, "types", typesPage], [/^#\/type\/(\d{3})$/, "types", typePage],
 ];
 async function route(keepScroll = false) {
   timers.forEach(clearInterval);
@@ -339,15 +340,16 @@ async function vehiclePage(unit, current) {
   if (!v?.spec) { main.innerHTML = `<div class="empty-page">No runs recorded for ${esc(unit)} yet. Trainsets are recorded from the daily crawl of long-distance formations.</div>`; return; }
   document.title = `TrainNet — ${v.spec.type} ${unit}`;
   const km = d3.sum(v.runs, (r) => r.km), now = v.now;
+  const reg = v.register, age = reg?.built ? Math.floor((Date.now() - Date.parse(reg.built)) / (365.25 * 86400_000)) : null;
   main.innerHTML = `
-  <div class="page-head"><div><h1>${esc(v.spec.type)} <span style="color:var(--muted)">${esc(unit)}</span></h1>
-    <p class="sub">Class ${esc(v.spec.class)} · ${v.runs.length} trains today</p></div>
+  <div class="page-head"><div><h1><a class="type-link" href="#/type/${esc(v.spec.class)}">${esc(v.spec.type)}</a> <span style="color:var(--muted)">${esc(unit)}</span></h1>
+    <p class="sub">${reg?.subtype ? `${esc(reg.subtype)} · ` : `Class ${esc(v.spec.class)} · `}${reg?.built ? `built ${esc(reg.built)} (${age} years) · ` : ""}${v.runs.length} trains today</p></div>
     <div class="actions">${now ? `<a href="/?train=${encodeURIComponent(now.train)}">Where is it now? →</a>` : ""}</div></div>
   ${now ? `<div class="callout">Running now as ${badge(now.line, now.cat)} <b>${esc(now.train)}</b> ${esc(now.from)} → ${esc(now.to)}, ${mins(now.delay)}.</div>` : ""}
   <div class="kpis">
     ${kpi("Length", `${n0(v.spec.length_m)}<small> m</small>`)}
     ${kpi("Seats", `${n0(v.spec.seats1 + v.spec.seats2)}`, `${n0(v.spec.seats1)} 1st · ${n0(v.spec.seats2)} 2nd`)}
-    ${kpi("Restaurant", v.spec.has_wr ? "Yes" : "No")}
+    ${kpi("Restaurant", v.spec.has_wr ? "Yes" : "No", reg?.wheelchair ? `${reg.wheelchair} wheelchair places` : "")}
     ${kpi("Distance today", `${n0(km)}<small> km</small>`, `${v.runs.length} trains`)}
     ${kpi("Days seen", v.history.length, v.history.length ? `${n0(d3.sum(v.history, (h) => h.km))} km recorded` : "")}
   </div>
@@ -386,7 +388,7 @@ async function fleetPage(current) {
     ${kpi("Restaurant cars running", f.restaurantsNow.length)}
   </div>
   <div class="grid">
-    ${card("Trainsets by type", "Units in service today", f.byType.length ? ch("c-types") : empty("–"), 6)}
+    ${card("Trainsets by type", `Units in service today · <a href="#/types">all types →</a>`, f.byType.length ? ch("c-types") + `<div class="spot-links">${f.byType.map((t) => `<a href="#/type/${t.cls}">${esc(t.type)} <small>${t.units}</small></a>`).join("")}</div>` : empty("–"), 6)}
     ${card("Distance by type", "km run today, all units of a type", f.byType.length ? ch("c-km") : empty("–"), 6)}
     ${card("Most kilometres today", "", table([
       { h: "Unit", f: (r) => `${esc(r.type)} <b>${esc(r.unit)}</b>` }, { h: "Trains", num: 1, f: (r) => r.runs }, { h: "km", num: 1, f: (r) => n0(r.km) },
@@ -396,13 +398,60 @@ async function fleetPage(current) {
     ${card("Restaurant cars running now", "", table([{ h: "Train", f: (r) => `${badge(r.line)} ${esc(r.train)}` }, { h: "Unit", f: (r) => `${esc(r.type)} ${esc(r.unit)}` }],
       f.restaurantsNow.map((r) => ({ ...r, _href: `#/train/${r.train}` })), "None right now."), 6)}
     ${card("Which trainsets run which line", "Unit runs per line today", f.mixByLine.length ? ch("c-mix") : empty("–"), 12)}
+    ${card("How old the fleet in service is", "Build year of every unit running today that SBB's rolling stock register lists", f.ages.length ? ch("c-ages") : empty("No register data yet (it loads once a week)."), 8)}
+    ${card("Oldest and newest today", "", f.oldest.length ? table([{ h: "Unit", f: (r) => `${esc(r.type)} <b>${esc(r.unit)}</b>` }, { h: "Built", num: 1, f: (r) => esc(r.built) }],
+      [...f.oldest.slice(0, 4), ...f.newest.slice(0, 4)].map((r) => ({ ...r, _href: `#/vehicle/${r.unit}` }))) : empty("–"), 4)}
   </div>`;
   const types = f.byType.map((t) => t.type);
   const typeColor = { domain: types, range: d3.quantize(d3.interpolateRgbBasis(["#5cc8ff", "#8fa8ff", "#c792ff", "#ff7ab6", "#ff9f1c", "#ffd166", "#2ee6a6"]), Math.max(2, types.length)) };
   draw("c-types", { marginLeft: 90, x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: [Plot.barX(f.byType, { y: "type", x: "units", fill: "type", sort: { y: "-x" }, tip: true })] });
   draw("c-km", { marginLeft: 90, x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: [Plot.barX(f.byType, { y: "type", x: "km", fill: "type", sort: { y: "-x" }, tip: true })] });
+  if (f.ages.length) draw("c-ages", { marginLeft: 90, x: { label: "built", tickFormat: "d", grid: true }, y: { label: null, domain: d3.groupSort(f.ages, (g) => d3.median(g, (a) => a.year), (a) => a.type) }, color: typeColor,
+    marks: [Plot.dot(f.ages, { x: "year", y: "type", fill: "type", r: 3, fillOpacity: 0.7, tip: true }), Plot.tickX(f.ages, Plot.groupY({ x: "median" }, { x: "year", y: "type", stroke: "#fff", strokeWidth: 2 }))] });
   const mix = f.mixByLine.flatMap((l) => l.types.map((t) => ({ line: l.line, ...t })));
   draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line) }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
+}
+
+// ---------- train types ----------
+async function typesPage(current) {
+  const list = await api("types");
+  if (!current()) return;
+  document.title = "TrainNet — Train types";
+  main.innerHTML = `
+  <div class="page-head"><div><h1>Train types</h1><p class="sub">Every series we've seen in a formation or found in SBB's rolling stock register</p></div></div>
+  <div class="type-grid">${list.map((t) => `<a class="type-card" href="#/type/${t.cls}">
+    <div class="type-top"><b>${esc(t.name)}</b><span class="muted">series ${esc(t.cls)}</span></div>
+    ${t.about ? `<p>${esc(t.about)}</p>` : ""}
+    <div class="type-facts">${[t.today ? `<span><b>${t.today}</b> running today</span>` : "", t.registered ? `<span><b>${t.registered}</b> in the register</span>` : "", t.built ? `<span>built ${t.built[0] === t.built[1] ? t.built[0] : `${t.built[0]}–${t.built[1]}`}</span>` : "",
+      t.seats ? `<span>${n0(t.seats)} seats</span>` : "", t.kmToday ? `<span>${n0(t.kmToday)} km today</span>` : ""].filter(Boolean).join("")}</div>
+    ${t.lines.length ? `<div class="type-lines">${t.lines.map(badge).join("")}</div>` : ""}
+  </a>`).join("")}</div>`;
+}
+
+async function typePage(cls, current) {
+  const t = await api(`type/${cls}`, true);
+  if (!current()) return;
+  if (!t) { main.innerHTML = `<div class="empty-page">Nothing known about series ${esc(cls)} yet.</div>`; return; }
+  document.title = `TrainNet — ${t.name}`;
+  const running = t.units.filter((u) => u.runsToday), year = new Date().getFullYear();
+  main.innerHTML = `
+  <div class="page-head"><div><h1>${esc(t.name)} <span style="color:var(--muted)">series ${esc(t.cls)}</span></h1>
+    <p class="sub">${t.about ? esc(t.about) : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div></div>
+  <div class="kpis">
+    ${kpi("In service today", n0(running.length), `of ${n0(t.units.length)} units known`)}
+    ${kpi("Distance today", `${n0(d3.sum(running, (u) => u.kmToday))}<small> km</small>`, running.length ? `${n0(d3.mean(running, (u) => u.kmToday))} km per unit` : "")}
+    ${kpi("Recorded in total", `${n0(d3.sum(t.units, (u) => u.kmTotal))}<small> km</small>`, "since we started recording")}
+    ${kpi("Built", t.years.length ? `${d3.min(t.years)}${d3.max(t.years) !== d3.min(t.years) ? `<small>–${d3.max(t.years)}</small>` : ""}` : "–", t.years.length ? `average age ${n0(year - d3.mean(t.years))} years` : "not in SBB's register")}
+  </div>
+  <div class="grid">
+    ${card("Lines today", "Train runs per line", t.lines.length ? table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Runs", num: 1, f: (r) => r.n }], t.lines.slice(0, 12).map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))) : empty("Not seen running today."), 4)}
+    ${card("Build years", "Units in SBB's rolling stock register", t.years.length ? ch("c-years") : empty("This series isn't in SBB's register."), 8)}
+    ${card("Units", "Today first, then by distance recorded", table([
+      { h: "Unit", f: (u) => `<b>${esc(u.unit)}</b>${u.subtype ? ` <span class="muted">${esc(u.subtype)}</span>` : ""}` }, { h: "Built", f: (u) => esc(u.built ?? "–") },
+      { h: "Today", num: 1, f: (u) => (u.runsToday ? `${u.runsToday} trains · ${n0(u.kmToday)} km` : "–") }, { h: "Recorded", num: 1, f: (u) => (u.kmTotal ? `${n0(u.kmTotal)} km` : "–") },
+    ], t.units.slice(0, 200).map((u) => ({ ...u, _href: u.kmTotal || u.runsToday ? `#/vehicle/${u.unit}` : undefined }))), 12)}
+  </div>`;
+  if (t.years.length) draw("c-years", { x: { label: "built", tickFormat: "d" }, y: { grid: true, label: "units" }, marks: [Plot.rectY(t.years, Plot.binX({ y: "count" }, { x: (y) => y, interval: 1, fill: "#5cc8ff", tip: true })), Plot.ruleY([0])] });
 }
 
 // ---------- station ----------
@@ -412,7 +461,7 @@ async function stationPage(uic, current) {
   if (!s) { main.innerHTML = `<div class="empty-page">Unknown station.</div>`; return; }
   document.title = `TrainNet — ${s.name}`;
   main.innerHTML = `
-  <div class="page-head"><div><h1>${esc(s.name)}</h1><p class="sub">${n0(s.trips)} train calls today · UIC ${esc(s.uic)}</p></div>
+  <div class="page-head"><div><h1>${esc(s.name)}</h1><p class="sub">${n0(s.trips)} train calls today${s.pax ? ` · ≈ ${n0(s.pax.daily)} passengers a day (${s.pax.year}, SBB count)` : ""} · UIC ${esc(s.uic)}</p></div>
     <div class="actions"><a href="/?station=${encodeURIComponent(s.uic)}">Departures on the map →</a></div></div>
   <div class="kpis">
     ${kpi("Departures on time today", pctv(s.today.pct), s.today.n ? `${n0(s.today.n)} departures recorded` : "fills in as trains leave")}

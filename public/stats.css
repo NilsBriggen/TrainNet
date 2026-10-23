@@ -76,6 +76,17 @@ main { max-width: 1320px; margin: 0 auto; padding: 28px 24px 40px; }
 
 /* Plot */
 .chart figure { margin: 0; }
+.type-link { color: inherit; text-decoration: none; border-bottom: 1px dashed var(--border); }
+.type-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.type-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); color: var(--text); text-decoration: none; }
+.type-card:hover { border-color: rgba(92, 200, 255, 0.4); }
+.type-card p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.type-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.type-top b { font-size: 16px; }
+.type-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.type-facts b { color: var(--text); }
+.type-lines { display: flex; flex-wrap: wrap; gap: 4px; }
+.type-lines .badge { font-size: 11px; }
 /* Plot tooltips in the page's dark theme */
 .chart [aria-label="tip"] { color: var(--text); }
 .chart [aria-label="tip"] path { fill: #0d1834; stroke: rgba(120, 150, 220, 0.35); }

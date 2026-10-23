@@ -2,7 +2,7 @@
 import { applyDelays, locate } from "../public/position.js";
 import { db, lineOf } from "./record";
 import { current } from "./realtime";
-import { occupancyAll } from "./details";
+import { occupancyAll, TYPE_INFO, typeName, wikiOf } from "./details";
 import { addDays, zurichDate } from "./time";
 import { dist } from "./paths";
 import type { Day } from "./gtfs";
@@ -264,6 +264,7 @@ export function vehicle(d: Day, unit: string) {
     const spec = one(`SELECT class, type, length_m, seats1, seats2, has_wr FROM vehicle_run WHERE unit = ? ORDER BY date DESC LIMIT 1`, unit);
     return {
       unit, spec, runs, now: runs.find((r) => r.state === "running") ?? null,
+      register: one(`SELECT subtype, built, seats1, seats2, length_m, wheelchair FROM rolling_stock WHERE unit = ?`, unit), // SBB's register, if listed
       history: all(`SELECT date, count(*) runs, sum(km) km FROM vehicle_run WHERE unit = ? GROUP BY date
         UNION ALL SELECT date, runs, km FROM agg_vehicle_day WHERE unit = ?1 AND date NOT IN (SELECT date FROM vehicle_run WHERE unit = ?1) ORDER BY date`, unit),
       trains: all(`SELECT train_no, count(*) n FROM vehicle_run WHERE unit = ? GROUP BY train_no ORDER BY n DESC LIMIT 20`, unit),
@@ -290,8 +291,11 @@ export function fleet(d: Day) {
       m.set(r.type, (m.get(r.type) ?? 0) + 1);
       mix.set(line, m);
     }
-    const byType = new Map<string, { type: string; units: number; km: number }>();
-    for (const u of units.values()) { const x = byType.get(u.type) ?? { type: u.type, units: 0, km: 0 }; x.units++; x.km += u.km; byType.set(u.type, x); }
+    const byType = new Map<string, { type: string; cls: string; units: number; km: number }>();
+    for (const u of units.values()) { const x = byType.get(u.type) ?? { type: u.type, cls: u.unit.split("-")[0], units: 0, km: 0 }; x.units++; x.km += u.km; byType.set(u.type, x); }
+    // build year of every unit in service today that SBB's register lists
+    const built = all(`SELECT DISTINCT v.unit, v.type, r.built FROM vehicle_run v JOIN rolling_stock r ON r.unit = v.unit WHERE v.date = ? AND r.built IS NOT NULL`, d.date)
+      .map((r) => ({ unit: r.unit, type: r.type, year: +r.built.slice(0, 4), built: r.built }));
     const tr = [...trains.values()];
     return {
       crawled: runs.length, units: units.size,
@@ -302,6 +306,59 @@ export function fleet(d: Day) {
       restaurantsNow: runs.filter((r) => r.has_wr && r.dep <= t && t <= r.arr).map((r) => ({ train: r.train_no, line: lineByTrip.get(r.trip) ?? "", unit: r.unit, type: r.type })),
       mixByLine: [...mix].map(([line, m]) => ({ line, total: [...m.values()].reduce((a, b) => a + b, 0), types: [...m].map(([type, n]) => ({ type, n })) }))
         .sort((a, b) => b.total - a.total).slice(0, 16),
+      ages: built.map(({ type, year }) => ({ type, year })),
+      oldest: [...built].sort((a, b) => a.built.localeCompare(b.built)).slice(0, 6),
+      newest: [...built].sort((a, b) => b.built.localeCompare(a.built)).slice(0, 6),
+    };
+  });
+}
+
+// ---------- train types ----------
+/** Every series seen in a formation or listed in the register: names, how many, how far they ran, where. */
+export function types(d: Day) {
+  return cached(`types:${d.version}`, 300, () => {
+    const lineByTrip = new Map(d.trips.map((t) => [t.id, lineOf(d, t.route)]));
+    const by = new Map<string, any>();
+    const get = (cls: string) => by.get(cls) ?? by.set(cls, { cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null, registered: 0, seen: 0, today: 0, kmToday: 0, kmTotal: 0, lines: new Map(), built: null, seats: null, length: null }).get(cls);
+    for (const r of all(`SELECT cls, count(*) n, min(built) first, max(built) last, avg(seats1 + seats2) seats, avg(length_m) len FROM rolling_stock GROUP BY cls`))
+      Object.assign(get(r.cls), { registered: r.n, built: r.first ? [r.first.slice(0, 4), r.last.slice(0, 4)] : null, seats: r.seats && Math.round(r.seats), length: r.len && Math.round(r.len) });
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n, sum(km) km FROM agg_vehicle_day GROUP BY class`)) Object.assign(get(r.cls), { seen: r.n, kmTotal: r.km });
+    for (const r of all(`SELECT class cls, unit, trip, km FROM vehicle_run WHERE date = ?`, d.date)) {
+      const x = get(r.cls), line = lineByTrip.get(r.trip);
+      x.kmToday += r.km;
+      if (line) x.lines.set(line, (x.lines.get(line) ?? 0) + 1);
+    }
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE date = ? GROUP BY class`, d.date)) get(r.cls).today = r.n;
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run GROUP BY class`)) get(r.cls).seen = Math.max(get(r.cls).seen, r.n);
+    return [...by.values()].filter((x) => x.seen || x.today || TYPE_INFO[x.cls])
+      .map((x) => ({ ...x, kmTotal: Math.round(x.kmTotal + x.kmToday), kmToday: Math.round(x.kmToday), lines: [...x.lines].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l]) => l) }))
+      .sort((a, b) => b.today - a.today || b.seen - a.seen || b.registered - a.registered);
+  });
+}
+
+/** One series: its units (register + what we saw), the lines it runs, distance, build years. */
+export function trainType(d: Day, cls: string) {
+  if (!/^\d{3}$/.test(cls)) return null;
+  return cached(`type:${d.version}:${cls}`, 120, () => {
+    const lineByTrip = new Map(d.trips.map((t) => [t.id, lineOf(d, t.route)]));
+    const units = new Map<string, any>();
+    const get = (unit: string) => units.get(unit) ?? units.set(unit, { unit, subtype: null, built: null, seats: null, runsToday: 0, kmToday: 0, kmTotal: 0, days: 0, last: null }).get(unit);
+    for (const r of all(`SELECT unit, subtype, built, seats1, seats2 FROM rolling_stock WHERE cls = ?`, cls)) Object.assign(get(r.unit), { subtype: r.subtype, built: r.built, seats: (r.seats1 ?? 0) + (r.seats2 ?? 0) || null });
+    for (const r of all(`SELECT unit, count(*) days, sum(km) km, max(date) last FROM agg_vehicle_day WHERE class = ? GROUP BY unit`, cls)) Object.assign(get(r.unit), { kmTotal: r.km, days: r.days, last: r.last });
+    const lines = new Map<string, number>();
+    for (const r of all(`SELECT unit, trip, km FROM vehicle_run WHERE class = ? AND date = ?`, cls, d.date)) {
+      const u = get(r.unit);
+      u.runsToday++; u.kmToday += r.km; u.last = d.date;
+      const l = lineByTrip.get(r.trip);
+      if (l) lines.set(l, (lines.get(l) ?? 0) + 1);
+    }
+    if (!units.size) return null;
+    const list = [...units.values()].map((u) => ({ ...u, kmToday: Math.round(u.kmToday), kmTotal: Math.round(u.kmTotal + u.kmToday) }));
+    return {
+      cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null,
+      units: list.sort((a, b) => b.kmToday - a.kmToday || b.kmTotal - a.kmTotal || a.unit.localeCompare(b.unit)),
+      lines: [...lines].sort((a, b) => b[1] - a[1]).map(([line, n]) => ({ line, n })),
+      years: list.filter((u) => u.built).map((u) => +u.built.slice(0, 4)),
     };
   });
 }
@@ -326,7 +383,7 @@ export function stationStats(d: Day, uic: string) {
     const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr FROM stop_obs WHERE uic = ? AND date = ?`, uic, date);
     const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ?`, uic);
     return {
-      ...s, trips: d.stations[s.i][4],
+      ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
       perHour: perHour.map((n, hour) => ({ hour, today: n, typical: Math.round(typical[hour] * 10) / 10 })),
       today: { ...td, pct: pct(td.ok, td.n) }, month: { ...month, pct: pct(month.ok, month.n), arrPct: pct(month.arr_n - month.arr_late, month.arr_n) },
       platforms: [...plats].map(([p, n]) => ({ p, n })).sort((a, b) => b.n - a.n),

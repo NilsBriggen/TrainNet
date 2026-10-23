@@ -12,18 +12,52 @@ export const EVU: Record<string, string> = {
 };
 const LEVEL: Record<string, number> = { manySeatsAvailable: 1, fewSeatsAvailable: 2, standingRoomOnly: 3 };
 
-// series -> name; the 3 digits after the country code in an EVN (94 85 x SSS NNN-c)
-const TYPES: Record<string, string> = {
-  "500": "ICN", "501": "Giruno", "502": "FV-Dosto", "503": "Astoro", "511": "KISS", "512": "KISS", "514": "DTZ",
-  "515": "MUTZ", "521": "FLIRT", "522": "FLIRT", "523": "FLIRT", "524": "FLIRT", "526": "FLIRT", "525": "NINA", "535": "Lötschberger",
-  "460": "Re 460", "465": "Re 465", "474": "Re 474", "475": "Re 475", "420": "Re 420", "485": "Re 485", "486": "Re 486",
+const WIKI = "https://en.wikipedia.org/wiki/";
+/**
+ * Train types by series (the 3 digits after the country code in an EVN: 94 85 x SSS NNN-c): the name passengers know,
+ * a Wikipedia article for the full story, and one line of our own. Unlisted series fall back to the register's type name.
+ */
+export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: string }> = {
+  "500": { name: "ICN", wiki: "SBB_RABDe_500", about: "Tilting intercity train, at home on the Jura foot line." },
+  "501": { name: "Giruno", wiki: "Stadler_SMILE", about: "Stadler's high-speed train for the Gotthard base tunnel and on to Milan." },
+  "502": { name: "FV-Dosto", wiki: "SBB_RABe_502", about: "Double-deck intercity train by Bombardier, now Alstom." },
+  "503": { name: "Astoro", wiki: "SBB_RABe_503", about: "Tilting high-speed train of the Pendolino family, for services to Italy." },
+  "511": { name: "KISS", wiki: "Stadler_KISS", about: "Stadler double-deck multiple unit for RegioExpress and S-Bahn services." },
+  "512": { name: "KISS", wiki: "Stadler_KISS", about: "Stadler double-deck multiple unit for regional services." },
+  "514": { name: "DTZ", wiki: "SBB_RABe_514", about: "Siemens Desiro double-deck train of the Zürich S-Bahn." },
+  "515": { name: "MUTZ", wiki: "Stadler_KISS", about: "BLS double-deck S-Bahn train (Stadler KISS), mostly around Bern." },
+  "521": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler's single-deck regional train, the workhorse of many lines." },
+  "522": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Multi-system Stadler FLIRT, also crossing into France." },
+  "523": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler's single-deck regional train, the workhorse of many lines." },
+  "524": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRT for cross-border services to Italy (TILO)." },
+  "525": { name: "NINA", about: "Low-floor regional train of BLS." },
+  "526": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRT of the Südostbahn." },
+  "535": { name: "Lötschberger", about: "BLS regional train for the Lötschberg mountain line." },
+  "460": { name: "Re 460", wiki: "SBB_Re_460", about: "SBB's standard locomotive for intercity coaches and IC2000 double-decks." },
+  "465": { name: "Re 465", wiki: "BLS_Re_465", about: "BLS locomotive, the stronger sister of the Re 460." },
+  "474": { name: "Re 474", about: "Siemens multi-system locomotive (ES 64F4), mostly freight." },
+  "475": { name: "Re 475", wiki: "Siemens_Vectron", about: "Siemens Vectron multi-system locomotive." },
+  "420": { name: "Re 420", wiki: "SBB_Re_4/4_II", about: "The classic Re 4/4 II, built from the 1960s on." },
+  "450": { name: "Re 450", wiki: "SBB_Re_450", about: "S-Bahn locomotive for Zürich's double-deck push-pull trains." },
+  "485": { name: "Re 485", wiki: "Bombardier_TRAXX", about: "Bombardier TRAXX locomotive." },
+  "486": { name: "Re 486", wiki: "Bombardier_TRAXX", about: "Bombardier TRAXX multi-system locomotive." },
+  "560": { name: "NPZ / Domino", wiki: "SBB_RBDe_560", about: "Regional multiple unit from the 1980s, many rebuilt as 'Domino'." },
+  // foreign units on Swiss trains (German ICEs to Basel and Zürich, DB locomotives on the Stuttgart line)
+  "412": { name: "ICE 4", wiki: "ICE_4", about: "Deutsche Bahn's newest ICE, on services from Germany to Basel and Zürich." },
+  "406": { name: "ICE 3", wiki: "ICE_3", about: "Deutsche Bahn's multi-system high-speed train." },
+  "147": { name: "DB 147", wiki: "DB_Class_147", about: "Deutsche Bahn TRAXX locomotive, hauling the Stuttgart–Zürich intercity." },
 };
+export const wikiOf = (cls: string) => (TYPE_INFO[cls]?.wiki ? WIKI + TYPE_INFO[cls].wiki : null);
+let registerNames = new Map<string, string>(); // series -> type name from the rolling stock register, for series not listed above
+export const setRegisterNames = (m: Map<string, string>) => (registerNames = m);
+export const typeName = (cls: string) => TYPE_INFO[cls]?.name ?? registerNames.get(cls) ?? `Class ${cls}`;
+
 /** Trainset or locomotive behind an EVN, e.g. "94 85 2 502 229-9" -> 502-229. Plain coaches (50/61/73 …) aren't units. */
 export function unitOf(evn: string): { id: string; cls: string; type: string } | null {
   const d = evn.replace(/\D/g, "");
   if (d.length < 11 || d[0] !== "9") return null;
   const cls = d.slice(5, 8);
-  return { id: `${cls}-${d.slice(8, 11)}`, cls, type: TYPES[cls] ?? `Class ${cls}` };
+  return { id: `${cls}-${d.slice(8, 11)}`, cls, type: typeName(cls) };
 }
 
 export type Coach = {
