@@ -230,7 +230,7 @@ export const overview = (d: Day) => cached(`overview:${d.version}`, 20, () => ({
 
 // ---------- history since 2018 (official actual data) ----------
 export function longHistory() {
-  return cached("long", 3600, () => {
+  return cached("long", 600, () => { // cheap: a few thousand monthly rows
     const months = all(`SELECT substr(date, 1, 7) month, count(*) days, sum(trips) trips, sum(observed) observed, sum(punctual) punctual, sum(cancelled) cancelled,
       sum(extra) extra, sum(sum_final_delay) sum_delay FROM hist_net_day GROUP BY month ORDER BY month`)
       .map((m) => ({ month: m.month, days: m.days, perDay: Math.round(m.trips / m.days), pct: pct(m.punctual, m.observed - m.cancelled), cancelled: m.cancelled, extra: m.extra,
