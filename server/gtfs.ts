@@ -1,11 +1,24 @@
 // Daily: find the latest Swiss GTFS zip via CKAN, download it, keep today's rail trips.
-import { mkdirSync, readdirSync, renameSync, rmSync, existsSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readdirSync, renameSync, rmSync, existsSync } from "node:fs";
 import { upstream } from "./upstream";
 import { addDays, serviceBase, timetableYear } from "./time";
 import { dist, route, segmentPaths, type Graph, type Path } from "./paths";
 
 export const DATA_DIR = process.env.DATA_DIR ?? "data";
 mkdirSync(DATA_DIR, { recursive: true });
+// Big re-downloadable zips; on the server an external CIFS disk. stats.db stays in DATA_DIR: SQLite locking is unreliable over CIFS.
+export const ARCHIVE_DIR = (() => {
+  const dir = process.env.ARCHIVE_DIR;
+  if (!dir) return DATA_DIR;
+  try {
+    mkdirSync(dir, { recursive: true });
+    accessSync(dir, constants.W_OK);
+    return dir;
+  } catch (e: any) {
+    console.error(`[gtfs] ARCHIVE_DIR ${dir} unusable (${e.message}), downloading to ${DATA_DIR}`);
+    return DATA_DIR;
+  }
+})();
 
 export type Trip = {
   id: string; date: string; route: number; agency: string; head: string; num: string;
@@ -39,16 +52,16 @@ export async function latestResource(pkg: string) {
   return { url: r.url as string, name: r.url.split("/").pop() as string };
 }
 
-/** Download to DATA_DIR unless already there; removes older files with the same prefix. */
+/** Download to ARCHIVE_DIR unless already there; removes older files with the same prefix. */
 export async function download(url: string, name: string, prefix: string) {
-  const path = `${DATA_DIR}/${name}`;
+  const path = `${ARCHIVE_DIR}/${name}`;
   if (existsSync(path)) return path;
   console.log(`[gtfs] downloading ${name}`);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(20 * 60_000) }); // a stalled download must not block the day rollover forever
   if (!res.ok) throw new Error(`download ${name}: HTTP ${res.status}`);
   await Bun.write(`${path}.part`, res);
   renameSync(`${path}.part`, path);
-  for (const f of readdirSync(DATA_DIR)) if (f.startsWith(prefix) && f !== name) rmSync(`${DATA_DIR}/${f}`);
+  for (const f of readdirSync(ARCHIVE_DIR)) if (f.startsWith(prefix) && f !== name) rmSync(`${ARCHIVE_DIR}/${f}`);
   return path;
 }
 

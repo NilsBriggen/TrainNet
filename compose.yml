@@ -7,8 +7,11 @@ services:
     container_name: trainnet
     restart: unless-stopped
     env_file: .env
+    environment:
+      ARCHIVE_DIR: /archive
     volumes:
-      - ./data:/data # GTFS zips, rail graph, stats.db; must be owned by uid 1000 (the image's bun user)
+      - ./data:/data # rail graph, paths, stats.db; must be owned by uid 1000 (the image's bun user)
+      - /mnt/storagebox/trainnet:/archive # GTFS, occupancy and Ist-Daten zips on the storage box (CIFS, mounted as uid 1000)
     mem_limit: 2g # ~500 MB steady, ~1.3 GB while the daily timetable loads
     logging:
       driver: json-file

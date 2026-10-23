@@ -9,6 +9,13 @@ import { initRecord, maintain, startDay } from "./record";
 import { crawlFleet } from "./fleet";
 import * as stats from "./stats";
 
+// dev: borrow production's realtime and train details instead of polling with the API tokens it shares
+const LIVE_FROM = process.env.LIVE_FROM;
+const borrow = async (path: string) => {
+  const r = await fetch(LIVE_FROM + path);
+  return new Response(await r.arrayBuffer(), { status: r.status, headers: { "Content-Type": "application/json" } });
+};
+
 let day: Day | undefined;
 let loading = false;
 let graph: Graph | null = null;
@@ -32,7 +39,7 @@ async function refresh() {
     startDay(day); // stores the previous day's remaining finished trips first
     resetRealtime(day);
     await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`));
-    crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // runs in the background for about an hour
+    if (!LIVE_FROM) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // runs in the background for about an hour
   } catch (e: any) {
     console.error(`[gtfs] ${e.message}`); // keep serving the previous day, retry next check
   } finally {
@@ -41,7 +48,7 @@ async function refresh() {
 }
 refresh();
 setInterval(refresh, 10 * 60_000);
-startRealtime(() => day);
+if (!LIVE_FROM) startRealtime(() => day);
 
 const PUBLIC = new URL("../public/", import.meta.url).pathname;
 const gz = { "Content-Type": "application/json", "Content-Encoding": "gzip" };
@@ -64,7 +71,7 @@ const server = Bun.serve({
       if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 });
       return new Response(day.json, { headers: { ...gz, ETag: etag, "Cache-Control": "no-cache" } });
     },
-    "/api/live": () => new Response(live, { headers: { ...gz, "Cache-Control": "public, max-age=10" } }),
+    "/api/live": () => LIVE_FROM ? borrow("/api/live") : new Response(live, { headers: { ...gz, "Cache-Control": "public, max-age=10" } }),
     "/api/stats/overview": (req) => statsJson(req, stats.overview),
     "/api/stats/fleet": (req) => statsJson(req, stats.fleet),
     "/api/stats/incidents": (req) => statsJson(req, stats.incidents),
@@ -75,6 +82,7 @@ const server = Bun.serve({
     "/api/stats/line/:name": (req) => statsJson(req, (d) => stats.lineStats(d, decodeURIComponent(req.params.name))),
     "/stats": () => new Response(Bun.file(PUBLIC + "stats.html")),
     "/api/train/:idx": async (req) => {
+      if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}`);
       const trip = day?.trips[Number(req.params.idx)];
       if (!trip) return new Response("unknown train", { status: 404 });
       return Response.json(await details(trip, day!.base), { headers: { "Cache-Control": "public, max-age=300" } });
