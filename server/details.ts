@@ -22,6 +22,7 @@ export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: st
   "501": { name: "Giruno", wiki: "Stadler_SMILE", about: "Stadler's high-speed train for the Gotthard base tunnel and on to Milan." },
   "502": { name: "FV-Dosto", wiki: "SBB_RABe_502", about: "Double-deck intercity train by Bombardier, now Alstom." },
   "503": { name: "Astoro", wiki: "SBB_RABe_503", about: "Tilting high-speed train of the Pendolino family, for services to Italy." },
+  "610": { name: "Astoro", wiki: "SBB_RABe_503", about: "Tilting high-speed train of the Pendolino family (ETR 610), for services to Italy." },
   "511": { name: "KISS", wiki: "Stadler_KISS", about: "Stadler double-deck multiple unit for RegioExpress and S-Bahn services." },
   "512": { name: "KISS", wiki: "Stadler_KISS", about: "Stadler double-deck multiple unit for regional services." },
   "514": { name: "DTZ", wiki: "SBB_RABe_514", about: "Siemens Desiro double-deck train of the Zürich S-Bahn." },
