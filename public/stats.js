@@ -415,9 +415,13 @@ async function fleetPage(current) {
   </div>`;
   const types = f.byType.map((t) => t.type);
   const typeColor = { domain: types, range: d3.quantize(d3.interpolateRgbBasis(["#5cc8ff", "#8fa8ff", "#c792ff", "#ff7ab6", "#ff9f1c", "#ffd166", "#2ee6a6"]), Math.max(2, types.length)) };
-  draw("c-types", { marginLeft: 90, x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: [Plot.barX(f.byType, { y: "type", x: "units", fill: "type", sort: { y: "-x" }, tip: true })] });
-  draw("c-km", { marginLeft: 90, x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: [Plot.barX(f.byType, { y: "type", x: "km", fill: "type", sort: { y: "-x" }, tip: true })] });
-  if (f.ages.length) draw("c-ages", { marginLeft: 90, x: { label: "built", tickFormat: "d", grid: true }, y: { label: null, domain: d3.groupSort(f.ages, (g) => d3.median(g, (a) => a.year), (a) => a.type) }, color: typeColor,
+  // one row per type, ~22 px each: a fixed-height chart squeezed 26 labels on top of each other
+  const rows = (n) => ({ height: 22 * n + 40, marginLeft: 110, marginRight: 36 });
+  const valueBars = (x, fmt) => [Plot.barX(f.byType, { y: "type", x, fill: "type", sort: { y: "-x" }, tip: true }),
+    Plot.text(f.byType, { y: "type", x, text: (d) => fmt(d[x]), textAnchor: "start", dx: 4, fill: "#8396bf" })];
+  draw("c-types", { ...rows(types.length), x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: valueBars("units", n0) });
+  draw("c-km", { ...rows(types.length), x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: valueBars("km", (v) => `${n0(v)} km`) });
+  if (f.ages.length) draw("c-ages", { ...rows(new Set(f.ages.map((a) => a.type)).size), x: { label: "built", tickFormat: "d", grid: true }, y: { label: null, domain: d3.groupSort(f.ages, (g) => d3.median(g, (a) => a.year), (a) => a.type) }, color: typeColor,
     marks: [Plot.dot(f.ages, { x: "year", y: "type", fill: "type", r: 3, fillOpacity: 0.7, tip: true }), Plot.tickX(f.ages, Plot.groupY({ x: "median" }, { x: "year", y: "type", stroke: "#fff", strokeWidth: 2 }))] });
   const mix = f.mixByLine.flatMap((l) => l.types.map((t) => ({ line: l.line, ...t })));
   draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line), tickFormat: lineLabel }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
