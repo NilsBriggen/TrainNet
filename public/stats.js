@@ -420,7 +420,7 @@ async function fleetPage(current) {
   if (f.ages.length) draw("c-ages", { marginLeft: 90, x: { label: "built", tickFormat: "d", grid: true }, y: { label: null, domain: d3.groupSort(f.ages, (g) => d3.median(g, (a) => a.year), (a) => a.type) }, color: typeColor,
     marks: [Plot.dot(f.ages, { x: "year", y: "type", fill: "type", r: 3, fillOpacity: 0.7, tip: true }), Plot.tickX(f.ages, Plot.groupY({ x: "median" }, { x: "year", y: "type", stroke: "#fff", strokeWidth: 2 }))] });
   const mix = f.mixByLine.flatMap((l) => l.types.map((t) => ({ line: l.line, ...t })));
-  draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line) }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
+  draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line), tickFormat: lineLabel }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
 }
 
 /** Every month from the first to the last row, missing ones as gaps (pct null), so a line breaks instead of bridging them. */

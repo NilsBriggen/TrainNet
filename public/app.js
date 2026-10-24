@@ -92,7 +92,8 @@ async function pollLive() {
   if (polling || document.hidden) return; // a background tab doesn't need trains; the next visible tick catches up
   polling = true;
   try {
-    const r = await fetch("/api/live").catch(() => null), j = await r?.json().catch(() => null);
+    // never from the browser cache (max-age 14): a stale copy hides a new day and its Date header skews the clock
+    const r = await fetch("/api/live", { cache: "no-cache" }).catch(() => null), j = await r?.json().catch(() => null);
     if (!j?.v) return;
     const server = Date.parse(r.headers.get("date") ?? "");
     if (server) { const skew = server - Date.now(); clockSkew = Math.abs(skew) > 3000 ? skew : 0; }
@@ -603,9 +604,9 @@ try { for (const k of JSON.parse(localStorage.getItem("trainnet.layers") ?? "[]"
 let lost = null;
 /** Sections where trains gain delay, from /api/stats/segments, drawn on the same track paths as the trains. */
 async function showLost() {
-  lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : null)).catch(() => null); // a failure is asked again next time
   const ix = uicIndex(), feats = [];
-  for (const [ua, ub, gain, n] of lost) {
+  for (const [ua, ub, gain, n] of lost ?? []) {
     const a = ix.get(ua), b = ix.get(ub), k = a === undefined || b === undefined ? undefined : segIndex.get(segKey(a, b));
     if (k !== undefined && gain >= 20) feats.push(line(paths[k].pts, { g: gain, n }));
   }
@@ -803,7 +804,7 @@ $("q").onkeydown = (e) => {
 };
 
 // ---------- deep links ----------
-const PANEL_KEYS = ["train", "station", "alert", "line"];
+const PANEL_KEYS = ["train", "station", "alert", "line"], PAGE = Math.random(); // history entries this page load pushed carry PAGE
 function openFromUrl(initial = true) {
   const u = new URL(location.href);
   if (initial && u.searchParams.get("zen") === "1") setZen(true);
@@ -827,7 +828,7 @@ function setUrl(push = false) {
   if (selected?.type === "station") u.searchParams.set("station", day.stations[selected.idx][3]);
   if (selected?.type === "alert") u.searchParams.set("alert", selected.idx);
   if (selected?.type === "line") u.searchParams.set("line", selected.idx);
-  push ? history.pushState({ panel: 1 }, "", u) : history.replaceState(history.state, "", u);
+  push ? history.pushState({ panel: PAGE }, "", u) : history.replaceState(history.state, "", u);
 }
 addEventListener("popstate", () => {
   const u = new URL(location.href);
@@ -852,7 +853,7 @@ function loadDetails(i) {
   fetch(`/api/train/${i}?v=${encodeURIComponent(v)}`).then((r) => (r.status === 409 ? "stale" : r.ok ? r.json() : null)).catch(() => null).then((x) => {
     if (v !== day.v) return; // an answer about yesterday's trip index
     fetching.delete(i);
-    if (x === "stale") return void pollLive(); // reloads the day, then the panel asks again
+    if (x === "stale") { details.set(i, { formation: null, occupancy: null, formationStatus: "offline", at: Date.now() }); return void pollLive(); } // reloads the day; no asking again meanwhile
     const r = x ?? { formation: null, occupancy: null, formationStatus: "offline" };
     if (r.formationStatus === "busy") RETRY.busy = Math.max(5, r.retryAfter ?? 20) * 1000;
     details.set(i, { ...r, at: Date.now() });
@@ -901,7 +902,7 @@ const camPad = (extra = 0) => {
 const trainPos = (i) => { const r = positionOf(i, now(), 0); return r ? [r.q.lon, r.q.lat] : day.stations[day.trips[i][3][0]].slice(1, 3); };
 function closePanel(fromHistory = false) {
   if (!selected) return;
-  if (!fromHistory && history.state?.panel) return void history.back(); // the entry open() added: closing and Back are the same step
+  if (!fromHistory && history.state?.panel === PAGE) return void history.back(); // the entry open() added: closing and Back are the same step (not one from before a reload)
   selected = null;
   panelHtml = "";
   $("panel").hidden = true;

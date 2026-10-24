@@ -191,8 +191,9 @@ function migrateLineKeys(d: Day) {
       setTrip.run(k, r.date, r.trip);
       setStops.run(k, r.date, r.trip);
     }
-    db.query("DELETE FROM agg_line_day WHERE line NOT LIKE '%|%'").run(); // summaries of the old names: rebuilt below
-    db.query("DELETE FROM agg_train_day WHERE line NOT LIKE '%|%'").run();
+    // summaries of the old names, for the days still in trip_day: rebuilt below (older ones keep their names)
+    db.query("DELETE FROM agg_line_day WHERE line NOT LIKE '%|%' AND date IN (SELECT DISTINCT date FROM trip_day)").run();
+    db.query("DELETE FROM agg_train_day WHERE line NOT LIKE '%|%' AND date IN (SELECT DISTINCT date FROM trip_day)").run();
   })();
   for (const { date } of db.query("SELECT date FROM agg_net_day WHERE date IN (SELECT DISTINCT date FROM trip_day)").all() as { date: string }[]) aggregate(date);
   console.log("[record] stored lines re-keyed");
@@ -237,7 +238,7 @@ export function aggregate(date: string) {
     db.query(`INSERT OR REPLACE INTO agg_line_day SELECT date, line, cat, count(*), sum(observed), sum(${P}), sum(cancelled),
       avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY line`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_station_day SELECT date, uic, count(sched_dep), count(dep_delay), sum(dep_delay < ${LATE}), avg(dep_delay)
-      FROM stop_obs WHERE date = ? AND sched_dep IS NOT NULL GROUP BY uic`).run(date);
+      FROM stop_obs WHERE date = ? AND sched_dep IS NOT NULL AND skipped = 0 GROUP BY uic`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_vehicle_day SELECT date, unit, class, type, count(*), sum(km) FROM vehicle_run WHERE date = ? GROUP BY unit`).run(date);
     // delay gained between consecutive stops (arrival at b minus departure at a), per section and direction: the map's "where time is lost"
     db.query(`INSERT OR REPLACE INTO agg_seg_day SELECT x.date, x.uic, y.uic, count(*), sum(y.arr_delay - x.dep_delay) FROM stop_obs x

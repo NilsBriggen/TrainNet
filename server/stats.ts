@@ -116,7 +116,7 @@ function today(d: Day) {
       .map((r) => ({ line: r.line, trips: r.trips, pct: pct(r.ok, r.obs) })),
     byHour: [...hours].sort((a, b) => a[0] - b[0]).map(([hour, x]) => ({ hour, pct: pct(x.ok, x.obs), n: x.obs })),
     worst: all(`SELECT train_no, line, origin, dest, final_delay, arr FROM trip_day WHERE date = ? AND observed AND NOT cancelled ORDER BY final_delay DESC LIMIT 12`, date),
-    stationsLate: all(`SELECT uic, count(dep_delay) n, avg(dep_delay) avg FROM stop_obs WHERE date = ? AND dep_delay IS NOT NULL GROUP BY uic HAVING n >= 30 ORDER BY avg DESC LIMIT 12`, date)
+    stationsLate: all(`SELECT uic, count(dep_delay) n, avg(dep_delay) avg FROM stop_obs WHERE date = ? AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY uic HAVING n >= 30 ORDER BY avg DESC LIMIT 12`, date)
       .map((r) => ({ ...station(d, r.uic), n: r.n, avg: r.avg })),
     hotspots: hot.map((r) => ({ a: station(d, r.ua), b: station(d, r.ub), n: r.n, gain: r.gain })).filter((r) => r.a && r.b),
     cancelledByLine: all(`SELECT line, sum(cancelled) n FROM trip_day WHERE date = ? GROUP BY line HAVING n > 0 ORDER BY n DESC LIMIT 12`, date),
@@ -198,7 +198,7 @@ function history() {
     const cutoff = addDays(zurichDate(new Date()), -30);
     const heat = new Map<string, { dow: number; hour: number; n: number; sum: number; late: number }>();
     for (const r of all(`SELECT sched_dep / 3600 h, count(*) n, sum(dep_delay) s, sum(dep_delay >= 180) late FROM stop_obs
-      WHERE date >= ? AND sched_dep IS NOT NULL AND dep_delay IS NOT NULL GROUP BY h`, cutoff)) {
+      WHERE date >= ? AND sched_dep IS NOT NULL AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY h`, cutoff)) {
       const { hour, dow } = zurich(Math.floor(r.h) * 3600), k = `${dow}:${hour}`, x = heat.get(k) ?? { dow, hour, n: 0, sum: 0, late: 0 };
       x.n += r.n; x.sum += r.s; x.late += r.late;
       heat.set(k, x);
@@ -487,10 +487,10 @@ export function stationStats(d: Day, uic: string) {
     const dow = new Date(`${d.date}T12:00:00Z`).getUTCDay();
     const same = all(`SELECT date, trips, observed FROM agg_net_day WHERE date < ?`, d.date).filter((r) => covered(r) >= COVERED && new Date(`${r.date}T12:00:00Z`).getUTCDay() === dow).map((r) => r.date);
     const typical = Array(24).fill(0);
-    for (const r of same.length ? all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date IN (${same.map(() => "?").join(",")}) AND sched_dep IS NOT NULL GROUP BY h`, uic, ...same) : [])
+    for (const r of same.length ? all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date IN (${same.map(() => "?").join(",")}) AND sched_dep IS NOT NULL AND skipped = 0 GROUP BY h`, uic, ...same) : [])
       typical[zurich(Math.floor(r.h) * 3600).hour] += r.n / same.length;
-    const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr FROM stop_obs WHERE uic = ? AND date = ?`, uic, date);
-    const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ?`, uic);
+    const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr FROM stop_obs WHERE uic = ? AND date = ? AND skipped = 0`, uic, date);
+    const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ? AND skipped = 0`, uic);
     return {
       ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
       busy: all(`SELECT hour, pct, year FROM station_hour WHERE uic = ? ORDER BY hour`, uic), // SBB's count of station users through the day
@@ -625,7 +625,7 @@ export function commute(d: Day, a: string, b: string) {
   return cached(`commute:${d.date}:${a}:${b}`, 1800, () => {
     const rows = all(`SELECT x.date, x.train_no, x.line, x.sched_dep dep, y.sched_arr arr, y.arr_delay delay FROM stop_obs x
       JOIN stop_obs y ON y.date = x.date AND y.trip = x.trip AND y.idx > x.idx
-      WHERE x.uic = ? AND y.uic = ? AND x.date >= ? AND x.sched_dep IS NOT NULL AND y.arr_delay IS NOT NULL AND y.skipped = 0`, a, b, addDays(d.date, -30));
+      WHERE x.uic = ? AND y.uic = ? AND x.date >= ? AND x.sched_dep IS NOT NULL AND y.arr_delay IS NOT NULL AND x.skipped = 0 AND y.skipped = 0`, a, b, addDays(d.date, -30));
     const q = (xs: number[], f: number) => { const s = [...xs].sort((u, v) => u - v); return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * f))] : null; };
     const hours = new Map<number, number[]>(), trains = new Map<string, { train_no: string; line: string; n: number; ok: number; dep: number }>();
     for (const r of rows) {

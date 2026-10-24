@@ -49,9 +49,10 @@ async function refresh() {
   loading = true;
   try {
     if (!graph) await loadRail();
-    day = await loadDay(date, graph);
-    startDay(day); // stores the previous day's remaining finished trips first
-    resetRealtime(day);
+    const next = await loadDay(date, graph);
+    startDay(next); // stores the previous day's remaining finished trips first
+    resetRealtime(next);
+    day = next; // only now: if setting it up threw, the next check tries again
     await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`));
     await loadSbbData().catch((e) => console.error(`[sbbdata] ${e.message}`)); // weekly; before the crawl, which names unit types
     await buildSections(graph, `${DATA_DIR}/paths.json`).catch((e) => console.error(`[sbbdata] sections: ${e.message}`)); // routed once, then cached

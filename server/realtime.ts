@@ -282,6 +282,7 @@ export function startRealtime(day: () => Day | undefined) {
 
 /** Drop realtime that refers to the previous day's trip indexes. */
 export function resetRealtime(day: Day) {
+  feedTime = 0; // else the new day's first poll could look like a repeat of the last one and be skipped
   delays = {};
   alerts = [];
   hist.clear();
