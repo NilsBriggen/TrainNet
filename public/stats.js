@@ -174,7 +174,7 @@ async function overview(current) {
     ${kpi("Scheduled train-km", n0(F.km), "along our track geometry")}
     ${kpi("Stations served", n0(F.stations))}
     ${kpi("Operators", n0(F.operators))}
-    ${kpi("First / last departure", `${F.first}<small> / ${F.last}</small>`)}
+    ${F.allNight ? kpi("First / last departure", "all night", "night trains run tonight: no break in service") : kpi("First / last departure", `${F.first}<small> / ${F.last}</small>`)}
     ${kpi("Night trains", n0(F.night), "departing 01:00–04:00 or NJ/EN")}
   </div>
   <div class="grid">

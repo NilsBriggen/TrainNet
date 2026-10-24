@@ -162,7 +162,7 @@ function facts(d: Day) {
     for (const t of trips) if (!byNum.has(t.num) || t.km.at(-1)! > byNum.get(t.num)!.km.at(-1)!) byNum.set(t.num, t);
     return {
       trips: trips.length, km: Math.round(km), stations: d.stations.filter((s) => s[4] > 0).length, operators: ops.size, night,
-      first: hm(first), last: hm(lastDep),
+      first: hm(first), last: hm(lastDep), allNight: gap < 1800, // weekend nights: night trains, no break
       busiestStations: d.stations.filter((s) => s[3].startsWith("85")).map((s) => ({ name: s[0], uic: s[3], n: s[4] })).sort((a, b) => b.n - a.n).slice(0, 12),
       busiestSegments: segs.filter((x) => swiss(x.a) && swiss(x.b)).sort((x, y) => y.n - x.n).slice(0, 12).map((x) => ({ from: name(x.a), to: name(x.b), n: x.n })),
       fastest: segs.filter((x) => x.best).sort((x, y) => y.best.kmh - x.best.kmh).slice(0, 12)

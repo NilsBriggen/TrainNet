@@ -40,10 +40,13 @@ db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000;"); // the serve
 initHistory(db);
 // line keys take the busiest station by passengers: a rebuild file needs that table too
 if (into) {
-  db.exec(`ATTACH '${MAIN}' AS m`);
-  if (db.query("SELECT 1 FROM m.sqlite_master WHERE name = 'station_pax'").get()) db.exec("DROP TABLE IF EXISTS station_pax; CREATE TABLE station_pax AS SELECT * FROM m.station_pax");
-  else log("[backfill] no passenger counts in stats.db: line hubs fall back to the most served station");
-  db.exec("DETACH m");
+  // read over a separate read-only connection: nothing here may write to the live database
+  let pax: unknown[][] = [];
+  try { pax = new Database(MAIN, { readonly: true }).query("SELECT uic, year, daily, weekday FROM station_pax").values(); } catch {}
+  db.exec("CREATE TABLE IF NOT EXISTS station_pax (uic TEXT PRIMARY KEY, year INTEGER, daily INTEGER, weekday INTEGER); DELETE FROM station_pax;");
+  const ins = db.query("INSERT INTO station_pax VALUES (?, ?, ?, ?)");
+  db.transaction(() => { for (const r of pax) ins.run(...(r as [string, number, number, number])); })();
+  if (!pax.length) log("[backfill] no passenger counts in stats.db: line hubs fall back to the most served station");
 }
 for (const { month, url } of (await listArchive()).filter((m) => m.month >= from && m.month <= to)) {
   const done = (db.query("SELECT count(*) n FROM hist_done WHERE date LIKE ?").get(`${month}-%`) as { n: number }).n;
