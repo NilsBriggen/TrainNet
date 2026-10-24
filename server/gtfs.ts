@@ -126,7 +126,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f5"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f6"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
@@ -256,7 +256,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   const segments = [...seg].flatMap((k) => [Math.floor(k / 100000), k % 100000]);
   const through = throughRunning(days, running, tripIndex);
   await eachRow(zip, "transfers.txt", through.row);
-  const { paths, structs } = await segmentPaths(graph, segments, stations.map((s) => ({ uic: s[3], lon: s[1], lat: s[2] })), `${DATA_DIR}/paths.json`);
+  const { paths, structs, speeds } = await segmentPaths(graph, segments, stations.map((s) => ({ uic: s[3], lon: s[1], lat: s[2] })), `${DATA_DIR}/paths.json`);
   const segKm = new Map<number, number>();
   paths.forEach((p, k) => {
     const a = segments[k * 2], b = segments[k * 2 + 1], pts = p ?? [stations[a][1], stations[a][2], stations[b][1], stations[b][2]];
@@ -276,7 +276,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   const hintSet = (h: string) => hintIdx.get(h) ?? (hintIdx.set(h, hintSets.push(h) - 1), hintSets.length - 1);
   const base = serviceBase(date);
   const json = Bun.gzipSync(JSON.stringify({
-    v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)), structs, // tunnels and bridges per path
+    v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)), structs, speeds, // tunnels and bridges, line speeds per path
     trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0, hintSet(t.hints)]),
     hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));

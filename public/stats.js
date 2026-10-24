@@ -94,7 +94,7 @@ const routes = [
   [/^#?\/?$/, "overview", overview], [/^#\/fleet$/, "fleet", fleetPage], [/^#\/incidents$/, "incidents", incidentsPage],
   [/^#\/train\/(.+)$/, "", trainPage], [/^#\/vehicle\/(.+)$/, "fleet", vehiclePage], [/^#\/station\/(.+)$/, "", stationPage], [/^#\/line\/(.+)$/, "", linePage],
   [/^#\/types$/, "types", typesPage], [/^#\/type\/(\d{3})$/, "types", typePage], [/^#\/history$/, "history", historyPage],
-  [/^#\/records$/, "records", recordsPage], [/^#\/commute(?:\/(\d{7})\/(\d{7}))?$/, "commute", commutePage],
+  [/^#\/records$/, "records", recordsPage], [/^#\/network$/, "network", networkPage], [/^#\/commute(?:\/(\d{7})\/(\d{7}))?$/, "commute", commutePage],
 ];
 async function route(keepScroll = false) {
   timers.forEach(clearInterval);
@@ -512,6 +512,28 @@ function moverTable(m, name, href) {
   return `<p class="hint">Improved most</p>${t(m.up)}<p class="hint">Declined most</p>${t(m.down)}`;
 }
 
+// ---------- network ----------
+async function networkPage(current) {
+  const n = await api("network", true);
+  if (!current()) return;
+  document.title = "TrainNet — Network";
+  if (!n) { main.innerHTML = `<div class="empty-page">SBB's train counts per line section aren't loaded yet. They're fetched once a week.</div>`; return; }
+  const t = (rows, cols) => table([{ h: "Section", f: (x) => `${esc(x.a)} – ${esc(x.b)}<br><span class="muted">${esc(x.line)}</span>` }, ...cols], rows);
+  main.innerHTML = `
+  <div class="page-head"><div><h1>The network, ${esc(n.year)}</h1><p class="sub">Every train on every line section in a year, passenger and freight, from SBB's counts (${n0(n.sections)} sections on SBB, BLS, SOB and other networks)</p></div>
+    <div class="actions"><a href="/">On the map: "Traffic" →</a></div></div>
+  <div class="kpis">
+    ${kpi("Train-km a year", n0(n.km), "on the counted sections")}
+    ${kpi("Freight", pctv(n.freightShare), "of train-km")}
+    ${kpi("Energy", n.kwhPerKm ? `${n.kwhPerKm}<small> kWh</small>` : "–", "per train-km, traction current")}
+  </div>
+  <div class="grid">
+    ${card("Busiest sections", "Trains a day, both directions", t(n.busiest, [{ h: "Trains", num: 1, f: (x) => n0(x.perDay) }, { h: "Freight", num: 1, f: (x) => pctv(x.freight) }]), 6)}
+    ${card("Freight corridors", "Freight trains a day", t(n.freight, [{ h: "Freight", num: 1, f: (x) => n0(x.freightPerDay) }, { h: "of all", num: 1, f: (x) => pctv(x.freight) }]), 6)}
+    ${card("Heaviest sections", "Gross tonnes a day, trains included", t(n.heaviest, [{ h: "Tonnes", num: 1, f: (x) => n0(x.tonnesPerDay) }, { h: "Trains", num: 1, f: (x) => n0(x.perDay) }]), 12)}
+  </div>`;
+}
+
 // ---------- records ----------
 async function recordsPage(current) {
   const r = await api("records");
@@ -672,6 +694,9 @@ async function stationPage(uic, current) {
   <div class="grid">
     ${card("Departures per hour", `Bars: today's timetable${s.typicalDays ? ` · line: departures recorded with live data, average of the last ${s.typicalDays} ${new Date().toLocaleDateString("en-GB", { weekday: "long", timeZone: ZH })}s` : ""}`, ch("c-hour"), 8)}
     ${card("Platforms", "Departures per platform today", s.platforms.length ? ch("c-plat") : empty("–"), 4)}
+    ${s.busy.length ? card("When it's busy", `Share of the station's daily users by hour (SBB count, ${s.busy[0].year})`, ch("c-busy"), 6) : ""}
+    ${s.edges.length ? card("Platform edges", "Length and height of each platform edge (SBB survey for step-free access)", table([{ h: "Track", f: (x) => esc(x.track) }, { h: "Length", num: 1, f: (x) => `${n0(x.length_m)} m` },
+      { h: "Height", num: 1, f: (x) => (x.height_cm ? `${x.height_cm} cm` : "–") }, { h: "", f: (x) => `<span class="muted">${esc(x.type)}</span>` }], s.edges), 6) : ""}
     ${card("Lines", "Departures per line today", table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Departures", num: 1, f: (r) => r.n }], s.lines.map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))), 4)}
     ${card("Daily punctuality", "Departures less than 3 min late; hover for the average departure delay", s.daily.length ? ch("c-days") : empty("History builds up day by day."), 8)}
     ${sinceCard(s.since, "Departures here")}
@@ -681,6 +706,8 @@ async function stationPage(uic, current) {
   draw("c-hour", { x: { label: "hour", type: "band" }, y: { grid: true, label: null }, marks: [
     Plot.barY(s.perHour, { x: "hour", y: "today", fill: "#2b56b0", tip: true }), ...(s.typicalDays ? [Plot.lineY(s.perHour, { x: "hour", y: "typical", stroke: "#5cc8ff", curve: "step" })] : []),
   ] });
+  if (s.busy.length) draw("c-busy", { x: { label: "hour", type: "band", domain: d3.range(24) }, y: { grid: true, label: "% of the day" }, marks: [
+    Plot.barY(s.busy, { x: "hour", y: "pct", fill: "#ffb547", fillOpacity: 0.85, tip: true, title: (h) => `${h.hour}:00–${h.hour + 1}:00\n${h.pct.toFixed(1)} % of the day's users` })] });
   if (s.platforms.length) draw("c-plat", { height: Math.max(120, 18 * s.platforms.length + 30), marginLeft: 50, x: { grid: true, label: null }, y: { label: null }, marks: [Plot.barX(s.platforms, { y: "p", x: "n", fill: "#5cc8ff", sort: { y: "-x" }, tip: true })] });
   if (s.daily.length) draw("c-days", { x: { type: "band", label: null, tickFormat: (d) => d.slice(5) }, y: { grid: true, label: "%", domain: [Math.min(70, d3.min(s.daily, (d) => d.pct) ?? 70), 100] }, marks: [Plot.barY(s.daily, { x: "date", y: "pct", fill: "#3ddc97", tip: true, title: (d) => `${d.date}: ${d.pct} % on time\n${n0(d.dep_obs)} departures recorded · average ${mins(d.avg_dep_delay)}` })] });
 }

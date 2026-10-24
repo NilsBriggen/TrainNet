@@ -493,6 +493,8 @@ export function stationStats(d: Day, uic: string) {
     const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ?`, uic);
     return {
       ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
+      busy: all(`SELECT hour, pct, year FROM station_hour WHERE uic = ? ORDER BY hour`, uic), // SBB's count of station users through the day
+      edges: all(`SELECT track, length_m, height_cm, type FROM platform_edge WHERE uic = ? ORDER BY CAST(track AS INTEGER), track`, uic),
       perHour: perHour.map((n, hour) => ({ hour, today: n, typical: same.length ? Math.round(typical[hour] * 10) / 10 : null })), typicalDays: same.length,
       first: one(`SELECT min(date) d FROM stop_obs WHERE uic = ?`, uic).d,
       today: { ...td, pct: pct(td.ok, td.n) }, month: { ...month, pct: pct(month.ok, month.n), arrPct: pct(month.arr_n - month.arr_late, month.arr_n) },
@@ -568,6 +570,22 @@ export function search(d: Day, q: string) {
   for (const s of d.stations.filter((s) => s[4] && fold(s[0]).includes(q)).sort((a, b) => +fold(b[0]).startsWith(q) - +fold(a[0]).startsWith(q) || b[4] - a[4]).slice(0, 8))
     out.push({ kind: "station", key: s[3], label: s[0], sub: `${s[4]} trains today` });
   return out.slice(0, 12);
+}
+
+// ---------- network (line sections, all trains incl. freight) ----------
+export function network() {
+  return cached("network", 3600, () => {
+    const tot = one(`SELECT max(year) year, count(*) n, sum(trains) trains, sum(freight) freight, sum(train_km) km, sum(kwh) kwh FROM section_traffic`);
+    if (!tot.n) return null;
+    const row = (r: any) => ({ a: r.name_a, b: r.name_b, line: r.line, perDay: Math.round(r.trains / 365), freightPerDay: Math.round(r.freight / 365), freight: pct(r.freight, r.trains), tonnesPerDay: Math.round(r.tonnes / 365) });
+    return {
+      year: tot.year, sections: tot.n, kwhPerKm: tot.km ? Math.round((10 * tot.kwh) / tot.km) / 10 : null, km: Math.round(tot.km),
+      freightShare: pct(one(`SELECT sum(train_km * freight / trains) f FROM section_traffic WHERE trains > 0`).f, tot.km), // of train-km
+      busiest: all(`SELECT * FROM section_traffic ORDER BY trains DESC LIMIT 15`).map(row),
+      freight: all(`SELECT * FROM section_traffic ORDER BY freight DESC LIMIT 15`).map(row),
+      heaviest: all(`SELECT * FROM section_traffic ORDER BY tonnes DESC LIMIT 10`).map(row),
+    };
+  });
 }
 
 // ---------- records ----------

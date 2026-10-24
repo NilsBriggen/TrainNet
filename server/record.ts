@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS agg_station_day (date TEXT, uic TEXT, deps INTEGER, d
 CREATE TABLE IF NOT EXISTS agg_line_day (date TEXT, line TEXT, cat TEXT, trips INTEGER, observed INTEGER, punctual INTEGER,
   cancelled INTEGER, avg_delay REAL, km REAL, PRIMARY KEY (date, line));
 CREATE INDEX IF NOT EXISTS agg_train_day_no ON agg_train_day (train_no);
+CREATE TABLE IF NOT EXISTS station_hour (uic TEXT, hour INTEGER, pct REAL, year INTEGER, PRIMARY KEY (uic, hour));
+CREATE TABLE IF NOT EXISTS section_traffic (a TEXT, b TEXT, year INTEGER, trains REAL, freight REAL, tonnes REAL, kwh REAL, train_km REAL,
+  name_a TEXT, name_b TEXT, line TEXT, lon_a REAL, lat_a REAL, lon_b REAL, lat_b REAL, PRIMARY KEY (a, b));
+CREATE TABLE IF NOT EXISTS platform_edge (uic TEXT, track TEXT, length_m REAL, height_cm INTEGER, type TEXT, PRIMARY KEY (uic, track));
 CREATE TABLE IF NOT EXISTS agg_seg_day (date TEXT, a TEXT, b TEXT, n INTEGER, sum_gain INTEGER, PRIMARY KEY (date, a, b));
 CREATE TABLE IF NOT EXISTS upstream_call (api TEXT, t INTEGER);
 CREATE INDEX IF NOT EXISTS upstream_call_t ON upstream_call (api, t);

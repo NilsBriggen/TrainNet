@@ -80,6 +80,7 @@ function indexDay() {
     const path = p ? unpackPath(p) : straight(day.stations[a], day.stations[b]), total = path.cum[path.cum.length - 1];
     // tunnels and bridges as metres along the stored path (min → max station)
     path.structs = (day.structs?.[k] ?? []).map(([f0, f1, kind, name]) => ({ d0: f0 * total, d1: f1 * total, kind, name }));
+    path.speeds = (day.speeds?.[k] ?? []).map(([f0, f1, v]) => ({ d0: f0 * total, d1: f1 * total, v }));
     return path;
   });
   for (const m of [expCache, routeCache, shown, details, fetching, nextTrip, prevTrip]) m.clear(); // trip indexes changed
@@ -108,7 +109,7 @@ async function pollLive() {
       lost = null;
       indexDay();
       setStatic();
-      if (lostOn) showLost();
+      if (overlays.has("lost")) showLost();
     }
     // alerts (geometry, texts) change rarely: fetched only when their version moves, from a URL that caches for good
     if (j.av !== alertsV) {
@@ -194,6 +195,10 @@ function setStatic() {
     if (at < total) out.push(line(slice(one, cum, at, total), { w, k: 0 }));
     return out.filter((f) => f.geometry.coordinates.length > 1);
   })));
+  map.getSource("speed").setData(fc(paths.flatMap((p) => {
+    const one = [{ path: p, reverse: false }], cum = [0, p.cum[p.cum.length - 1]];
+    return p.speeds.map((x) => line(slice(one, cum, x.d0, x.d1), { v: x.v })).filter((f) => f.geometry.coordinates.length > 1);
+  })));
   // size by passengers where SBB counts them (a busy station with few trains is still a big station), else by trains
   const tier = (s) => { const p = pax[s[3]]?.[0]; return p ? (p >= 40000 ? 2 : p >= 2500 || s[4] >= 60 ? 1 : 0) : s[4] >= 400 ? 2 : s[4] >= 60 ? 1 : 0; };
   // stations without a train today (foreign stops of trips that never reach Switzerland) aren't drawn
@@ -264,6 +269,17 @@ function drawSpark() {
   $("spark").querySelector(".area").setAttribute("d", area);
   $("spark").querySelector(".line").setAttribute("d", lineD);
   $("spark").setAttribute("aria-label", `Punctuality over the last two hours, now ${Math.round(pct(st[st.length - 1]) * 100)}%`);
+}
+
+/** The line speed (OSM maxspeed) where trip i is drawn now, 0 if unknown. */
+function speedAt(i) {
+  const d = shown.get(i);
+  if (d === undefined) return 0;
+  const { route, cum } = tripRoute(i);
+  let k = 0;
+  while (k < route.length - 1 && cum[k + 1] <= d) k++;
+  const { path, reverse } = route[k], x = reverse ? cum[k + 1] - d : d - cum[k];
+  return path.speeds.find((s) => x >= s.d0 && x <= s.d1)?.v ?? 0;
 }
 
 /** Is trip i, `d` metres along its route, inside a tunnel? */
@@ -407,7 +423,7 @@ map.on("load", async () => {
   map.addSource("neighbours", { type: "geojson", data: "neighbours.geojson" });
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
-  for (const id of ["rail", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
+  for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
   // the opaque neighbour fill hides the bit of swisstopo coverage beyond the border
@@ -434,7 +450,16 @@ map.on("load", async () => {
     },
   });
   // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
-  map.addLayer({ id: "lost", type: "line", source: "lost", layout: { visibility: lostOn ? "visible" : "none", "line-cap": "round" }, paint: {
+  const vis = (k) => (overlays.has(k) ? "visible" : "none");
+  // line speed (OSM maxspeed): blue for slow branch lines up to red for the 250 km/h base tunnels
+  map.addLayer({ id: "speed", type: "line", source: "speed", layout: { visibility: vis("speed"), "line-cap": "round" }, paint: {
+    "line-color": ["interpolate", ["linear"], ["get", "v"], 60, "#3b5998", 100, "#5cc8ff", 140, "#2ee6a6", 180, "#ffd23f", 230, "#ff3d5a"],
+    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 12, 4.5], "line-opacity": 0.9 } });
+  // traffic: every train a day per section (freight too), width by trains, colour by the freight share
+  map.addLayer({ id: "traffic", type: "line", source: "traffic", layout: { visibility: vis("traffic"), "line-cap": "round" }, paint: {
+    "line-color": ["interpolate", ["linear"], ["get", "f"], 0, "#5cc8ff", 30, "#c792ff", 70, "#ff7a4d"],
+    "line-width": ["interpolate", ["linear"], ["get", "t"], 0, 0.8, 50, 2, 200, 4.5, 500, 8], "line-opacity": 0.75 } });
+  map.addLayer({ id: "lost", type: "line", source: "lost", layout: { visibility: vis("lost"), "line-cap": "round" }, paint: {
     "line-color": ["interpolate", ["linear"], ["get", "g"], 20, "#ffd23f", 60, "#ff9f1c", 120, "#ff4d4d"],
     "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.2, 12, 5], "line-opacity": 0.85 } });
   const calmSev = (n) => ["all", ["==", ["get", "sev"], n], ["==", ["get", "sudden"], 0]];
@@ -493,7 +518,7 @@ map.on("load", async () => {
   setInterval(() => $("live").classList.toggle("stale", !live.time || Date.now() / 1000 - live.time > 120), 5000);
   setInterval(patchPanel, 1000);
   openFromUrl();
-  if (lostOn) showLost();
+  for (const k of overlays) LOADERS[k]();
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -513,13 +538,16 @@ function hitAt(pt) {
   const a = map.queryRenderedFeatures(box, { layers: ["alert-pts", "alert-hit"] })[0];
   if (a) return { type: "alert", idx: a.properties.id };
   const tn = map.queryRenderedFeatures(box, { layers: ["rail-tunnel"] }).find((f) => f.properties.name);
-  return tn ? { type: "tunnel", idx: tn.properties } : null;
+  if (tn) return { type: "tunnel", idx: tn.properties };
+  const ov = map.queryRenderedFeatures(box, { layers: ["traffic", "speed", "lost"].filter((k) => overlays.has(k)) })[0];
+  return ov ? { type: "overlay", idx: { layer: ov.layer.id, ...ov.properties } } : null;
 }
 // re-checked every frame: trains drive away from a still cursor, which fires no mouse events
 function updateTip() {
   const hit = hoverPt && !zen ? hitAt(hoverPt) : null;
-  map.getCanvas().style.cursor = hit && hit.type !== "tunnel" ? "pointer" : "";
-  const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : hit.type === "tunnel" ? `<span>${esc(hit.idx.name)}</span><span class="sub">tunnel · ${hit.idx.km} km</span>` : stationTip(hit.idx);
+  map.getCanvas().style.cursor = hit && hit.type !== "tunnel" && hit.type !== "overlay" ? "pointer" : "";
+  const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : hit.type === "tunnel" ? `<span>${esc(hit.idx.name)}</span><span class="sub">tunnel · ${hit.idx.km} km</span>`
+    : hit.type === "overlay" ? overlayTip(hit.idx) : stationTip(hit.idx);
   if (!html) { $("tip").hidden = true; tipHtml = ""; return; }
   if (html !== tipHtml) $("tip").innerHTML = tipHtml = html;
   $("tip").hidden = false;
@@ -527,6 +555,11 @@ function updateTip() {
   const w = $("tip").offsetWidth, h = $("tip").offsetHeight;
   const x = hoverPt.x + 14 + w > innerWidth - 8 ? hoverPt.x - 14 - w : hoverPt.x + 14, y = hoverPt.y + 14 + h > innerHeight - 8 ? hoverPt.y - 14 - h : hoverPt.y + 14;
   $("tip").style.transform = `translate(${x}px, ${y}px)`;
+}
+function overlayTip(x) {
+  if (x.layer === "speed") return `<span>up to ${x.v} km/h</span><span class="sub">line speed (OpenStreetMap)</span>`;
+  if (x.layer === "lost") return `<span>+${Math.round(x.g)} s a train</span><span class="sub">delay gained here on average · ${x.n} trains, last 30 days</span>`;
+  return `<span>${esc(x.n)}</span><span class="sub">${x.t.toLocaleString("de-CH")} trains a day · ${x.f} % freight (${x.y}, SBB)</span>`;
 }
 function stationTip(si) {
   const [name, , , , n] = day.stations[si];
@@ -547,7 +580,7 @@ function alertTip(id) {
 map.on("click", (e) => {
   if (zen) return showZenExit();
   const hit = hitAt(e.point);
-  if (hit && hit.type !== "tunnel") open(hit.type, hit.idx, hit.type === "alert");
+  if (hit && hit.type !== "tunnel" && hit.type !== "overlay") open(hit.type, hit.idx, hit.type === "alert");
   else if (selected) closePanel(); // empty map: deselect, un-dim the other trains
 });
 map.on("dragstart", () => setFollow(false));
@@ -564,9 +597,10 @@ for (const b of $("chips").querySelectorAll("button[data-cat]")) {
   };
 }
 
-// "time lost" layer: off by default (it's an analysis, not the live picture), remembered
-let lost = null, lostOn = false;
-try { lostOn = localStorage.getItem("trainnet.lost") === "1"; } catch {}
+// overlays (time lost, traffic, line speed): off by default (they're analyses, not the live picture), remembered
+const overlays = new Set();
+try { for (const k of JSON.parse(localStorage.getItem("trainnet.layers") ?? "[]")) overlays.add(k); } catch {}
+let lost = null;
 /** Sections where trains gain delay, from /api/stats/segments, drawn on the same track paths as the trains. */
 async function showLost() {
   lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : [])).catch(() => []);
@@ -577,18 +611,28 @@ async function showLost() {
   }
   map.getSource("lost").setData(fc(feats));
 }
-const lostBtn = $("chips").querySelector("[data-layer=lost]");
-const setLost = (on) => {
-  lostOn = on;
-  lostBtn.classList.toggle("off", !on);
-  lostBtn.setAttribute("aria-pressed", String(on));
-  try { localStorage.setItem("trainnet.lost", on ? "1" : "0"); } catch {}
-  if (map.getLayer("lost")) map.setLayoutProperty("lost", "visibility", on ? "visible" : "none");
-  if (on && day) showLost();
-};
-lostBtn.classList.toggle("off", !lostOn);
-lostBtn.setAttribute("aria-pressed", String(lostOn));
-lostBtn.onclick = () => setLost(!lostOn);
+let trafficLoaded = false;
+/** Every train per line section in a year, freight included (SBB's counts), on our own track. */
+async function showTraffic() {
+  if (trafficLoaded) return;
+  const geo = await fetch("/api/sections").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (geo) { map.getSource("traffic").setData(geo); trafficLoaded = true; }
+}
+const LOADERS = { lost: showLost, traffic: showTraffic, speed: () => {} };
+function setOverlay(name, on) {
+  on ? overlays.add(name) : overlays.delete(name);
+  const b = $("chips").querySelector(`[data-layer=${name}]`);
+  b.classList.toggle("off", !on);
+  b.setAttribute("aria-pressed", String(on));
+  try { localStorage.setItem("trainnet.layers", JSON.stringify([...overlays])); } catch {}
+  if (map.getLayer(name)) map.setLayoutProperty(name, "visibility", on ? "visible" : "none");
+  if (on && day) LOADERS[name]();
+}
+for (const b of $("chips").querySelectorAll("[data-layer]")) {
+  b.classList.toggle("off", !overlays.has(b.dataset.layer));
+  b.setAttribute("aria-pressed", String(overlays.has(b.dataset.layer)));
+  b.onclick = () => setOverlay(b.dataset.layer, !overlays.has(b.dataset.layer));
+}
 
 // ---------- near me: the nearest station, or the train you're on ----------
 let watch = null, samples = [], watchTimer;
@@ -931,7 +975,8 @@ function renderPanel() {
 /** What moves every second in an open train panel: progress, "next stop", the age of the live data, which stops are behind. */
 function trainNow(i) {
   const sched = day.trips[i][3], n = sched.length / 3, e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t), st = day.stations;
-  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
+  const kmh = p && !p.at ? speedAt(i) : 0;
+  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}${kmh ? ` · line speed ${kmh} km/h` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
   const age = live.time && live.delays[i] ? Math.max(0, Math.round((Date.now() + clockSkew) / 1000 - live.time)) : null;
   return {
     p, cancelled, status: status && ` · ${status}`, prog: !p ? (t < e.stops[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1),
@@ -993,7 +1038,8 @@ function trainHtml(i) {
     }).join("");
     const front = frontSide(f, si, at, p ? p.b : 0, sched);
     const dir = front ? `<div class="dir ${front}">${front === "left" ? "◀ direction of travel" : "direction of travel ▶"}</div>` : "";
-    const where = at ? `${esc(st[sched[(p ? p.b : 0) * 3]][0])}${at.track ? ` · Pl. ${esc(at.track)}` : ""}${at.moved ? ` <span class="moved">platform changed</span>` : ""}` : "";
+    const edge = at?.edge?.length ? ` <span class="muted">(${at.edge.length} m${at.edge.height ? `, ${at.edge.height} cm high` : ""})</span>` : "";
+    const where = at ? `${esc(st[sched[(p ? p.b : 0) * 3]][0])}${at.track ? ` · Pl. ${esc(at.track)}${edge}` : ""}${at.moved ? ` <span class="moved">platform changed</span>` : ""}` : "";
     const nameOf = (uic) => day.stations[uicIndex().get(uic)]?.[0] ?? uic;
     const dests = [...new Set((extra.goals ?? []).map((g) => g[2]))];
     const split = dests.length > 1 ? `<div class="sub">Splits: ${extra.goals.map(([a, b, uic]) => `cars ${a}–${b} → ${esc(nameOf(uic))}`).join(" · ")}</div>` : "";

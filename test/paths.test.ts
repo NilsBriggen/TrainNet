@@ -45,3 +45,13 @@ test("tunnels and bridges come out as shares of the path, OSM pieces of one tunn
   expect(r.t[0][1]).toBeCloseTo(0.75, 2);
   expect(r.t[1][1]).toBeCloseTo(1, 2);
 });
+
+test("line speeds come out as shares of the path, equal neighbours merged, untagged left out", () => {
+  // 5 nodes due east, ~760 m apart: 160, 160, untagged, 80
+  const nodes = [8.5, 47, 8.51, 47, 8.52, 47, 8.53, 47, 8.54, 47];
+  const gg = makeGraph(nodes, [0, 1, 1, 2, 2, 3, 3, 4], [], [], [], [], [160, 160, 0, 80]);
+  const r = routeWith(gg, [8.5, 47], [8.54, 47])!;
+  expect(r.s.map(([, , v]) => v)).toEqual([160, 80]);
+  expect(r.s[0][1]).toBeCloseTo(0.5, 2);
+  expect(r.s[1][0]).toBeCloseTo(0.75, 2);
+});

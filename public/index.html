@@ -66,6 +66,8 @@
     <span class="gap"></span>
     <button data-cat="delays" style="--c:#ffd23f">Delays</button>
     <button data-layer="lost" style="--c:#ff7a4d" title="Sections where trains gain delay, last 30 days">Time lost</button>
+    <button data-layer="traffic" style="--c:#c792ff" title="Trains a day per line section, freight included (SBB counts)">Traffic</button>
+    <button data-layer="speed" style="--c:#2ee6a6" title="Line speed (OpenStreetMap maxspeed)">Line speed</button>
   </nav>
 
   <div id="tip" hidden></div>
@@ -92,6 +94,8 @@
     <ul>
       <li><span class="ki"><span class="k-hub"></span>major station</span><span class="ki"><span class="k-stn"></span>station</span><span class="ki"><span class="k-line tunnel"></span>tunnel: trains dim inside</span><span class="ki"><span class="k-line bridge"></span>bridge (zoomed in)</span></li>
       <li><span class="ki"><span class="k-line" style="--c:#ffd23f"></span><span class="k-line" style="--c:#ff4d4d"></span>time lost</span><small>with "Time lost" on: sections where trains gain 20 s to 2+ min of delay on average, last 30 days</small></li>
+      <li><span class="ki"><span class="k-line" style="--c:#5cc8ff"></span><span class="k-line" style="--c:#ff7a4d"></span>traffic</span><small>with "Traffic" on: thicker = more trains a day; orange = much freight</small></li>
+      <li><span class="ki"><span class="k-line" style="--c:#3b5998"></span><span class="k-line" style="--c:#2ee6a6"></span><span class="k-line" style="--c:#ff3d5a"></span>line speed</span><small>with "Line speed" on: 60 → 250 km/h</small></li>
       <li><span class="ki"><span class="k-me"></span>you</span><small>"Near me" opens the nearest station; moving with a train, it finds that train. Your location stays in your browser.</small></li>
     </ul>
     <h3>Keys</h3>

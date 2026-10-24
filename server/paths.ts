@@ -11,10 +11,13 @@ export async function writeAtomic(file: string, data: string) {
 export type Graph = {
   nodes: Float64Array; adj: Int32Array[]; len: Float32Array[]; grid: Map<number, number[]>; comp: Int32Array;
   kind: Uint8Array[]; name: Int32Array[]; names: string[]; // per adjacency entry: 1 tunnel, 2 bridge; tunnel name index
+  speed: Uint16Array[]; // per adjacency entry: OSM maxspeed, km/h, 0 = unknown
 };
 export type Path = number[]; // flat [lon, lat, ...]
 /** Tunnels and bridges along a path: [fromShare, toShare, kind (1 tunnel, 2 bridge), name] with shares of its length, 0..1. */
 export type Structs = [number, number, number, string][];
+/** Line speed along a path: [fromShare, toShare, km/h], untagged stretches left out. */
+export type Speeds = [number, number, number][];
 
 const R = 6371000;
 export const dist = (lon1: number, lat1: number, lon2: number, lat2: number) => {
@@ -23,11 +26,12 @@ export const dist = (lon1: number, lat1: number, lon2: number, lat2: number) => 
 };
 const cell = (lon: number, lat: number) => Math.round(lon * 100) * 100000 + Math.round(lat * 100);
 
-export function makeGraph(nodes: number[], edges: number[], svc: number[] = [], kind: number[] = [], name: number[] = [], names: string[] = []): Graph {
+export function makeGraph(nodes: number[], edges: number[], svc: number[] = [], kind: number[] = [], name: number[] = [], names: string[] = [], speed: number[] = []): Graph {
   const n = nodes.length / 2, adjL: number[][] = Array.from({ length: n }, () => []), lenL: number[][] = Array.from({ length: n }, () => []);
-  const kindL: number[][] = Array.from({ length: n }, () => []), nameL: number[][] = Array.from({ length: n }, () => []);
+  const kindL: number[][] = Array.from({ length: n }, () => []), nameL: number[][] = Array.from({ length: n }, () => []), speedL: number[][] = Array.from({ length: n }, () => []);
   for (let e = 0; e < edges.length; e += 2) {
-    const a = edges[e], b = edges[e + 1], k = kind[e / 2] ?? 0, nm = name[e / 2] ?? -1;
+    const a = edges[e], b = edges[e + 1], k = kind[e / 2] ?? 0, nm = name[e / 2] ?? -1, v = speed[e / 2] ?? 0;
+    speedL[a].push(v), speedL[b].push(v);
     // service track (sidings, crossovers) costs 3x so A* only uses it to bridge junction gaps
     const d = dist(nodes[a * 2], nodes[a * 2 + 1], nodes[b * 2], nodes[b * 2 + 1]) * (svc[e / 2] ? 3 : 1);
     adjL[a].push(b), lenL[a].push(d), adjL[b].push(a), lenL[b].push(d);
@@ -49,7 +53,7 @@ export function makeGraph(nodes: number[], edges: number[], svc: number[] = [], 
   }
   return {
     nodes: Float64Array.from(nodes), adj: adjL.map((a) => Int32Array.from(a)), len: lenL.map((l) => Float32Array.from(l)), grid, comp,
-    kind: kindL.map((k) => Uint8Array.from(k)), name: nameL.map((x) => Int32Array.from(x)), names,
+    kind: kindL.map((k) => Uint8Array.from(k)), name: nameL.map((x) => Int32Array.from(x)), names, speed: speedL.map((x) => Uint16Array.from(x)),
   };
 }
 
@@ -150,8 +154,8 @@ export function simplify(p: Path, tol = 4): Path {
 
 export async function loadGraph(file: string): Promise<Graph | null> {
   if (!existsSync(file)) return null;
-  const { nodes, edges, svc, kind, name, names } = await Bun.file(file).json();
-  return makeGraph(nodes, edges, svc, kind, name, names);
+  const { nodes, edges, svc, kind, name, names, speed } = await Bun.file(file).json();
+  return makeGraph(nodes, edges, svc, kind, name, names, speed);
 }
 
 /**
@@ -175,7 +179,21 @@ export function structsOf(g: Graph, a: [number, number], nodes: number[], total:
 export function route(g: Graph, a: [number, number], b: [number, number]): Path | null {
   return routeWith(g, a, b)?.p ?? null;
 }
-export function routeWith(g: Graph, a: [number, number], b: [number, number]): { p: Path; t: Structs } | null {
+/** Line speed intervals along a routed node list: equal neighbours merged, untagged edges and stretches under 300 m left out. */
+export function speedsOf(g: Graph, a: [number, number], nodes: number[], total: number): Speeds {
+  const out: Speeds = [];
+  let at = dist(a[0], a[1], g.nodes[nodes[0] * 2], g.nodes[nodes[0] * 2 + 1]);
+  for (let k = 1; k < nodes.length; k++) {
+    const u = nodes[k - 1], v = nodes[k], j = g.adj[u].indexOf(v), d = dist(g.nodes[u * 2], g.nodes[u * 2 + 1], g.nodes[v * 2], g.nodes[v * 2 + 1]);
+    const kmh = g.speed[u]?.[j] ?? 0, last = out.at(-1);
+    if (kmh && last && last[2] === kmh && at - last[1] * total < 30) last[1] = (at + d) / total;
+    else if (kmh) out.push([at / total, (at + d) / total, kmh]);
+    at += d;
+  }
+  return out.filter((x) => (x[1] - x[0]) * total >= 300).map((x) => [+x[0].toFixed(5), +x[1].toFixed(5), x[2]]);
+}
+
+export function routeWith(g: Graph, a: [number, number], b: [number, number]): { p: Path; t: Structs; s: Speeds } | null {
   let nodes: number[] | null = null;
   for (const A of snapAll(g, a[0], a[1])) {
     const B = snapAll(g, b[0], b[1]).find((x) => g.comp[x.node] === g.comp[A.node]);
@@ -189,10 +207,10 @@ export function routeWith(g: Graph, a: [number, number], b: [number, number]): {
   let len = 0;
   for (let i = 2; i < p.length; i += 2) len += dist(p[i - 2], p[i - 1], p[i], p[i + 1]);
   if (len > 2.5 * dist(a[0], a[1], b[0], b[1]) + 3000) return null;
-  return { p: simplify(p).map((x) => +x.toFixed(5)), t: structsOf(g, a, nodes, len) };
+  return { p: simplify(p).map((x) => +x.toFixed(5)), t: structsOf(g, a, nodes, len), s: speedsOf(g, a, nodes, len) };
 }
 
-const CACHE_V = 2; // 2: tunnels and bridges per path. Another version (or a rebuilt rail graph) starts the cache over.
+const CACHE_V = 3; // 2: tunnels and bridges per path, 3: line speeds. Another version (or a rebuilt rail graph) starts the cache over.
 
 /**
  * Paths for all segments, from cache + routing. Returns paths and their tunnels/bridges aligned with `segments`
@@ -201,23 +219,24 @@ const CACHE_V = 2; // 2: tunnels and bridges per path. Another version (or a reb
 export async function segmentPaths(g: Graph | null, segments: number[], stations: { uic: string; lon: number; lat: number }[], cacheFile: string) {
   const file = existsSync(cacheFile) ? await Bun.file(cacheFile).json().catch(() => null) : null; // unreadable: route again
   const graphId = g ? `${g.nodes.length}:${g.names.length}` : "";
-  const cache: Record<string, [Path, Structs] | null> = file?.v === CACHE_V && file.graph === graphId ? file.segs : {};
+  const cache: Record<string, [Path, Structs, Speeds] | null> = file?.v === CACHE_V && file.graph === graphId ? file.segs : {};
   let computed = 0, matched = 0;
   const t0 = Date.now();
-  const paths: (Path | null)[] = [], structs: (Structs | null)[] = [];
+  const paths: (Path | null)[] = [], structs: (Structs | null)[] = [], speeds: (Speeds | null)[] = [];
   for (let k = 0; k < segments.length; k += 2) {
     const A = stations[segments[k]], B = stations[segments[k + 1]], key = `${A.uic}|${B.uic}`;
     if (!(key in cache) && g) {
       const r = routeWith(g, [A.lon, A.lat], [B.lon, B.lat]);
-      cache[key] = r && [r.p, r.t];
+      cache[key] = r && [r.p, r.t, r.s];
       computed++;
     }
     const c = cache[key] ?? null;
     if (c) matched++;
     paths.push(c?.[0] ?? null);
     structs.push(c?.[1].length ? c[1] : null);
+    speeds.push(c?.[2]?.length ? c[2] : null);
   }
   if (computed && g) await writeAtomic(cacheFile, JSON.stringify({ v: CACHE_V, graph: graphId, segs: cache }));
   console.log(`[paths] ${matched}/${segments.length / 2} segments on track (${computed} newly routed, ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
-  return { paths, structs };
+  return { paths, structs, speeds };
 }

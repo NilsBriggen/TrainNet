@@ -32,3 +32,19 @@ test("platform ends: the first and the last sector of a platform, from the signs
   expect(platformEnds("8507000", "6A-C")).toEqual([7.431, 46.95, 7.44, 46.95]); // a split track name falls back to its number
   expect(platformEnds("8507000", "7")).toBeNull();
 });
+
+test("line sections: both directions and both traffic kinds of the latest year add up; platform edges keyed like the sector signs", async () => {
+  const { importSections, importPlatformEdges, importBusyHours, platformEdge, usePlatformEdges } = await import("../server/sbbdata");
+  const { db } = await import("../server/record");
+  const line = (from: number, to: number, code: string, n: number, jahr = "2025") => ({ von_bpuic: from, bis_bpuic: to, geschaeftscode: code, jahr, anzahl_zuege: n, gesamtbelastung_bruttotonnen: n * 500, trassenkilometer: n * 2, stromverbrauch_auf_abschnitt: n * 30,
+    bp_von_abschnitt_bezeichnung: `S${from}`, bp_bis_abschnitt_bezeichnung: `S${to}`, strecke_bezeichnung: "L", verbindung: { geometry: { coordinates: [[8, 47], [8.1, 47]] } } });
+  expect(importSections([line(8500002, 8500001, "Personenverkehr", 300), line(8500001, 8500002, "Personenverkehr", 300), line(8500001, 8500002, "Gueterverkehr", 100), line(8500001, 8500002, "Gueterverkehr", 999, "2024")])).toBe(1);
+  expect(db.query("SELECT a, b, trains, freight, name_a FROM section_traffic").all()).toEqual([{ a: "8500001", b: "8500002", trains: 700, freight: 100, name_a: "S8500001" }]);
+  importPlatformEdges([{ didok: "6000", kundengleisnr: "7", perronkante_laenge: 320.4, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" },
+    { didok: "6000", kundengleisnr: "7", perronkante_laenge: 410, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" }]);
+  usePlatformEdges();
+  expect(platformEdge("8506000", "7")).toEqual({ length: 410, height: 55 });
+  expect(platformEdge("8506000", "7AB")).toEqual({ length: 410, height: 55 });
+  importBusyHours([{ bpuic: 8503000, uhrzeit: 17, prozentsatz: 9.5, jahr_annee_anno_year: "2023" }, { bpuic: 8503000, uhrzeit: 17, prozentsatz: 9.1, jahr_annee_anno_year: "2024" }]);
+  expect(db.query("SELECT hour, pct, year FROM station_hour").all()).toEqual([{ hour: 17, pct: 9.1, year: 2024 }]);
+});

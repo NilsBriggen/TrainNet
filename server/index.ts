@@ -9,7 +9,7 @@ import { DATA_DIR } from "./gtfs";
 import { db, flushAll, initRecord, maintain, startDay } from "./record";
 import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
-import { loadSbbData, platformEnds, stationPax, useRegisterNames, usePlatformEnds } from "./sbbdata";
+import { buildSections, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
@@ -25,6 +25,7 @@ let graph: Graph | null = null;
 initRecord(`${DATA_DIR}/stats.db`);
 useRegisterNames();
 usePlatformEnds();
+usePlatformEdges();
 
 const RAIL = `${DATA_DIR}/rail.json`;
 async function loadRail() {
@@ -53,6 +54,7 @@ async function refresh() {
     resetRealtime(day);
     await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`));
     await loadSbbData().catch((e) => console.error(`[sbbdata] ${e.message}`)); // weekly; before the crawl, which names unit types
+    await buildSections(graph, `${DATA_DIR}/paths.json`).catch((e) => console.error(`[sbbdata] sections: ${e.message}`)); // routed once, then cached
     if (!LIVE_FROM) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // the new day's first pass, right away
   } catch (e: any) {
     console.error(`[gtfs] ${e.message}`); // keep serving the previous day, retry next check
@@ -134,6 +136,8 @@ const server = Bun.serve({
     "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
     "/api/stats/segments": (req) => statsJson(req, stats.segments),
     "/api/stats/records": (req) => statsJson(req, stats.records),
+    "/api/stats/network": (req) => statsJson(req, stats.network),
+    "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
     "/api/train/:idx": async (req) => {
@@ -147,7 +151,7 @@ const server = Bun.serve({
       const allow = () => { const n = (lookups.get(ip) ?? 0) + 1; lookups.set(ip, n); return n <= LOOKUPS; };
       const r = await details(trip, day!.base, allow), final = ["ok", "unsupported", "past"].includes(r.formationStatus);
       // where each stop's platform has its first and last sector: with the direction of travel, that's the front of the train
-      for (const s of r.stops as any[]) s.ends = platformEnds(s.uic, s.track);
+      for (const s of r.stops as any[]) { s.ends = platformEnds(s.uic, s.track); s.edge = platformEdge(s.uic, s.track); } // length and height of that platform
       return Response.json(r, { headers: { "Cache-Control": final ? "public, max-age=300" : "no-store" } }); // the URL carries the day version
     },
   },
