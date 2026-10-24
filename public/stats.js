@@ -489,7 +489,7 @@ async function historyPage(current) {
   const years = [...new Set(h.calendar.map((c) => c[0].slice(0, 4)))].reverse(), monthStarts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
   const cal = h.calendar.map(([date, p, trips, partial]) => ({ date, year: date.slice(0, 4), doy: (Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8)) - Date.UTC(+date.slice(0, 4), 0, 1)) / 864e5 + 1, pct: p, trips, partial }));
   draw("c-cal", { height: 22 * years.length + 60, marginLeft: 44, marginBottom: 24, x: { type: "band", domain: d3.range(1, 367), axis: null, paddingInner: 0 }, y: { domain: years, label: null, tickSize: 0, paddingInner: 0.15 },
-    color: { scheme: "RdYlGn", domain: [86, 97], clamp: true, legend: true, label: "% on time" }, marks: [
+    color: { type: "linear", scheme: "RdYlGn", domain: [86, 97], clamp: true, legend: true, label: "% on time" }, marks: [
       Plot.cell(cal.filter((c) => !c.partial), { x: "doy", y: "year", fill: "pct", tip: true, title: (c) => `${day(c.date)}\n${c.pct} % on time · ${n0(c.trips)} trains` }),
       Plot.cell(cal.filter((c) => c.partial), { x: "doy", y: "year", fill: "#2a3550", title: (c) => `${day(c.date)}\nincomplete in the archive (${n0(c.trips)} trains)` }),
       Plot.axisX(monthStarts, { tickFormat: (d) => ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][monthStarts.indexOf(d)], tickSize: 0, label: null }),
