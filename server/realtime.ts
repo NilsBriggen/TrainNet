@@ -38,10 +38,10 @@ const KINDS: [string, RegExp][] = [
   ["person", /\bpersons?\b|people|personenunfall|accident involving|on the track/],
   ["signal", /signal|interlocking|points|switch|stellwerk|weiche|level crossing|barrier|aiguillage|enclenchement/],
   ["power", /overhead line|power|electric|catenary|fahrleitung|strom|ligne de contact/],
-  ["train", /(fault|defect|problem|difficult\w*) (on|with|of) (a|the)? ?(train|vehicle|rolling)|defective (train|vehicle)|vehicle (fault|defect)|breakdown|fahrzeugstörung|panne/],
+  ["train", /(fault|defect|problem|difficult\w*) (on|with|of) (a|the)? ?(train|vehicle|rolling)|defective (train|vehicle)|vehicle (fault|defect)|breakdown|fahrzeugstörung|panne|train blocking|blocking train/],
   ["infra", /infrastructure|track (damage|fault|defect)|damage to the track|rail break|route blocking|embankment|gleis/],
   ["weather", /storm|natural (hazard|event)|snow|weather|tree|landslide|flood|avalanche|rock|wind|unwetter|hail/],
-  ["police", /police|emergency (services|operation)|fire|polizei|feuerwehr|rescue/],
+  ["police", /police|emergency (services|operation)|fire|polizei|feuerwehr|rescue|vandal/],
 ];
 /** What happened, from the "This is due to …." sentence and the header. */
 export function classify(h: string, d: string, cause: string) {

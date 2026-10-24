@@ -15,6 +15,8 @@ test("classify reads the reason sentence from real feed texts", () => {
   // "personnel" is staff, not a person on the track
   expect(classify("Limited service between Palézieux and Vevey [train]", "This is due to a shortage of personnel.", "OTHER_CAUSE")).toEqual({ why: "shortage of personnel", kind: "staff" });
   expect(classify("Interrupted service between Olten and Aarau", "This is due to an accident involving a person.", "ACCIDENT").kind).toBe("person");
+  expect(classify("Interrupted service between Reiden and Nebikon [train]", "This is due to vandalism.", "OTHER_CAUSE").kind).toBe("police");
+  expect(classify("Limited service between A and B", "This is due to a train blocking the tracks.", "OTHER_CAUSE").kind).toBe("train");
 });
 
 const now = 1_800_000_000;
