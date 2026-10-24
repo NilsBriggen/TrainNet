@@ -22,7 +22,7 @@ test("a finished trip is stored with final delay, punctuality and km", () => {
   recordTrips(day, { 0: { u: [[1, 240, 240, 0], [2, 120, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
   flush(day, at("1130"), 20 * 60);
   const t1: any = db.query("SELECT * FROM trip_day WHERE trip = 't1'").get();
-  expect(t1).toMatchObject({ observed: 1, final_delay: 120, max_delay: 240, stops: 2, stops_ok: 1, km: 100, line: "IC1", origin: "A", dest: "C" });
+  expect(t1).toMatchObject({ observed: 1, final_delay: 120, max_delay: 240, stops: 2, stops_ok: 1, km: 100, line: "IC1|8500001", origin: "A", dest: "C" }); // keyed line: name + busiest (here: lowest) station
   const t2: any = db.query("SELECT * FROM trip_day WHERE trip = 't2'").get();
   expect(t2).toMatchObject({ observed: 0, final_delay: null });
   expect(db.query("SELECT count(*) n FROM stop_obs WHERE trip = 't2'").get()).toEqual({ n: 0 }); // no delays, no per-stop rows
@@ -95,4 +95,21 @@ test("yesterday's summary is redone once after 11:00 (night trains), not on ever
     maintain(new Date(Date.parse("2026-10-24T10:10:00Z")));
   } finally { console.log = log; }
   expect(logs.filter((m) => m.includes("aggregated 2026-10-23"))).toHaveLength(2);
+});
+
+test("punctuality is taken at the last Swiss stop: a delay abroad isn't counted", () => {
+  const abroad = { ...day, stations: [...day.stations.slice(0, 2), ["Milano", 9.2, 45.5, "8301700", 2]] };
+  startDay(abroad, at("0900"));
+  recordTrips(abroad, { 0: { u: [[1, 60, 60, 0], [2, 900, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
+  flush(abroad, at("1200"), 0);
+  expect(db.query("SELECT final_delay, max_delay FROM trip_day WHERE trip = 't1'").get()).toEqual({ final_delay: 60, max_delay: 900 });
+});
+
+test("rows stored with a bare line name get today's key, and their day is summarised again", () => {
+  db.exec(`INSERT INTO trip_day (date, trip, train_no, line, cat, agency, observed, cancelled, final_delay, km) VALUES ('2026-10-22', 'old', '700', 'IC1', 'IC', '11', 1, 0, 30, 100)`);
+  db.exec(`INSERT INTO agg_net_day (date, trips) VALUES ('2026-10-22', 1)`);
+  db.exec(`INSERT INTO agg_line_day (date, line, trips) VALUES ('2026-10-22', 'IC1', 1)`);
+  startDay({ ...day }, at("0901"));
+  expect(db.query("SELECT line FROM trip_day WHERE trip = 'old'").get()).toEqual({ line: "IC1|8500001" });
+  expect(db.query("SELECT line, trips, punctual FROM agg_line_day").all()).toEqual([{ line: "IC1|8500001", trips: 1, punctual: 1 }]);
 });

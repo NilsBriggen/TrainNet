@@ -1,6 +1,7 @@
 // /api/stats/*: computed from the current day, the live realtime state and the history database; cached briefly.
 import { applyDelays, locate } from "../public/position.js";
-import { db, lineOf } from "./record";
+import { db, lineKeysOf, lineOf } from "./record";
+import { ambiguousLabels, lineName } from "./lines";
 import { current } from "./realtime";
 import { occupancyAll, TYPE_INFO, typeName, wikiOf } from "./details";
 import { addDays, zurichDate } from "./time";
@@ -34,6 +35,9 @@ function cached<T>(key: string, ttlSec: number, fn: () => T): T {
 const all = (sql: string, ...p: any[]) => db.query(sql).all(...p) as any[];
 const one = (sql: string, ...p: any[]) => db.query(sql).get(...p) as any;
 const pct = (ok: number, n: number) => (n ? Math.round((1000 * ok) / n) / 10 : null);
+/** Share of a recorded day's trains that had live data: a day recorded only partly (restarts, the first evening) isn't typical. */
+const covered = (r: { trips: number; observed: number }) => (r.trips ? Math.round((100 * r.observed) / r.trips) : 0);
+const COVERED = 60;
 const nameOfUic = (d: Day) => cached(`uic:${d.version}`, 86400, () => new Map(d.stations.map((s, i) => [s[3], i])));
 const station = (d: Day, uic: string) => { const i = nameOfUic(d).get(uic); return i === undefined ? null : { i, name: d.stations[i][0], uic, lon: d.stations[i][1], lat: d.stations[i][2] }; };
 
@@ -128,12 +132,12 @@ function facts(d: Day) {
     const trips = d.trips.filter((t) => t.date === d.date);
     const seg = new Map<string, { a: number; b: number; n: number; km: number; sane: boolean; best?: any }>();
     const ops = new Map<string, number>(), plats = new Map<number, Set<number>>();
-    let first = Infinity, lastArr = 0, km = 0, night = 0;
+    let km = 0, night = 0;
+    const deps: number[] = [];
     for (const t of trips) {
       const s = t.stops, n = s.length / 3, line = lineOf(d, t.route);
       km += t.km[n - 1];
-      // after the night break and before it: departures between 03:30 and 27:00 service time
-      for (let k = 0; k < n - 1; k++) if (swiss(s[k * 3]) && s[k * 3 + 2] >= 12600 && s[k * 3 + 2] < 97200) { first = Math.min(first, s[k * 3 + 2]); lastArr = Math.max(lastArr, s[k * 3 + 2]); }
+      for (let k = 0; k < n - 1; k++) if (swiss(s[k * 3])) deps.push(s[k * 3 + 2] % 86400);
       if (/^(NJ|EN)$/.test(d.routes[t.route][1]) || (s[2] % 86400 >= 3600 && s[2] % 86400 < 4 * 3600)) night++;
       ops.set(t.agency, (ops.get(t.agency) ?? 0) + 1);
       for (let k = 0; k < n; k++) if (t.plat[k]) (plats.get(s[k * 3]) ?? plats.set(s[k * 3], new Set()).get(s[k * 3])!).add(t.plat[k]);
@@ -149,12 +153,16 @@ function facts(d: Day) {
       }
     }
     const name = (i: number) => d.stations[i][0], segs = [...seg.values()];
+    // the night break is the longest gap between departures around the clock: the first and last train sit on either side of it
+    deps.sort((a, b) => a - b);
+    let gap = deps.length ? deps[0] + 86400 - deps.at(-1)! : 0, first = deps[0] ?? 0, lastDep = deps.at(-1) ?? 0;
+    for (let k = 1; k < deps.length; k++) if (deps[k] - deps[k - 1] > gap) { gap = deps[k] - deps[k - 1]; first = deps[k]; lastDep = deps[k - 1]; }
     const hm = (sec: number) => `${String(Math.floor(sec / 3600) % 24).padStart(2, "0")}:${String(Math.floor(sec / 60) % 60).padStart(2, "0")}`;
     const byNum = new Map<string, typeof trips[number]>();
     for (const t of trips) if (!byNum.has(t.num) || t.km.at(-1)! > byNum.get(t.num)!.km.at(-1)!) byNum.set(t.num, t);
     return {
       trips: trips.length, km: Math.round(km), stations: d.stations.filter((s) => s[4] > 0).length, operators: ops.size, night,
-      first: hm(first), last: hm(lastArr),
+      first: hm(first), last: hm(lastDep),
       busiestStations: d.stations.filter((s) => s[3].startsWith("85")).map((s) => ({ name: s[0], uic: s[3], n: s[4] })).sort((a, b) => b.n - a.n).slice(0, 12),
       busiestSegments: segs.filter((x) => swiss(x.a) && swiss(x.b)).sort((x, y) => y.n - x.n).slice(0, 12).map((x) => ({ from: name(x.a), to: name(x.b), n: x.n })),
       fastest: segs.filter((x) => x.best).sort((x, y) => y.best.kmh - x.best.kmh).slice(0, 12)
@@ -197,7 +205,7 @@ function history() {
     }
     return {
       days: all(`SELECT date, trips, observed, punctual, cancelled, km, avg_delay, p90_delay FROM agg_net_day ORDER BY date`)
-        .map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled) })),
+        .map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled), coverage: covered(r) })),
       heat: [...heat.values()].map((x) => ({ dow: DOW[x.dow], hour: x.hour, avg: x.sum / x.n / 60, late: pct(x.late, x.n), n: x.n })),
       incidentsByWeek: byWeek(all(`SELECT first_seen, kind FROM alert_log WHERE sev_max >= 2 ORDER BY first_seen`)),
     };
@@ -224,34 +232,39 @@ function typical(d: Day) {
 }
 
 export const overview = (d: Day) => cached(`overview:${d.version}`, 20, () => ({
-  date: d.date, live: live(d), facts: facts(d), today: today(d), crowding: crowding(d), history: history(), typical: typical(d),
+  date: d.date, feedTime: current().feedTime, live: live(d), facts: facts(d), today: today(d), crowding: crowding(d), history: history(), typical: typical(d),
   series: all(`SELECT t, running, late, cancelled, stuck, observed FROM net_sample WHERE t >= ? GROUP BY t / 60 ORDER BY t`, d.base / 1000), // one per minute
 }));
 
 // ---------- history since 2018 (official actual data) ----------
 export function longHistory() {
-  return cached("long", 600, () => { // cheap: a few thousand monthly rows
-    const months = all(`SELECT substr(date, 1, 7) month, count(*) days, sum(trips) trips, sum(observed) observed, sum(punctual) punctual, sum(cancelled) cancelled,
-      sum(extra) extra, sum(sum_final_delay) sum_delay FROM hist_net_day GROUP BY month ORDER BY month`)
-      .map((m) => ({ month: m.month, days: m.days, perDay: Math.round(m.trips / m.days), pct: pct(m.punctual, m.observed), cancelled: m.cancelled, extra: m.extra,
-        cancelledPct: pct(m.cancelled, m.trips), avgDelay: m.observed ? m.sum_delay / m.observed : null }));
-    if (!months.length) return null;
-    const years = new Map<string, any>();
-    for (const m of months) {
-      const y = years.get(m.month.slice(0, 4)) ?? years.set(m.month.slice(0, 4), { year: m.month.slice(0, 4), days: 0, cancelled: 0, extra: 0 }).get(m.month.slice(0, 4));
-      y.days += m.days; y.cancelled += m.cancelled; y.extra += m.extra;
-    }
-    // hist_* tables count cancelled trains apart: "observed" is already the trains that ran with a known arrival
-    const yearPct = all(`SELECT substr(date, 1, 4) year, sum(punctual) ok, sum(observed) n FROM hist_net_day GROUP BY year`);
-    for (const r of yearPct) Object.assign(years.get(r.year), { pct: pct(r.ok, r.n) });
-    // lines: only those with real traffic in a year, so a line with three trains doesn't top the list
-    const lineYears = all(`SELECT substr(month, 1, 4) year, line, max(cat) cat, sum(trips) trips, sum(punctual) ok, sum(observed) n FROM hist_line_month
-      GROUP BY year, line HAVING n >= 3000`).map((r) => ({ year: r.year, line: r.line, trips: r.trips, pct: pct(r.ok, r.n) }));
+  return cached("long", 600, () => { // cheap: a few thousand daily rows
+    const days = all(`SELECT date, trips, observed, punctual, cancelled, extra, sum_final_delay FROM hist_net_day ORDER BY date`);
+    if (!days.length) return null;
+    // a day with under half the trains of the days around it is a gap in the archive (1–16 July 2019 are placeholder
+    // files): kept in the ratios, left out of per-day figures
+    days.forEach((r, i) => {
+      const near = days.slice(Math.max(0, i - 14), i + 15).map((x) => x.trips).sort((a, b) => a - b);
+      r.partial = r.trips < near[near.length >> 1] / 2;
+    });
+    const sum = (rows: any[], k: string) => rows.reduce((a, r) => a + r[k], 0);
+    const group = (len: number) => [...d3group(days, (r) => r.date.slice(0, len))].map(([key, rows]) => {
+      const whole = rows.filter((r) => !r.partial), observed = sum(rows, "observed"), trips = sum(rows, "trips");
+      return { key, days: rows.length, missing: rows.length - whole.length, perDay: whole.length ? Math.round(sum(whole, "trips") / whole.length) : null,
+        pct: pct(sum(rows, "punctual"), observed), cancelled: sum(rows, "cancelled"), extra: sum(rows, "extra"), cancelledPct: pct(sum(rows, "cancelled"), trips),
+        cancelledPerDay: whole.length ? Math.round(sum(whole, "cancelled") / whole.length) : null, extraPerDay: whole.length ? Math.round(sum(whole, "extra") / whole.length) : null,
+        avgDelay: observed ? sum(rows, "sum_final_delay") / observed : null }; // early counts as 0
+    });
+    const months = group(7).map(({ key, ...m }) => ({ month: key, ...m })), years = group(4).map(({ key, ...y }) => ({ year: key, ...y }));
+    // lines: only those with real traffic in a year, so a line with three trains doesn't top the list; "EC|" etc. are categories, no lines
+    const lineYears = all(`SELECT substr(month, 1, 4) year, line, sum(trips) trips, sum(punctual) ok, sum(observed) n FROM hist_line_month
+      WHERE line NOT LIKE '%|' GROUP BY year, line HAVING n >= 3000`).map((r) => ({ year: r.year, line: r.line, trips: r.trips, pct: pct(r.ok, r.n) }));
     const byYear = d3group(lineYears, (r) => r.year);
     return {
-      first: (one("SELECT min(date) d FROM hist_done") as any).d, last: (one("SELECT max(date) d FROM hist_done") as any).d, days: (one("SELECT count(*) n FROM hist_done") as any).n,
-      months, years: [...years.values()],
-      season: all(`SELECT CAST(substr(month, 6, 2) AS INTEGER) m, hour, sum(late) late, sum(n) n FROM hist_hour_month GROUP BY m, hour`).map((r) => ({ month: r.m, hour: r.hour, late: pct(r.late, r.n) })),
+      first: days[0].date, last: days.at(-1).date, days: days.length, missing: days.filter((r) => r.partial).length,
+      months, years, calendar: days.map((r) => [r.date, pct(r.punctual, r.observed), r.trips, r.partial ? 1 : 0]),
+      season: all(`SELECT CAST(substr(month, 6, 2) AS INTEGER) m, hour, sum(late) late, sum(n) n FROM hist_hour_month GROUP BY m, hour HAVING n >= 500`)
+        .map((r) => ({ month: r.m, hour: r.hour, late: pct(r.late, r.n) })),
       lines: [...byYear].sort((a, b) => b[0].localeCompare(a[0])).map(([year, rows]) => {
         const sorted = rows.sort((a, b) => a.pct - b.pct);
         return { year, worst: sorted.slice(0, 5), best: sorted.slice(-5).reverse() };
@@ -324,7 +337,7 @@ export function vehicle(d: Day, unit: string) {
 // ---------- fleet ----------
 export function fleet(d: Day) {
   return cached(`fleet:${d.version}`, 60, () => {
-    const t = Date.now() / 1000, lineByTrip = new Map(d.trips.map((x) => [x.id, lineOf(d, x.route)]));
+    const t = Date.now() / 1000, keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((x, i) => [x.id, keys[i]]));
     const runs = all(`SELECT * FROM vehicle_run WHERE date = ?`, d.date);
     const units = new Map<string, { unit: string; type: string; runs: number; km: number }>();
     const trains = new Map<string, { train: string; line: string; length: number; seats: number; units: string[] }>();
@@ -333,7 +346,7 @@ export function fleet(d: Day) {
       const u = units.get(r.unit) ?? { unit: r.unit, type: r.type, runs: 0, km: 0 };
       u.runs++; u.km += r.km;
       units.set(r.unit, u);
-      const line = lineByTrip.get(r.trip) ?? "", tr = trains.get(r.trip) ?? { train: `${line} ${r.train_no}`, line, length: 0, seats: 0, units: [] };
+      const line = lineByTrip.get(r.trip) ?? "", tr = trains.get(r.trip) ?? { train: `${lineName(line)} ${r.train_no}`, line, length: 0, seats: 0, units: [] };
       tr.length += r.length_m; tr.seats += r.seats1 + r.seats2; tr.units.push(`${r.type} ${r.unit}`);
       trains.set(r.trip, tr);
       const m = mix.get(line) ?? new Map();
@@ -366,7 +379,7 @@ export function fleet(d: Day) {
 /** Every series seen in a formation or listed in the register: names, how many, how far they ran, where. */
 export function types(d: Day) {
   return cached(`types:${d.version}`, 300, () => {
-    const lineByTrip = new Map(d.trips.map((t) => [t.id, lineOf(d, t.route)]));
+    const keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((t, i) => [t.id, keys[i]]));
     const by = new Map<string, any>();
     const get = (cls: string) => by.get(cls) ?? by.set(cls, { cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null, registered: 0, seen: 0, today: 0, kmToday: 0, kmTotal: 0, lines: new Map(), built: null, seats: null, length: null }).get(cls);
     for (const r of all(`SELECT cls, count(*) n, min(built) first, max(built) last, avg(seats1 + seats2) seats, avg(length_m) len FROM rolling_stock GROUP BY cls`))
@@ -389,7 +402,7 @@ export function types(d: Day) {
 export function trainType(d: Day, cls: string) {
   if (!/^\d{3}$/.test(cls)) return null;
   return cached(`type:${d.version}:${cls}`, 120, () => {
-    const lineByTrip = new Map(d.trips.map((t) => [t.id, lineOf(d, t.route)]));
+    const keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((t, i) => [t.id, keys[i]]));
     const units = new Map<string, any>();
     const get = (unit: string) => units.get(unit) ?? units.set(unit, { unit, subtype: null, built: null, seats: null, runsToday: 0, kmToday: 0, kmTotal: 0, days: 0, last: null }).get(unit);
     for (const r of all(`SELECT unit, subtype, built, seats1, seats2 FROM rolling_stock WHERE cls = ?`, cls)) Object.assign(get(r.unit), { subtype: r.subtype, built: r.built, seats: (r.seats1 ?? 0) + (r.seats2 ?? 0) || null });
@@ -417,23 +430,28 @@ export function stationStats(d: Day, uic: string) {
   return cached(`station:${d.version}:${uic}`, 30, () => {
     const s = station(d, uic);
     if (!s) return null;
-    const perHour = Array(24).fill(0), plats = new Map<string, number>(), lines = new Map<string, number>();
-    for (const t of d.trips) {
-      if (t.date !== d.date) continue;
+    const perHour = Array(24).fill(0), plats = new Map<string, number>(), lines = new Map<string, number>(), keys = lineKeysOf(d);
+    d.trips.forEach((t, i) => {
+      if (t.date !== d.date) return;
       for (let k = 0; k < t.stops.length / 3 - 1; k++) if (t.stops[k * 3] === s.i) {
         perHour[Math.floor(t.stops[k * 3 + 2] / 3600) % 24]++;
-        const p = d.platforms[t.plat[k]] || "?", l = lineOf(d, t.route);
+        const p = d.platforms[t.plat[k]] || "?", l = keys[i];
         plats.set(p, (plats.get(p) ?? 0) + 1);
         lines.set(l, (lines.get(l) ?? 0) + 1);
       }
-    }
-    const typical = Array(24).fill(0), days = one(`SELECT count(DISTINCT date) n FROM stop_obs WHERE uic = ? AND date < ?`, uic, d.date).n || 1;
-    for (const r of all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date < ? AND sched_dep IS NOT NULL GROUP BY h`, uic, d.date)) typical[zurich(Math.floor(r.h) * 3600).hour] += r.n / days;
+    });
+    // typical: departures recorded with live data on earlier days of the same weekday, fully recorded days only
+    const dow = new Date(`${d.date}T12:00:00Z`).getUTCDay();
+    const same = all(`SELECT date, trips, observed FROM agg_net_day WHERE date < ?`, d.date).filter((r) => covered(r) >= COVERED && new Date(`${r.date}T12:00:00Z`).getUTCDay() === dow).map((r) => r.date);
+    const typical = Array(24).fill(0);
+    for (const r of same.length ? all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date IN (${same.map(() => "?").join(",")}) AND sched_dep IS NOT NULL GROUP BY h`, uic, ...same) : [])
+      typical[zurich(Math.floor(r.h) * 3600).hour] += r.n / same.length;
     const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr FROM stop_obs WHERE uic = ? AND date = ?`, uic, date);
     const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ?`, uic);
     return {
       ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
-      perHour: perHour.map((n, hour) => ({ hour, today: n, typical: Math.round(typical[hour] * 10) / 10 })),
+      perHour: perHour.map((n, hour) => ({ hour, today: n, typical: same.length ? Math.round(typical[hour] * 10) / 10 : null })), typicalDays: same.length,
+      first: one(`SELECT min(date) d FROM stop_obs WHERE uic = ?`, uic).d,
       today: { ...td, pct: pct(td.ok, td.n) }, month: { ...month, pct: pct(month.ok, month.n), arrPct: pct(month.arr_n - month.arr_late, month.arr_n) },
       platforms: [...plats].map(([p, n]) => ({ p, n })).sort((a, b) => b.n - a.n),
       lines: [...lines].map(([line, n]) => ({ line, n })).sort((a, b) => b.n - a.n).slice(0, 20),
@@ -445,10 +463,18 @@ export function stationStats(d: Day, uic: string) {
 }
 
 // ---------- line ----------
-export function lineStats(d: Day, name: string) {
-  return cached(`line:${d.version}:${name}`, 30, () => {
-    const trips = d.trips.filter((t) => t.date === d.date && lineOf(d, t.route) === name);
-    if (!trips.length) return null;
+export function lineStats(d: Day, key: string) {
+  return cached(`line:${d.version}:${key}`, 30, () => {
+    const keys = lineKeysOf(d);
+    if (!key.includes("|")) { // a bare name (old link, the map): its busiest line today
+      const n = new Map<string, number>();
+      keys.forEach((k) => lineName(k) === key && n.set(k, (n.get(k) ?? 0) + 1));
+      key = [...n].sort((a, b) => b[1] - a[1])[0]?.[0] ?? `${key}|`;
+    }
+    const name = key, trips = d.trips.filter((t, i) => t.date === d.date && keys[i] === key);
+    if (!trips.length && !one("SELECT 1 FROM hist_line_month WHERE line = ? LIMIT 1", key)) return null;
+    if (!trips.length) return { line: key, cat: null, operator: "", trips: 0, km: 0, stops: [], today: [], daily: [], incidents: [],
+      since: since(all(`SELECT month, punctual ok, observed n FROM hist_line_month WHERE line = ? ORDER BY month`, key)) }; // not running today: its history
     const pattern = trips.reduce((a, b) => (b.stops.length > a.stops.length ? b : a)); // the longest variant orders the stops
     const order = Array.from({ length: pattern.stops.length / 3 }, (_, k) => d.stations[pattern.stops[k * 3]][3]);
     const per = new Map(all(`SELECT uic, count(arr_delay) n, avg(arr_delay) arr, sum(arr_delay < 180) ok FROM stop_obs WHERE line = ? AND arr_delay IS NOT NULL GROUP BY uic`, name).map((r) => [r.uic, r]));
@@ -458,7 +484,7 @@ export function lineStats(d: Day, name: string) {
       stops: order.map((uic) => { const r = per.get(uic); return { uic, name: station(d, uic)?.name ?? uic, n: r?.n ?? 0, arr: r?.arr ?? null, pct: r ? pct(r.ok, r.n) : null }; }),
       today: all(`SELECT train_no, origin, dest, final_delay, cancelled, observed, arr FROM trip_day WHERE line = ? AND date = ? ORDER BY arr`, name, d.date),
       daily: all(`SELECT date, trips, observed, punctual, cancelled, avg_delay FROM agg_line_day WHERE line = ? ORDER BY date`, name).map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled) })),
-      incidents: all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why FROM alert_log WHERE lines LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 30`, `%"${name}"%`),
+      incidents: all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why FROM alert_log WHERE lines LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 30`, `%"${lineName(name)}"%`), // alerts name lines
       since: since(all(`SELECT month, punctual ok, observed n FROM hist_line_month WHERE line = ? ORDER BY month`, name)),
     };
   });
@@ -493,10 +519,20 @@ export function search(d: Day, q: string) {
       out.push({ kind: "train", key: t.num, label: `${lineOf(d, t.route)} ${t.num}`, sub: `${d.stations[t.stops[0]][0]} → ${t.head}` });
     }
   }
-  const lines = new Set<string>();
-  for (const t of d.trips) { const l = lineOf(d, t.route); if (fold(l).startsWith(q)) lines.add(l); }
-  for (const l of [...lines].sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 5)) out.push({ kind: "line", key: l, label: l, sub: "line" });
+  const lines = new Set<string>(), labels = lineLabels(d);
+  for (const l of lineKeysOf(d)) if (fold(lineName(l)).startsWith(q) && !l.endsWith("|")) lines.add(l);
+  for (const l of [...lines].sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 5)) out.push({ kind: "line", key: l, label: labels[l] ?? lineName(l), sub: "line" });
   for (const s of d.stations.filter((s) => s[4] && fold(s[0]).includes(q)).sort((a, b) => +fold(b[0]).startsWith(q) - +fold(a[0]).startsWith(q) || b[4] - a[4]).slice(0, 8))
     out.push({ kind: "station", key: s[3], label: s[0], sub: `${s[4]} trains today` });
   return out.slice(0, 12);
+}
+
+// ---------- line labels ----------
+/** "S1|8500010" -> "S1 · Basel SBB", for every line whose name another line shares (today's and the history's). */
+export function lineLabels(d: Day) {
+  return cached(`labels:${d.version}`, 3600, () => {
+    const hist = new Map(all(`SELECT uic, max(name) name FROM hist_station_month GROUP BY uic`).map((r) => [r.uic, r.name]));
+    const keys = [...lineKeysOf(d), ...all(`SELECT DISTINCT line FROM hist_line_month`).map((r) => r.line), ...all(`SELECT DISTINCT line FROM agg_line_day`).map((r) => r.line)];
+    return ambiguousLabels(keys, (uic) => station(d, uic)?.name ?? hist.get(uic));
+  });
 }

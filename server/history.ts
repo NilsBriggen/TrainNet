@@ -4,8 +4,11 @@
 import type { Database } from "bun:sqlite";
 import { upstream } from "./upstream";
 import { addDays, zurichDate } from "./time";
+import { lineKeys } from "./lines";
 
 const LATE = 180; // punctual = less than 3 min late, the SBB threshold
+// a "delay" outside this is a broken forecast (e.g. dated a day off: 2019-11-04 averaged −27 h), not a delay: unobserved
+const sane = (d: number) => d >= -1800 && d <= 6 * 3600;
 export const ARCHIVE = "https://archive.opentransportdata.swiss";
 
 export function initHistory(db: Database) {
@@ -30,12 +33,13 @@ CREATE TABLE IF NOT EXISTS hist_hour_month (month TEXT, dow INTEGER, hour INTEGE
 const secs = (s: string) => Date.UTC(+s.slice(6, 10), +s.slice(3, 5) - 1, +s.slice(0, 2), +s.slice(11, 13), +s.slice(14, 16), s.length > 16 ? +s.slice(17, 19) : 0) / 1000;
 const isoDay = (ddmmyyyy: string) => `${ddmmyyyy.slice(6, 10)}-${ddmmyyyy.slice(3, 5)}-${ddmmyyyy.slice(0, 2)}`;
 
-type Trip = { line: string; cat: string; no: string; extra: boolean; rows: number; cancelledRows: number; lastArr: number; lastAct: number | null; max: number };
+type Trip = { name: string; cat: string; no: string; extra: boolean; rows: number; cancelledRows: number; lastArr: number; lastAct: number | null; max: number; uics: string[] };
 
 /**
  * One day's CSV (any year's format: columns are found by name) as a stream of bytes. Keeps trains at Swiss stops.
  * Per train: final delay at its last Swiss stop with an arrival; observed = that stop has an actual/forecast time;
  * cancelled = every Swiss stop cancelled. Per stop departure: delay by station and by weekday × hour.
+ * Delay sums count early as 0, so early trains don't cancel out late ones in an average.
  */
 export async function importDay(db: Database, body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>, expectDate?: string) {
   const trips = new Map<string, Trip>();
@@ -55,13 +59,14 @@ export async function importDay(db: Database, body: ReadableStream<Uint8Array> |
     date ||= isoDay(c[col.BETRIEBSTAG]);
     const id = c[col.FAHRT_BEZEICHNER], cancelled = c[col.FAELLT_AUS_TF] === "true", pass = c[col.DURCHFAHRT_TF] === "true";
     let t = trips.get(id);
-    if (!t) trips.set(id, (t = { line: c[col.LINIEN_TEXT] || c[col.VERKEHRSMITTEL_TEXT], cat: c[col.VERKEHRSMITTEL_TEXT], no: c[col.LINIEN_ID], extra: c[col.ZUSATZFAHRT_TF] === "true", rows: 0, cancelledRows: 0, lastArr: -1, lastAct: null, max: 0 }));
+    if (!t) trips.set(id, (t = { name: c[col.LINIEN_TEXT], cat: c[col.VERKEHRSMITTEL_TEXT], no: c[col.LINIEN_ID], extra: c[col.ZUSATZFAHRT_TF] === "true", rows: 0, cancelledRows: 0, lastArr: -1, lastAct: null, max: 0, uics: [] }));
     if (pass) return;
     t.rows++;
+    t.uics.push(uic);
     if (cancelled) return void t.cancelledRows++;
     const arr = c[col.ANKUNFTSZEIT], arrAct = c[col.AN_PROGNOSE];
     if (arr) {
-      const s = secs(arr), d = arrAct ? secs(arrAct) - s : null;
+      const s = secs(arr), raw = arrAct ? secs(arrAct) - s : null, d = raw !== null && sane(raw) ? raw : null;
       if (d !== null) t.max = Math.max(t.max, d);
       if (s >= t.lastArr) { t.lastArr = s; t.lastAct = d; }
     }
@@ -69,15 +74,15 @@ export async function importDay(db: Database, body: ReadableStream<Uint8Array> |
     if (dep) {
       const st = stations.get(uic) ?? stations.set(uic, { name: c[col.HALTESTELLEN_NAME], deps: 0, obs: 0, ok: 0, sum: 0 }).get(uic)!;
       st.deps++;
-      if (depAct) {
-        const d = secs(depAct) - secs(dep);
-        st.obs++; st.sum += d;
+      const d = depAct ? secs(depAct) - secs(dep) : NaN;
+      if (sane(d)) {
+        st.obs++; st.sum += Math.max(0, d);
         if (d < LATE) st.ok++;
         stopObs++;
         if (d < LATE) stopOk++;
         const dow = (new Date(`${isoDay(dep)}T12:00:00Z`).getUTCDay() + 6) % 7, key = dow * 24 + +dep.slice(11, 13);
         const h = hours.get(key) ?? hours.set(key, { n: 0, late: 0, sum: 0 }).get(key)!;
-        h.n++; h.sum += d;
+        h.n++; h.sum += Math.max(0, d);
         if (d >= LATE) h.late++;
       }
     }
@@ -93,20 +98,22 @@ export async function importDay(db: Database, body: ReadableStream<Uint8Array> |
   if (expectDate && date !== expectDate) throw new Error(`file is for ${date}, expected ${expectDate}`);
   if (db.query("SELECT 1 FROM hist_done WHERE date = ?").get(date)) return { date, trips: 0, skipped: true };
 
-  const month = date.slice(0, 7);
+  const month = date.slice(0, 7), list = [...trips.values()].filter((t) => t.rows); // trains only passing through: not counted
+  const pax = new Map<string, number>();
+  try { for (const r of db.query("SELECT uic, daily FROM station_pax").all() as { uic: string; daily: number }[]) pax.set(r.uic, r.daily); } catch {} // a fresh rebuild file may not have it
+  const keys = lineKeys(list.map((t) => ({ name: t.name, cat: t.cat, uics: t.uics })), (u) => pax.get(u) ?? 0);
   db.transaction(() => {
     const net = { trips: 0, observed: 0, punctual: 0, cancelled: 0, extra: 0, sum: 0 };
     const lines = new Map<string, { cat: string; trips: number; obs: number; ok: number; canc: number; sum: number }>();
     const trains = new Map<string, { line: string; no: string; trips: number; obs: number; ok: number; canc: number; sum: number; max: number }>();
-    for (const t of trips.values()) {
-      if (!t.rows) continue; // only passed through Switzerland without stopping
-      const canc = t.cancelledRows === t.rows, obs = !canc && t.lastAct !== null, ok = obs && t.lastAct! < LATE, final = obs ? t.lastAct! : 0;
+    list.forEach((t, i) => {
+      const line = keys[i], canc = t.cancelledRows === t.rows, obs = !canc && t.lastAct !== null, ok = obs && t.lastAct! < LATE, final = obs ? Math.max(0, t.lastAct!) : 0;
       net.trips++; net.observed += +obs; net.punctual += +ok; net.cancelled += +canc; net.extra += +t.extra; net.sum += final;
-      const l = lines.get(t.line) ?? lines.set(t.line, { cat: t.cat, trips: 0, obs: 0, ok: 0, canc: 0, sum: 0 }).get(t.line)!;
+      const l = lines.get(line) ?? lines.set(line, { cat: t.cat, trips: 0, obs: 0, ok: 0, canc: 0, sum: 0 }).get(line)!;
       l.trips++; l.obs += +obs; l.ok += +ok; l.canc += +canc; l.sum += final;
-      const k = `${t.no}|${t.line}`, tr = trains.get(k) ?? trains.set(k, { line: t.line, no: t.no, trips: 0, obs: 0, ok: 0, canc: 0, sum: 0, max: 0 }).get(k)!;
+      const k = `${t.no}|${line}`, tr = trains.get(k) ?? trains.set(k, { line, no: t.no, trips: 0, obs: 0, ok: 0, canc: 0, sum: 0, max: 0 }).get(k)!;
       tr.trips++; tr.obs += +obs; tr.ok += +ok; tr.canc += +canc; tr.sum += final; tr.max = Math.max(tr.max, obs ? t.max : 0);
-    }
+    });
     db.query("INSERT OR REPLACE INTO hist_net_day VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(date, net.trips, net.observed, net.punctual, net.cancelled, net.extra, stopObs, stopOk, net.sum);
     const ql = db.query(`INSERT INTO hist_line_month VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO UPDATE SET
       trips = trips + ?4, observed = observed + ?5, punctual = punctual + ?6, cancelled = cancelled + ?7, sum_final_delay = sum_final_delay + ?8`);

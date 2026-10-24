@@ -34,9 +34,11 @@ test("a day's trains: punctual at the last Swiss stop, cancelled, extra, buses a
   const r = await importDay(db, stream(csv()), "2026-09-01");
   expect(r).toMatchObject({ date: "2026-09-01", skipped: false });
   expect(db.query("SELECT trips, observed, punctual, cancelled, extra, stop_obs, stop_ok, sum_final_delay FROM hist_net_day").get())
-    .toEqual({ trips: 5, observed: 3, punctual: 2, cancelled: 1, extra: 1, stop_obs: 2, stop_ok: 2, sum_final_delay: 120 + 300 - 60 });
-  expect(db.query("SELECT line, trips, observed, punctual, sum_final_delay FROM hist_line_month WHERE line = 'IC5'").get())
-    .toEqual({ line: "IC5", trips: 2, observed: 2, punctual: 1, sum_final_delay: 420 });
+    .toEqual({ trips: 5, observed: 3, punctual: 2, cancelled: 1, extra: 1, stop_obs: 2, stop_ok: 2, sum_final_delay: 120 + 300 + 0 }); // early = 0
+  // the IC5 is one line, keyed by its busiest station (no passenger data here: most calls, then the lowest UIC)
+  expect(db.query("SELECT line, trips, observed, punctual, sum_final_delay FROM hist_line_month WHERE line LIKE 'IC5|%'").get())
+    .toEqual({ line: "IC5|8503000", trips: 2, observed: 2, punctual: 1, sum_final_delay: 420 });
+  expect(db.query("SELECT line FROM hist_line_month WHERE line NOT LIKE 'IC5|%' ORDER BY line").all().map((r: any) => r.line)).toEqual(["EC|", "EXT|", "S3|8503000"]); // no line name: the category
   expect(db.query("SELECT deps, dep_obs, dep_ok, sum_dep_delay FROM hist_station_month WHERE uic = '8503000'").get()).toEqual({ deps: 3, dep_obs: 2, dep_ok: 2, sum_dep_delay: 90 }); // the cancelled S3 never left
   expect(db.query("SELECT count(*) n FROM hist_station_month WHERE uic = '8500218'").get()).toEqual({ n: 0 }); // passed through
   expect(db.query("SELECT max_delay FROM hist_train_month WHERE train_no = '1003'").get()).toEqual({ max_delay: 300 });
@@ -68,4 +70,20 @@ test("history punctuality: on time of the trains that ran, cancelled ones counte
   await importDay(rec.db, stream(csv()));
   const h = longHistory()!;
   expect(h.months[0]).toMatchObject({ month: "2026-09", pct: 66.7, cancelled: 1 }); // 2 of the 3 observed trains, the cancelled S3 apart
+});
+
+test("a forecast a day off is no delay: the stop counts as unobserved", async () => {
+  const r = rows.slice(0, 2).map((x) => [...x]);
+  r[1][8] = "02.09.2026 12:00:00"; // +27 h
+  await importDay(db, stream(csv(r)));
+  expect(db.query("SELECT trips, observed, sum_final_delay FROM hist_net_day").get()).toEqual({ trips: 1, observed: 0, sum_final_delay: 0 });
+  expect(db.query("SELECT max_delay FROM hist_train_month").get()).toEqual({ max_delay: 0 });
+});
+
+test("two S1s that share no station are two lines; each takes its busiest station", async () => {
+  db.exec("CREATE TABLE station_pax (uic TEXT PRIMARY KEY, year INTEGER, daily INTEGER, weekday INTEGER)");
+  db.exec("INSERT INTO station_pax VALUES ('8500010', 2025, 100000, 0), ('8507000', 2025, 170000, 0)");
+  const s1 = (trip: string, uics: string[]) => uics.map((u, k) => [trip, "S1", "S", trip, "false", "false", u, k ? `01.09.2026 0${k + 6}:00` : "", k ? `01.09.2026 0${k + 6}:00:00` : "", k < uics.length - 1 ? `01.09.2026 0${k + 6}:01` : "", k < uics.length - 1 ? `01.09.2026 0${k + 6}:01:00` : "", "false"]);
+  await importDay(db, stream(csv([...s1("b1", ["8500010", "8500300"]), ...s1("b2", ["8500300", "8500320"]), ...s1("e1", ["8507000", "8504100"])])));
+  expect(db.query("SELECT line, trips FROM hist_line_month ORDER BY line").all()).toEqual([{ line: "S1|8500010", trips: 2 }, { line: "S1|8507000", trips: 1 }]);
 });

@@ -5,6 +5,7 @@ import { applyDelays } from "../public/position.js";
 import { addDays, serviceBase, zurichDate } from "./time";
 import type { Day } from "./gtfs";
 import { initHistory } from "./history";
+import { lineKeys, lineName } from "./lines";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS trip_day (date TEXT, trip TEXT, train_no TEXT, line TEXT, cat TEXT, agency TEXT, origin TEXT, dest TEXT,
@@ -66,7 +67,23 @@ export function initRecord(file: string) {
   return db;
 }
 
+/** A route's line name for display ("IC5", or the category when it has none). Identity is lineKeysOf(). */
 export const lineOf = (d: Day, route: number) => d.routes[route][0] || d.routes[route][1];
+
+const keysCache = new WeakMap<Day, string[]>();
+/** Line key of every trip of a day ("S1|8500010"): the same identity as the history's (server/lines.ts), Swiss stations only like it. */
+export function lineKeysOf(d: Day) {
+  let k = keysCache.get(d);
+  if (!k) {
+    const pax = new Map((db.query("SELECT uic, daily FROM station_pax").all() as { uic: string; daily: number }[]).map((r) => [r.uic, r.daily]));
+    k = lineKeys(d.trips.map((t) => ({
+      name: d.routes[t.route][0], cat: d.routes[t.route][1],
+      uics: Array.from({ length: t.stops.length / 3 }, (_, j) => d.stations[t.stops[j * 3]][3]).filter((u) => u.startsWith("85")),
+    })), (u) => pax.get(u) ?? 0);
+    keysCache.set(d, k);
+  }
+  return k;
+}
 const key = (id: string, date: string) => `${id}|${date}`;
 
 /** Called when a new service day is loaded: finish the old one, remember what's already stored for the new one. */
@@ -75,6 +92,7 @@ export function startDay(d: Day, nowSec = Date.now() / 1000) {
   dayOf = d;
   state.clear();
   flushed.clear();
+  migrateLineKeys(d);
   // a restart must not overwrite stored trips with empty state
   const dates = [...new Set(d.trips.map((t) => t.date))];
   for (const date of dates) for (const r of db.query("SELECT trip FROM trip_day WHERE date = ?").all(date) as { trip: string }[]) flushed.add(key(r.trip, date));
@@ -110,7 +128,7 @@ export function flush(d: Day, nowSec: number, grace: number) {
       const st = state.get(i), s = trip.stops, last = s.length / 3 - 1;
       const e = applyDelays(s, st?.u);
       if (e.stops[last * 3 + 1] + grace > t) return; // still running, or not long enough ago
-      const observed = st ? 1 : 0, base = d.base / 1000, line = lineOf(d, trip.route), stations = d.stations;
+      const observed = st ? 1 : 0, base = d.base / 1000, line = lineKeysOf(d)[i], stations = d.stations;
       let stops = 0, ok = 0, max = 0;
       for (let p = 0; p <= last; p++) {
         const arr = p ? e.stops[p * 3 + 1] - s[p * 3 + 1] : null, dep = p < last ? e.stops[p * 3 + 2] - s[p * 3 + 2] : null;
@@ -119,7 +137,10 @@ export function flush(d: Day, nowSec: number, grace: number) {
         if (observed && !st!.c) insStop.run(trip.date, trip.id, trip.num, line, p, stations[s[p * 3]][3], p ? base + s[p * 3 + 1] : null, p < last ? base + s[p * 3 + 2] : null,
           arr, dep, e.skipped[p] ? 1 : 0);
       }
-      const final = e.stops[last * 3 + 1] - s[last * 3 + 1];
+      // punctuality at the last Swiss stop, like the official figures (and the history): a delay in Milano isn't ours
+      let fin = last;
+      while (fin > 1 && (!stations[s[fin * 3]][3].startsWith("85") || e.skipped[fin])) fin--;
+      const final = e.stops[fin * 3 + 1] - s[fin * 3 + 1];
       insTrip.run(trip.date, trip.id, trip.num, line, d.routes[trip.route][1], trip.agency, stations[s[0]][0], stations[s[last * 3]][0],
         base + s[2], base + s[last * 3 + 1], +trip.km[last].toFixed(2), observed, st?.c ? 1 : 0,
         observed ? final : null, observed ? max : null, stops, observed ? ok : null, st?.stuck ?? 0);
@@ -143,6 +164,34 @@ export function recordAlerts(d: Day, alerts: Alert[], nowSec = Date.now() / 1000
 
 /** Write what's finished, e.g. before the process stops: trips that ended within the grace period are otherwise lost. */
 export const flushAll = () => dayOf && flush(dayOf, Date.now() / 1000, 0);
+
+/**
+ * One-off: rows stored before lines had keys carry the bare name ("S1"). They get today's key for that name when it's
+ * unambiguous, else the key of the line calling at the trip's first recorded station; then their days are summarised again.
+ */
+function migrateLineKeys(d: Day) {
+  if (!db.query("SELECT 1 FROM trip_day WHERE line NOT LIKE '%|%' LIMIT 1").get()) return;
+  const keys = lineKeysOf(d), byName = new Map<string, Set<string>>(), atStation = new Map<string, string>();
+  d.trips.forEach((t, i) => {
+    const k = keys[i], n = lineName(k);
+    (byName.get(n) ?? byName.set(n, new Set()).get(n)!).add(k);
+    for (let j = 0; j < t.stops.length / 3; j++) atStation.set(`${n}@${d.stations[t.stops[j * 3]][3]}`, k);
+  });
+  const firstUic = db.query("SELECT uic FROM stop_obs WHERE date = ? AND trip = ? ORDER BY idx LIMIT 1");
+  const setTrip = db.query("UPDATE trip_day SET line = ? WHERE date = ? AND trip = ?"), setStops = db.query("UPDATE stop_obs SET line = ? WHERE date = ? AND trip = ?");
+  db.transaction(() => {
+    for (const r of db.query("SELECT date, trip, line, cat FROM trip_day WHERE line NOT LIKE '%|%'").all() as { date: string; trip: string; line: string; cat: string }[]) {
+      const known = byName.get(r.line), uic = (firstUic.get(r.date, r.trip) as { uic: string } | null)?.uic;
+      const k = r.line === r.cat ? `${r.cat}|` : known?.size === 1 ? [...known][0] : (uic && atStation.get(`${r.line}@${uic}`)) || `${r.line}|${uic ?? ""}`;
+      setTrip.run(k, r.date, r.trip);
+      setStops.run(k, r.date, r.trip);
+    }
+    db.query("DELETE FROM agg_line_day WHERE line NOT LIKE '%|%'").run(); // summaries of the old names: rebuilt below
+    db.query("DELETE FROM agg_train_day WHERE line NOT LIKE '%|%'").run();
+  })();
+  for (const { date } of db.query("SELECT date FROM agg_net_day WHERE date IN (SELECT DISTINCT date FROM trip_day)").all() as { date: string }[]) aggregate(date);
+  console.log("[record] stored lines re-keyed");
+}
 
 let refreshed = ""; // the yesterday whose summary was redone after the night trains
 /** Aggregate finished days, then drop detail older than 30 days. Cheap; called every 10 min. */

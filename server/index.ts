@@ -131,6 +131,7 @@ const server = Bun.serve({
     "/api/pax": () => Response.json(Object.fromEntries(stationPax().map((r) => [r.uic, [r.daily, r.year]])), { headers: { "Cache-Control": "public, max-age=86400" } }),
     "/api/stats/types": (req) => statsJson(req, stats.types),
     "/api/stats/history": (req) => statsJson(req, stats.longHistory),
+    "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
     "/api/train/:idx": async (req) => {
       const v = new URL(req.url).searchParams.get("v");
