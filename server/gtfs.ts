@@ -126,11 +126,43 @@ export function serviceDays(days: string[]) {
   };
 }
 
+const FORMAT = "f5"; // payload shape, part of the version (the ETag): bump it when the payload changes
+
+/** Everything a Day holds besides its client payload, as plain JSON. */
+type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
+const CACHE = `${DATA_DIR}/day.json`, CACHE_PAYLOAD = `${DATA_DIR}/day.payload.gz`;
+
+export function dayToCache(d: Day, routeIds: string[], stops: [string, number][]): DayCache {
+  const { tripIndex, routeIndex, stationOfStop, track, json, ...plain } = d;
+  return { ...plain, routeIds, stops };
+}
+/** A Day from its cache: the indexes are rebuilt, the track lookup gets today's graph. */
+export function dayFromCache(c: DayCache, json: Uint8Array, graph: Graph | null): Day {
+  const { routeIds, stops, ...plain } = c, stopStation = new Map(stops);
+  return {
+    ...plain, json, tripIndex: new Map(c.trips.map((t, i) => [`${t.id}|${ymd(t.date)}`, i])), routeIndex: new Map(routeIds.map((id, i) => [id, i])),
+    stationOfStop: (id) => stopStation.get(id),
+    track: (a, b) => graph && route(graph, [c.stations[a][1], c.stations[a][2]], [c.stations[b][1], c.stations[b][2]]),
+  };
+}
+
 export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   const t0 = Date.now();
   // shortcut: on the December change Sunday the new year's zip doesn't know Saturday's services, so trains still running
   // after midnight from the old timetable are missing for those few hours; reading both zips that day would fix it
   const { url, name } = await latestResource(`timetable-${timetableYear(date)}-gtfs2020`);
+  const version = `${date}_${name}_${FORMAT}`; // deterministic per zip + date
+  // a restart on the same day and zip reads the parsed day back in a second or two instead of re-reading the 290 MB zip
+  try {
+    const c = existsSync(CACHE) && existsSync(CACHE_PAYLOAD) ? ((await Bun.file(CACHE).json()) as DayCache) : null;
+    if (c?.version === version) {
+      const d = dayFromCache(c, new Uint8Array(await Bun.file(CACHE_PAYLOAD).arrayBuffer()), graph);
+      console.log(`[gtfs] ${date}: ${d.trips.length} trips from the day cache, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+      return d;
+    }
+  } catch (e: any) {
+    console.error(`[gtfs] day cache unreadable (${e.message}), parsing the zip`);
+  }
   const zip = await download(url, name, "gtfs_");
 
   const agencies: Record<string, string> = {};
@@ -233,13 +265,18 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
 
   const hintSets = [""], hintIdx = new Map([["", 0]]);
   const hintSet = (h: string) => hintIdx.get(h) ?? (hintIdx.set(h, hintSets.push(h) - 1), hintSets.length - 1);
-  const base = serviceBase(date), version = `${date}_${name}_f5`; // deterministic per zip + date; bump the suffix when the payload shape changes (it is the ETag)
+  const base = serviceBase(date);
   const json = Bun.gzipSync(JSON.stringify({
     v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)), structs, // tunnels and bridges per path
     trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0, hintSet(t.hints)]),
     hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));
   console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${(json.length / 1e6).toFixed(1)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  return { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
+  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
     track: (a, b) => graph && route(graph, [stations[a][1], stations[a][2]], [stations[b][1], stations[b][2]]) };
+  // payload first, cache last: a cache file whose version matches always has its payload next to it
+  const stopStation = [...stops.keys()].flatMap((id): [string, number][] => { const i = stationOf(id, false); return i === undefined ? [] : [[id, i]]; });
+  await Bun.write(CACHE_PAYLOAD, json);
+  await Bun.write(CACHE, JSON.stringify(dayToCache(day, [...routeIndex.keys()], stopStation)));
+  return day;
 }

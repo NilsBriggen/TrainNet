@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { serviceDays, throughRunning } from "../server/gtfs";
+import { dayFromCache, dayToCache, serviceDays, throughRunning, type Day } from "../server/gtfs";
 
 // calendar.txt: service_id, mon … sun, start_date, end_date
 const cal = (id: string, week: string, start = "20251214", end = "20261212") => [id, ...week.split(""), start, end];
@@ -34,4 +34,22 @@ test("through-running links today's instances, on the link's own service days", 
   t.row(row("IC5", "IC6", "4", "SAT")); // the 23rd is a Friday: not linked
   t.row(row("IR2536", "IR2537", "2", "")); // a minimum transfer time, not a through train
   expect(t.pairs).toEqual([0, 1]);
+});
+
+test("a day survives the trip through its cache: indexes rebuilt, nothing lost", () => {
+  const trip = { id: "t1", date: "2026-10-24", route: 0, agency: "11", head: "Bern", num: "700", stops: [0, 100, 100, 1, 200, 200], seq: [1, 2], plat: [0, 1], km: [0, 95.3], hints: "NF" };
+  const day: Day = {
+    date: "2026-10-24", base: 1, version: "2026-10-24_x.zip_f5", stations: [["Zürich HB", 8.5, 47.4, "8503000", 1], ["Bern", 7.4, 46.9, "8507000", 1]],
+    routes: [["IC1", "IC", "11"]], agencies: { "11": "SBB" }, platforms: ["", "7"], trips: [trip], segments: [0, 1], paths: [[8.5, 47.4, 7.4, 46.9]],
+    tripIndex: new Map([["t1|20261024", 0]]), routeIndex: new Map([["r-ic1", 0]]), stationOfStop: () => undefined, track: () => null, json: new Uint8Array([1, 2, 3]),
+  };
+  const back = dayFromCache(JSON.parse(JSON.stringify(dayToCache(day, ["r-ic1"], [["8503000:0:7", 0], ["8507000", 1]]))), day.json, null);
+  expect(back.trips).toEqual(day.trips);
+  expect(back.version).toBe(day.version);
+  expect(back.tripIndex.get("t1|20261024")).toBe(0);
+  expect(back.routeIndex.get("r-ic1")).toBe(0);
+  expect(back.stationOfStop("8503000:0:7")).toBe(0);
+  expect(back.stationOfStop("nope")).toBeUndefined();
+  expect(back.track(0, 1)).toBeNull(); // no graph
+  expect(back.json).toBe(day.json);
 });
