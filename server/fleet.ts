@@ -22,20 +22,23 @@ export async function crawlFleet(d: Day) {
   latest = d.version;
   if (busy || (!fresh && Date.now() - last < 3600_000)) return;
   busy = true;
+  const prev = fresh ? 0 : last;
   last = Date.now();
-  try { await crawl(d); } finally { busy = false; }
+  try { await crawl(d, prev); } finally { busy = false; }
 }
 
-async function crawl(d: Day) {
+async function crawl(d: Day, prev: number) {
   // "not published" or already recorded today, also before a restart: never asked again.
   // A formation a visitor looked up is in the cache but not yet recorded: the crawl records it without a new request.
   const keys = (status: string, since = 0) => new Set((db.query("SELECT key FROM formation_cache WHERE date = ? AND status = ? AND t > ?").all(d.date, status, since) as { key: string }[]).map((r) => r.key));
   const none = keys("none", Date.now() - 4 * 3600_000), cached = keys("ok"); // an old "none" may have been "not yet"
+  // formations an earlier pass already went through: recorded, or without identifiable units (RhB coaches): nothing left to do
+  const since = keys("ok", prev), handled = new Set([...cached].filter((k) => !since.has(k)));
   const recorded = new Set((db.query("SELECT DISTINCT train_no FROM vehicle_run WHERE date = ?").all(d.date) as { train_no: string }[]).map((r) => r.train_no));
   const todo = new Map<string, Trip>();
   for (const t of d.trips) {
     const k = `${EVU[t.agency]}:${t.num}:${t.date}`;
-    if (t.date === d.date && EVU[t.agency] && LONG.test(d.routes[t.route][1]) && !none.has(k) && !recorded.has(t.num) && !todo.has(k)) todo.set(k, t);
+    if (t.date === d.date && EVU[t.agency] && LONG.test(d.routes[t.route][1]) && !none.has(k) && !handled.has(k) && !recorded.has(t.num) && !todo.has(k)) todo.set(k, t);
   }
   const ins = db.query("INSERT OR REPLACE INTO vehicle_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const uic = (st: number) => d.stations[st][3], base = d.base / 1000;
