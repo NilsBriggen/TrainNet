@@ -87,3 +87,17 @@ test("two S1s that share no station are two lines; each takes its busiest statio
   await importDay(db, stream(csv([...s1("b1", ["8500010", "8500300"]), ...s1("b2", ["8500300", "8500320"]), ...s1("e1", ["8507000", "8504100"])])));
   expect(db.query("SELECT line, trips FROM hist_line_month ORDER BY line").all()).toEqual([{ line: "S1|8500010", trips: 2 }, { line: "S1|8507000", trips: 1 }]);
 });
+
+test("a gap of two weeks in the archive is marked partial and left out of trains a day", async () => {
+  const rec = await import("../server/record");
+  const { longHistory } = await import("../server/stats");
+  rec.initRecord(":memory:");
+  const q = rec.db.query("INSERT INTO hist_net_day VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)");
+  for (let k = 0; k < 120; k++) {
+    const date = new Date(Date.UTC(2019, 5, 1 + k)).toISOString().slice(0, 10), gap = date >= "2019-07-01" && date <= "2019-07-16";
+    q.run(date, gap ? 90 : 15000, gap ? 80 : 14000, gap ? 70 : 13000);
+  }
+  const h = longHistory()!;
+  expect(h.missing).toBe(16);
+  expect(h.months.find((m: any) => m.month === "2019-07")).toMatchObject({ missing: 16, perDay: 15000 });
+});

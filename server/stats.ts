@@ -238,13 +238,14 @@ export const overview = (d: Day) => cached(`overview:${d.version}`, 20, () => ({
 
 // ---------- history since 2018 (official actual data) ----------
 export function longHistory() {
-  return cached("long", 600, () => { // cheap: a few thousand daily rows
+  const v = one("SELECT count(*) n, max(date) d FROM hist_net_day"); // a newly imported day (or a rebuild) shows at once
+  return cached(`long:${v.n}:${v.d}`, 3600, () => { // cheap: a few thousand daily rows
     const days = all(`SELECT date, trips, observed, punctual, cancelled, extra, sum_final_delay FROM hist_net_day ORDER BY date`);
     if (!days.length) return null;
     // a day with under half the trains of the days around it is a gap in the archive (1–16 July 2019 are placeholder
-    // files): kept in the ratios, left out of per-day figures
+    // files): kept in the ratios, left out of per-day figures. ±45 days, so a gap of two weeks can't be its own median.
     days.forEach((r, i) => {
-      const near = days.slice(Math.max(0, i - 14), i + 15).map((x) => x.trips).sort((a, b) => a - b);
+      const near = days.slice(Math.max(0, i - 45), i + 46).map((x) => x.trips).sort((a, b) => a - b);
       r.partial = r.trips < near[near.length >> 1] / 2;
     });
     const sum = (rows: any[], k: string) => rows.reduce((a, r) => a + r[k], 0);
