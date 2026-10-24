@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import Long from "long";
-import { activeAt, classify, markSudden, observe, placeOf, stuck, type Alert } from "../server/realtime";
+import { activeAt, classify, markSudden, observe, placeOf, resolveAlertIds, stuck, type Alert } from "../server/realtime";
 
 test("classify reads the reason sentence from real feed texts", () => {
   expect(classify("Interrupted service on the Visp - Brig line between Visp and Brig [train]", "This is due to a defect in the overhead line. The restriction lasts until approx. 18:00.", "TECHNICAL_PROBLEM"))
@@ -95,4 +95,19 @@ test("an alert with no end (decoded as Long 0) is active", () => {
   expect(activeAt([open], now)).toBe(open);
   expect(activeAt([{ start: Long.fromNumber(now - 600, true), end: Long.fromNumber(now - 60, true) }], now)).toBeUndefined();
   expect(activeAt([{ start: Long.fromNumber(now + 600, true) }], now)).toBeUndefined();
+});
+
+test("alert ids: a reworded alert keeps its id through its feed entities; new alerts get the header-based id", () => {
+  const known = new Map<string, string>();
+  const [a, b] = resolveAlertIds([{ key: "Limited service between A and B|100", entities: ["u1", "u2"] }, { key: "Works at C|50", entities: ["u3"] }], known);
+  expect(a).toBe(Bun.hash("Limited service between A and B|100").toString(36)); // unchanged for alerts already recorded
+  expect(b).not.toBe(a);
+  // next poll: SBB rewrote the header (English replaced German), one entity group is gone, a new one joined
+  const [a2] = resolveAlertIds([{ key: "Eingeschränkter Verkehr zwischen A und B|100", entities: ["u2", "u9"] }], known);
+  expect(a2).toBe(a);
+  expect(known.get("u9")).toBe(a);
+  // two groups claiming the same old id in one poll: only the first keeps it
+  const [x, y] = resolveAlertIds([{ key: "k1", entities: ["u3"] }, { key: "k2", entities: ["u3"] }], known);
+  expect(x).toBe(b);
+  expect(y).toBe(Bun.hash("k2").toString(36));
 });

@@ -2,7 +2,7 @@
 // vendored from gtfs-realtime-bindings 1.1.1 (Apache-2.0): the package drags ~50 build-time packages into production
 import GtfsRealtimeBindings from "./gtfs-realtime.js";
 import { upstream } from "./upstream";
-import { recordAlerts, recordTrips } from "./record";
+import { db, recordAlerts, recordTrips } from "./record";
 import type { Day } from "./gtfs";
 
 const { FeedMessage, TripUpdate, TripDescriptor } = GtfsRealtimeBindings.transit_realtime;
@@ -77,6 +77,24 @@ export function stuck(h: [number, number][], now: number): number {
   const cur = w.at(-1)?.[1] ?? 0;
   return ups >= 3 && growth >= 150 && maxDrop <= 30 && cur >= 180 && now - lastUp <= 180 ? first : 0;
 }
+
+/**
+ * Alert ids that survive rewording. Alerts are grouped by header + first start (one alert spans several feed entities),
+ * and the feed's entity ids are stable: an entity seen before brings its alert's id along, so the alert keeps it when
+ * SBB rewords the header or the English text replaces the German. A new alert gets the header-based id it always had.
+ * `known` (entity id -> alert id) is updated in place; an id is given to one group per poll at most.
+ */
+export function resolveAlertIds(groups: { key: string; entities: string[] }[], known: Map<string, string>): string[] {
+  const used = new Set<string>();
+  return groups.map(({ key, entities }) => {
+    let id = entities.map((e) => known.get(e)).find((x) => x && !used.has(x));
+    if (!id) id = Bun.hash(key).toString(36);
+    used.add(id);
+    for (const e of entities) known.set(e, id);
+    return id;
+  });
+}
+let entityIds: Map<string, string> | null = null; // loaded from alert_entity on first use, so restarts keep ids too
 
 /** The period active at `now`. An unset end decodes to Long(0), which is truthy, so compare numbers: open-ended is the norm for fresh incidents. */
 export const activeAt = <P extends { start?: unknown; end?: unknown }>(periods: P[], now: number) =>
@@ -195,7 +213,7 @@ async function pollAlerts(day: () => Day | undefined) {
   const now = Date.now() / 1000;
   const text = (t: any) =>
     ((t?.translation?.find((x: any) => x.language === "en") ?? t?.translation?.[0])?.text ?? "").replace(/<[^>]*>/g, "");
-  const next = new Map<string, Alert>(); // the feed repeats one message per affected entity group
+  const next = new Map<string, Alert>(), entities = new Map<string, string[]>(); // the feed repeats one message per affected entity group
   for (const e of feed.entity) {
     const a = e.alert;
     if (!a) continue;
@@ -211,19 +229,24 @@ async function pollAlerts(day: () => Day | undefined) {
       if (tr !== undefined) t.add(tr);
     }
     if (!s.size && !r.size && !t.size) continue; // not about rail
-    // keyed by header + first start, not description (it carries the expected end, which SBB keeps moving)
-    // and not the active period (nightly works have one per night: same alert). The feed's entity ids are stable, but
-    // one per entity group: an alert spanning two groups has two unrelated UUIDs, so they can't name the alert.
+    // grouped by header + first start, not description (it carries the expected end, which SBB keeps moving)
+    // and not the active period (nightly works have one per night: same alert); ids come from resolveAlertIds
     const first = Math.min(...(a.activePeriod ?? []).map((p) => Number(p.start ?? 0)), Infinity);
     const h = text(a.headerText), dsc = text(a.descriptionText), key = `${h}|${first === Infinity ? 0 : first}`, prev = next.get(key), u = text(a.url);
     const cause = String(GtfsRealtimeBindings.transit_realtime.Alert.Cause[a.cause as number] ?? a.cause ?? "");
+    entities.set(key, [...(entities.get(key) ?? []), e.id]);
     next.set(key, {
-      id: Bun.hash(key).toString(36), h, d: dsc, u: /^https?:/.test(u) ? u : undefined,
+      id: "", h, d: dsc, u: /^https?:/.test(u) ? u : undefined,
       sev: severity(h, cause, !!period || !a.activePeriod?.length), cause, ...classify(h, dsc, cause),
       from: Number(period?.start ?? 0), to: Number(period?.end ?? 0),
       s: [...new Set([...(prev?.s ?? []), ...s])], r: [...new Set([...(prev?.r ?? []), ...r])], t: [...new Set([...(prev?.t ?? []), ...t])],
     });
   }
+  entityIds ??= new Map((db.query("SELECT entity, id FROM alert_entity").all() as { entity: string; id: string }[]).map((r) => [r.entity, r.id]));
+  const keys = [...next.keys()], ids = resolveAlertIds(keys.map((key) => ({ key, entities: entities.get(key)! })), entityIds);
+  keys.forEach((k, i) => (next.get(k)!.id = ids[i]));
+  const remember = db.query("INSERT OR REPLACE INTO alert_entity VALUES (?, ?, ?)");
+  db.transaction(() => { for (const k of keys) for (const e of entities.get(k)!) remember.run(e, entityIds!.get(e)!, Math.floor(now)); })();
   alerts = [...next.values()];
   const byName = new Map(d.stations.map((s, i) => [s[0].toLowerCase(), i] as const));
   for (const a of alerts) {

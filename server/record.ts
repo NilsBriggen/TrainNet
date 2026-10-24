@@ -38,6 +38,7 @@ DROP TABLE IF EXISTS crawl_done;
 CREATE TABLE IF NOT EXISTS station_pax (uic TEXT PRIMARY KEY, year INTEGER, daily INTEGER, weekday INTEGER);
 CREATE TABLE IF NOT EXISTS rolling_stock (unit TEXT PRIMARY KEY, cls TEXT, subtype TEXT, built TEXT, seats1 INTEGER, seats2 INTEGER, length_m REAL, wheelchair INTEGER);
 CREATE TABLE IF NOT EXISTS sbb_loaded (name TEXT PRIMARY KEY, t INTEGER);
+CREATE TABLE IF NOT EXISTS alert_entity (entity TEXT PRIMARY KEY, id TEXT, last_seen INTEGER);
 CREATE TABLE IF NOT EXISTS platform_sector (uic TEXT, track TEXT, sector TEXT, lon REAL, lat REAL, PRIMARY KEY (uic, track, sector));
 CREATE TABLE IF NOT EXISTS agg_vehicle_day (date TEXT, unit TEXT, class TEXT, type TEXT, runs INTEGER, km REAL, PRIMARY KEY (date, unit));
 `;
@@ -156,6 +157,7 @@ export function maintain(now = new Date()) {
   db.query("DELETE FROM vehicle_run WHERE date < ?").run(cutoff);
   db.query("DELETE FROM formation_cache WHERE date < ?").run(addDays(today, -3));
   db.query("DELETE FROM upstream_call WHERE t < ?").run(now.getTime() - 2 * 86400_000);
+  db.query("DELETE FROM alert_entity WHERE last_seen < ?").run(now.getTime() / 1000 - KEEP_DAYS * 86400);
   db.query("DELETE FROM net_sample WHERE t < ?").run(serviceBase(cutoff) / 1000);
 }
 
