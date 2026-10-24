@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, locate, motion } from "../public/position.js";
+import { applyDelays, frontEnd, locate, motion } from "../public/position.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -99,4 +99,14 @@ test("motion: starts and ends at the stations, never runs backwards, slow at bot
     expect(motion(0.05, dur)).toBeLessThan(0.05); // still accelerating
   }
   expect(motion(0.1, 3600)).toBeCloseTo(0.1 / (1 - 45 / 3600) - (45 / 3600 / 2) / (1 - 45 / 3600), 6); // long segment: cruising at 10 %
+});
+
+test("front of the train: the platform end toward the next station, on the side of the strip where that sector is", () => {
+  const bern = [7.4391, 46.949], west = [7.3, 46.95], east = [7.6, 46.95];
+  const ends = [7.437, 46.9488, 7.441, 46.9492]; // sector A at the west end, the last sector at the east end
+  expect(frontEnd(bern, west, ends, "A", "F")).toBe("left"); // westbound: A leads, and A is drawn on the left
+  expect(frontEnd(bern, east, ends, "A", "F")).toBe("right");
+  expect(frontEnd(bern, west, ends, "F", "A")).toBe("right"); // the strip starts with sector F
+  expect(frontEnd(bern, west, null, "A", "F")).toBeNull(); // no sector signs known
+  expect(frontEnd(bern, west, ends, "C", "C")).toBeNull(); // the whole train in one sector: can't tell
 });

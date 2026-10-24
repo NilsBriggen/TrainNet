@@ -56,6 +56,20 @@ export function motion(f, dur) {
   return v * (f - a / 2);
 }
 
+/**
+ * Which end of a drawn formation is the front of the train: "left", "right" or null (unknown).
+ * from → to: [lon, lat] of this stop and the next (at a terminus: the previous stop and this one).
+ * ends: [lon, lat] of the platform's first sector and of its last ([lonA, latA, lonZ, latZ]).
+ * first / last: sector letter of the strip's first (left) and last (right) coach.
+ */
+export function frontEnd(from, to, ends, first, last) {
+  if (!ends || !first || !last || first === last) return null;
+  const kx = Math.cos((from[1] * Math.PI) / 180), dx = (to[0] - from[0]) * kx, dy = to[1] - from[1];
+  const along = (lon, lat) => (lon - from[0]) * kx * dx + (lat - from[1]) * dy;
+  const firstSectorAhead = along(ends[0], ends[1]) > along(ends[2], ends[3]), firstSectorLeft = first < last;
+  return firstSectorAhead === firstSectorLeft ? "left" : "right";
+}
+
 /** Decode a server path (delta-encoded ints at 1e-5°) into { pts: [lon,lat,...], cum: [0, m, ...] }. */
 export function unpackPath(packed) {
   const pts = new Float64Array(packed.length), n = packed.length / 2, cum = new Float64Array(n);

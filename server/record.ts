@@ -38,6 +38,7 @@ DROP TABLE IF EXISTS crawl_done;
 CREATE TABLE IF NOT EXISTS station_pax (uic TEXT PRIMARY KEY, year INTEGER, daily INTEGER, weekday INTEGER);
 CREATE TABLE IF NOT EXISTS rolling_stock (unit TEXT PRIMARY KEY, cls TEXT, subtype TEXT, built TEXT, seats1 INTEGER, seats2 INTEGER, length_m REAL, wheelchair INTEGER);
 CREATE TABLE IF NOT EXISTS sbb_loaded (name TEXT PRIMARY KEY, t INTEGER);
+CREATE TABLE IF NOT EXISTS platform_sector (uic TEXT, track TEXT, sector TEXT, lon REAL, lat REAL, PRIMARY KEY (uic, track, sector));
 CREATE TABLE IF NOT EXISTS agg_vehicle_day (date TEXT, unit TEXT, class TEXT, type TEXT, runs INTEGER, km REAL, PRIMARY KEY (date, unit));
 `;
 const KEEP_DAYS = 30;

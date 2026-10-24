@@ -187,16 +187,6 @@ function sample(d: Day, t: number, each?: (i: number, delay: number, stop: numbe
   return [run, late, canc, obs];
 }
 
-// diagnostic, logged once: does the feed keep its entity ids from poll to poll? If so they'd be a better alert key than header + start
-let idsSeen: Map<string, string> | null = null, idsChecked = false;
-function checkIds(pairs: [string, string][]) {
-  if (idsChecked) return;
-  if (!idsSeen) return void (idsSeen = new Map(pairs));
-  const same = pairs.filter(([k, id]) => idsSeen!.get(k) === id).length, both = pairs.filter(([k]) => idsSeen!.has(k)).length;
-  console.log(`[realtime] alert entity ids: ${same} of ${both} unchanged since the last poll`);
-  idsChecked = true;
-}
-
 async function pollAlerts(day: () => Day | undefined) {
   const d = day();
   if (!d) return;
@@ -206,7 +196,6 @@ async function pollAlerts(day: () => Day | undefined) {
   const text = (t: any) =>
     ((t?.translation?.find((x: any) => x.language === "en") ?? t?.translation?.[0])?.text ?? "").replace(/<[^>]*>/g, "");
   const next = new Map<string, Alert>(); // the feed repeats one message per affected entity group
-  const ids: [string, string][] = [], seen = new Map<string, number>();
   for (const e of feed.entity) {
     const a = e.alert;
     if (!a) continue;
@@ -223,12 +212,10 @@ async function pollAlerts(day: () => Day | undefined) {
     }
     if (!s.size && !r.size && !t.size) continue; // not about rail
     // keyed by header + first start, not description (it carries the expected end, which SBB keeps moving)
-    // and not the active period (nightly works have one per night: same alert)
+    // and not the active period (nightly works have one per night: same alert). The feed's entity ids are stable, but
+    // one per entity group: an alert spanning two groups has two unrelated UUIDs, so they can't name the alert.
     const first = Math.min(...(a.activePeriod ?? []).map((p) => Number(p.start ?? 0)), Infinity);
     const h = text(a.headerText), dsc = text(a.descriptionText), key = `${h}|${first === Infinity ? 0 : first}`, prev = next.get(key), u = text(a.url);
-    const nth = (seen.get(key) ?? 0) + 1;
-    seen.set(key, nth);
-    ids.push([`${key}|${nth}`, e.id]); // the n-th entity of this alert, whatever the feed order
     const cause = String(GtfsRealtimeBindings.transit_realtime.Alert.Cause[a.cause as number] ?? a.cause ?? "");
     next.set(key, {
       id: Bun.hash(key).toString(36), h, d: dsc, u: /^https?:/.test(u) ? u : undefined,
@@ -238,7 +225,6 @@ async function pollAlerts(day: () => Day | undefined) {
     });
   }
   alerts = [...next.values()];
-  checkIds(ids);
   const byName = new Map(d.stations.map((s, i) => [s[0].toLowerCase(), i] as const));
   for (const a of alerts) {
     const place = placeOf(a.h, a.s, byName);

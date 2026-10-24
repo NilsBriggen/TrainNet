@@ -8,7 +8,7 @@ import { DATA_DIR } from "./gtfs";
 import { db, flushAll, initRecord, maintain, startDay } from "./record";
 import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
-import { loadSbbData, stationPax, useRegisterNames } from "./sbbdata";
+import { loadSbbData, platformEnds, stationPax, useRegisterNames, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
@@ -23,6 +23,7 @@ let loading = false;
 let graph: Graph | null = null;
 initRecord(`${DATA_DIR}/stats.db`);
 useRegisterNames();
+usePlatformEnds();
 
 const RAIL = `${DATA_DIR}/rail.json`;
 async function loadRail() {
@@ -109,6 +110,8 @@ const server = Bun.serve({
       const trip = day?.trips[Number(req.params.idx)];
       if (!trip) return new Response("unknown train", { status: 404 });
       const r = await details(trip, day!.base), final = ["ok", "unsupported", "past"].includes(r.formationStatus);
+      // where each stop's platform has its first and last sector: with the direction of travel, that's the front of the train
+      for (const s of r.stops as any[]) s.ends = platformEnds(s.uic, s.track);
       return Response.json(r, { headers: { "Cache-Control": final ? "public, max-age=300" : "no-store" } }); // the URL carries the day version
     },
   },

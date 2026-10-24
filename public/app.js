@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cumStops, locate, motion, slice, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cumStops, frontEnd, locate, motion, slice, unpackPath } from "./position.js";
 import { routeStyle } from "./colors.js";
 import { HINTS } from "./hints.js";
 
@@ -801,13 +801,15 @@ function trainHtml(i) {
       if (at && c.sec?.[si]) lastSec = c.sec[si];
       return `<span class="car"><span class="coach ${cls}${c.closed ? " closed" : ""}${c.st ? " odd" : ""}" title="${esc(title)}">${c.wr ? "WR" : c.n ? c.n : esc(c.c) || "·"}</span><i>${esc(sec)}</i></span>`;
     }).join("");
+    const front = frontSide(f, si, at, p ? p.b : 0, sched);
+    const dir = front ? `<div class="dir ${front}">${front === "left" ? "◀ direction of travel" : "direction of travel ▶"}</div>` : "";
     const where = at ? `${esc(st[sched[(p ? p.b : 0) * 3]][0])}${at.track ? ` · Pl. ${esc(at.track)}` : ""}${at.moved ? ` <span class="moved">platform changed</span>` : ""}` : "";
     const nameOf = (uic) => day.stations[uicIndex().get(uic)]?.[0] ?? uic;
     const dests = [...new Set((extra.goals ?? []).map((g) => g[2]))];
     const split = dests.length > 1 ? `<div class="sub">Splits: ${extra.goals.map(([a, b, uic]) => `cars ${a}–${b} → ${esc(nameOf(uic))}`).join(" · ")}</div>` : "";
     const first = st[sched[0]][3], lastUic = st[sched[(n - 1) * 3]][3];
     const partial = units.filter((u) => (u.from && u.from !== first) || (u.to && u.to !== lastUic));
-    formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3><div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
+    formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3>${dir}<div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}${front ? `, front on the ${front}` : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
       + (units.length ? `<div class="unit-row">${units.map((u) => `<span class="unit"><a href="/stats#/type/${encodeURIComponent(u.cls)}" title="About this type">${esc(u.type)}</a><a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history"><b>${esc(u.id)}</b></a></span>`).join("")}</div>` : "")
       + (partial.length ? `<div class="sub">${partial.map((u) => `${esc(u.type)} ${esc(u.id)} only ${esc(nameOf(u.from || first))} → ${esc(nameOf(u.to || lastUic))}`).join(" · ")}</div>` : "");
   }
@@ -829,6 +831,15 @@ function trainHtml(i) {
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
     <h3>Stops</h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem" style="--p:${prog.toFixed(4)}">${p && !cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
+}
+
+/** Front of the drawn strip (see frontEnd): at the stop the strip shows, toward the next station, from SBB's sector signs. */
+function frontSide(coaches, si, at, k, sched) {
+  if (!at?.ends || si < 0) return null;
+  const st = day.stations, n = sched.length / 3, pos = (j) => st[sched[j * 3]].slice(1, 3);
+  const [from, to] = k < n - 1 ? [pos(k), pos(k + 1)] : k > 0 ? [pos(k - 1), pos(k)] : [null, null];
+  const letters = coaches.map((c) => c.sec?.[si]?.[0]).filter(Boolean);
+  return from && frontEnd(from, to, at.ends, letters[0], letters.at(-1));
 }
 
 const FORMATION_WHY = {
