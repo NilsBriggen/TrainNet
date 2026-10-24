@@ -6,7 +6,14 @@
   <title>TrainNet — live Swiss trains</title>
   <meta name="description" content="Every Swiss train, live, on a map.">
   <meta name="theme-color" content="#040a18">
+  <meta property="og:title" content="TrainNet — every Swiss train, live">
+  <meta property="og:description" content="All of Switzerland's trains on one map, moving in real time, with delays, disruptions and coach formations.">
+  <meta property="og:image" content="https://trainnet.briggen.dev/og.png">
+  <meta property="og:url" content="https://trainnet.briggen.dev/">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -41,6 +48,7 @@
       <span id="status-text">—</span>
       <span id="issues"></span>
       <svg id="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-label="Punctuality over the last two hours"><path class="area"/><path class="line"/></svg>
+      <button id="locate" class="icon" title="Near me: the nearest station, or the train you're on" aria-label="Near me" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="10" cy="10" r="1.9" fill="currentColor"/><path d="M10 1.8v2.6M10 15.6v2.6M1.8 10h2.6M15.6 10h2.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
       <a class="icon" href="/stats" title="Stats" aria-label="Stats"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9M10 16V4M16 16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></a>
       <button id="key-btn" class="icon" title="What the colours mean (?)" aria-label="Map key" aria-expanded="false" aria-controls="key"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 8a2 2 0 1 1 3 1.7c-.7.4-1 .8-1 1.6M10 14v.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
       <button id="zen" class="icon" title="Zen mode (Z)" aria-label="Zen mode"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
@@ -57,6 +65,7 @@
     <button data-cat="pe" style="--c:#ffd166">Panorama</button>
     <span class="gap"></span>
     <button data-cat="delays" style="--c:#ffd23f">Delays</button>
+    <button data-layer="lost" style="--c:#ff7a4d" title="Sections where trains gain delay, last 30 days">Time lost</button>
   </nav>
 
   <div id="tip" hidden></div>
@@ -82,12 +91,15 @@
     <h3>Map</h3>
     <ul>
       <li><span class="ki"><span class="k-hub"></span>major station</span><span class="ki"><span class="k-stn"></span>station</span><span class="ki"><span class="k-line tunnel"></span>tunnel: trains dim inside</span><span class="ki"><span class="k-line bridge"></span>bridge (zoomed in)</span></li>
+      <li><span class="ki"><span class="k-line" style="--c:#ffd23f"></span><span class="k-line" style="--c:#ff4d4d"></span>time lost</span><small>with "Time lost" on: sections where trains gain 20 s to 2+ min of delay on average, last 30 days</small></li>
+      <li><span class="ki"><span class="k-me"></span>you</span><small>"Near me" opens the nearest station; moving with a train, it finds that train. Your location stays in your browser.</small></li>
     </ul>
     <h3>Keys</h3>
     <p><kbd>/</kbd> search · <kbd>Z</kbd> zen · <kbd>?</kbd> this key · <kbd>Esc</kbd> close</p>
   </section>
 
   <button id="zen-exit" hidden>Exit zen</button>
+  <div id="toast" class="ui" role="status" hidden></div>
   <div id="sr-status" class="sr-only" aria-live="polite"></div>
 
   <aside id="panel" class="ui" hidden aria-label="Details">

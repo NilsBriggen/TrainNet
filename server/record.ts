@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS agg_station_day (date TEXT, uic TEXT, deps INTEGER, d
 CREATE TABLE IF NOT EXISTS agg_line_day (date TEXT, line TEXT, cat TEXT, trips INTEGER, observed INTEGER, punctual INTEGER,
   cancelled INTEGER, avg_delay REAL, km REAL, PRIMARY KEY (date, line));
 CREATE INDEX IF NOT EXISTS agg_train_day_no ON agg_train_day (train_no);
+CREATE TABLE IF NOT EXISTS agg_seg_day (date TEXT, a TEXT, b TEXT, n INTEGER, sum_gain INTEGER, PRIMARY KEY (date, a, b));
 CREATE TABLE IF NOT EXISTS upstream_call (api TEXT, t INTEGER);
 CREATE INDEX IF NOT EXISTS upstream_call_t ON upstream_call (api, t);
 CREATE TABLE IF NOT EXISTS formation_cache (key TEXT PRIMARY KEY, date TEXT, status TEXT, t INTEGER, json TEXT);
@@ -234,6 +235,10 @@ export function aggregate(date: string) {
     db.query(`INSERT OR REPLACE INTO agg_station_day SELECT date, uic, count(sched_dep), count(dep_delay), sum(dep_delay < ${LATE}), avg(dep_delay)
       FROM stop_obs WHERE date = ? AND sched_dep IS NOT NULL GROUP BY uic`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_vehicle_day SELECT date, unit, class, type, count(*), sum(km) FROM vehicle_run WHERE date = ? GROUP BY unit`).run(date);
+    // delay gained between consecutive stops (arrival at b minus departure at a), per section and direction: the map's "where time is lost"
+    db.query(`INSERT OR REPLACE INTO agg_seg_day SELECT x.date, x.uic, y.uic, count(*), sum(y.arr_delay - x.dep_delay) FROM stop_obs x
+      JOIN stop_obs y ON y.date = x.date AND y.trip = x.trip AND y.idx = x.idx + 1
+      WHERE x.date = ? AND x.dep_delay IS NOT NULL AND y.arr_delay IS NOT NULL AND x.skipped = 0 AND y.skipped = 0 GROUP BY x.uic, y.uic`).run(date);
   })();
   console.log(`[record] aggregated ${date}`);
 }

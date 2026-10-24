@@ -282,3 +282,16 @@ body.zen.idle { cursor: none; }
   .actions button, .actions a, .tabs button { min-height: 40px; }
 }
 @media (prefers-reduced-motion: reduce) { .dot, #panel, #loading .mark, .pill.alarm::before, .k-train.blink, .k-line.blink { animation: none; } }
+
+/* round 4: chip counts, near me, toast, connections, empty search */
+#chips button[data-n]::after { content: attr(data-n); color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; }
+#chips button[data-n="0"]::after { content: none; }
+#locate[aria-pressed="true"] { color: #4da3ff; }
+.k-me { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #4da3ff; box-shadow: 0 0 0 2px #fff, 0 0 0 7px rgba(77, 163, 255, 0.2); margin: 0 4px; }
+#toast { position: fixed; left: 50%; bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px)); transform: translateX(-50%); z-index: 6; padding: 10px 16px; border-radius: 12px; max-width: min(92vw, 420px); font-size: 13px; text-align: center; }
+.stops li.conn-stop { cursor: pointer; }
+.stops li.conn-stop:hover .name, .stops li.conn-stop:focus-visible .name { text-decoration: underline; text-underline-offset: 3px; }
+.stops li .conn { grid-column: 1 / -1; margin: 4px 0 8px; padding: 4px 0 4px 10px; border-left: 2px solid var(--hairline); cursor: default; }
+.stops li .conn .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
+h3 small { color: var(--dim); font-weight: 400; font-size: 11px; margin-left: 6px; }
+#results li.empty { color: var(--dim); cursor: default; }

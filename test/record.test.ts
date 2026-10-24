@@ -113,3 +113,12 @@ test("rows stored with a bare line name get today's key, and their day is summar
   expect(db.query("SELECT line FROM trip_day WHERE trip = 'old'").get()).toEqual({ line: "IC1|8500001" });
   expect(db.query("SELECT line, trips, punctual FROM agg_line_day").all()).toEqual([{ line: "IC1|8500001", trips: 1, punctual: 1 }]);
 });
+
+test("the daily summary keeps the delay gained per section, for the map's 'where time is lost'", () => {
+  recordTrips(day, { 0: { u: [[1, 240, 240, 0], [2, 120, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
+  flush(day, at("1200"), 0);
+  aggregate("2026-10-23");
+  expect(db.query("SELECT a, b, n, sum_gain FROM agg_seg_day ORDER BY a").all()).toEqual([
+    { a: "8500001", b: "8500002", n: 1, sum_gain: 240 }, { a: "8500002", b: "8500003", n: 1, sum_gain: -120 },
+  ]);
+});

@@ -1,18 +1,19 @@
-import { applyDelays, atDistance, cumStops, frontEnd, locate, motion, slice, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cumStops, frontEnd, locate, matchTrain, metres, motion, slice, unpackPath } from "./position.js";
 import { routeStyle } from "./colors.js";
 import { HINTS } from "./hints.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const hhmm = (t) => new Date(day.base + t * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" });
+const TIME = new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" }), DATE = new Intl.DateTimeFormat("de-CH", { timeZone: "Europe/Zurich" });
+const hhmm = (t) => TIME.format(day.base + t * 1000);
 const SEV = { 1: "#5a6b8c", 2: "#ffb547", 3: "#ff4d4d" };
 const STANDING = "#ff9f5a"; // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const SEV_NAME = { 1: "Planned", 2: "Limited service", 3: "Interrupted" };
 const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", other: "Disruption" };
 const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
 const TRAIL_O = [0.7, 0.45, 0.25, 0.1]; // trail pieces, nearest the train first
-const clock = (sec) => new Date(sec * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" });
-const dayOf = (sec) => new Date(sec * 1000).toLocaleDateString("de-CH", { timeZone: "Europe/Zurich" });
+const clock = (sec) => TIME.format(sec * 1000);
+const dayOf = (sec) => DATE.format(sec * 1000);
 /** HH:MM, with the date when it isn't today (works lasting days, weeks). */
 const dateClock = (sec) => (dayOf(sec) === dayOf(Date.now() / 1000) ? clock(sec) : `${new Date(sec * 1000).toLocaleDateString("de-CH", { day: "numeric", month: "short", timeZone: "Europe/Zurich" })} ${clock(sec)}`);
 const ICON = {
@@ -81,7 +82,7 @@ function indexDay() {
     path.structs = (day.structs?.[k] ?? []).map(([f0, f1, kind, name]) => ({ d0: f0 * total, d1: f1 * total, kind, name }));
     return path;
   });
-  for (const m of [expCache, routeCache, shown, details, nextTrip, prevTrip]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, details, fetching, nextTrip, prevTrip]) m.clear(); // trip indexes changed
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
@@ -95,12 +96,19 @@ async function pollLive() {
     const server = Date.parse(r.headers.get("date") ?? "");
     if (server) { const skew = server - Date.now(); clockSkew = Math.abs(skew) > 3000 ? skew : 0; }
     if (j.v !== day.v) { // a new service day: every trip index changed, so whatever was open means something else now
-      closePanel();
+      closePanel(true);
       results = [];
       hideResults();
       day = await fetchDay();
+      live = { delays: {}, alerts: [], stats: [] };
+      alertsV = "";
+      incidentTrains = new Map();
+      rippleAlerts = [];
+      folded = [];
+      lost = null;
       indexDay();
       setStatic();
+      if (lostOn) showLost();
     }
     // alerts (geometry, texts) change rarely: fetched only when their version moves, from a URL that caches for good
     if (j.av !== alertsV) {
@@ -131,7 +139,9 @@ try {
   style: { version: 8, glyphs: `${location.origin}/glyphs/{fontstack}/{range}.pbf`, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#040a18" } }] },
   });
 } catch (e) {
-  $("loading").lastElementChild.textContent = "This browser can't draw the map (WebGL is off or unsupported). The stats pages still work: /stats";
+  $("loading").lastElementChild.textContent = typeof maplibregl === "undefined"
+    ? "The map library didn't load (network or a blocker). Reload to try again; the stats pages still work: /stats"
+    : "This browser can't draw the map (WebGL is off or unsupported). The stats pages still work: /stats";
   throw e;
 }
 // north stays up: no rotation or tilt by mouse, touch or keyboard
@@ -287,16 +297,16 @@ function trainFeatures(dt, ts, withTrails) {
   const L = Math.min(15000, Math.max(400, (48 * 107160) / 2 ** z)); // ~48 px of track behind each train
   const blinkOn = CALM || ts % 1000 < 550;
   let running = 0, observed = 0, late = 0;
-  const dimOthers = selected?.type === "train";
+  const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 10.5, perCat = {};
   for (let i = 0; i < day.trips.length; i++) {
     const s = day.trips[i][3], style = styles[day.trips[i][0]];
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
     const r = positionOf(i, t, dt);
     if (!r) continue;
     const { p, e, q, dist } = r;
-    const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && selected.idx === i;
+    const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && (selected.type === "line" ? selected.routes.has(day.trips[i][0]) : selected.idx === i);
     const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
-    if (!cancelled) running++;
+    if (!cancelled) { running++; perCat[style.cat] = (perCat[style.cat] ?? 0) + 1; }
     if (!cancelled && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
     const o = (cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1) * (!sel && inTunnel(i, dist) ? 0.45 : 1), showDelay = CHIP_DELAYS() && !cancelled; // underground: dimmed
     if (flagged) alarms.push(point([q.lon, q.lat], {}));
@@ -306,6 +316,8 @@ function trainFeatures(dt, ts, withTrails) {
       h: sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : still ? STANDING : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18",
       hw: sel ? 2.2 : flagged ? 2.4 : still ? 1.6 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9,
       o, z: flagged ? 3 : style.glow ? 2 : style.s > 0.7 ? 1 : 0,
+      // only characters the local glyph files have (Latin-1): no ′ or ✕
+      ...(labels && { l: `${lineName(day.trips[i][0])} ${day.trips[i][2]}${cancelled ? " ×" : showDelay && d >= 60 ? ` +${Math.round(d / 60)}'` : ""}` }),
     }, i));
     if (withTrails && !cancelled && !p.at && (style.glow || z >= 8)) {
       const { route, cum } = tripRoute(i);
@@ -317,45 +329,61 @@ function trainFeatures(dt, ts, withTrails) {
   }
   if (ts - lastStatus > 1000) {
     lastStatus = ts;
-    const pct = observed ? Math.round((1 - late / observed) * 100) : 100;
-    $("status-text").textContent = `${running.toLocaleString("de-CH")} trains · ${pct} % on time`;
+    const pct = observed ? Math.round((1 - late / observed) * 100) : 100, age = live.time ? (Date.now() + clockSkew) / 1000 - live.time : 0;
+    $("status-text").textContent = `${running.toLocaleString("de-CH")} trains · ${pct} % on time${age > 120 ? ` · live data ${Math.round(age / 60)} min old` : ""}`;
+    for (const b of $("chips").querySelectorAll("button[data-cat]")) if (b.dataset.cat !== "delays") b.dataset.n = perCat[b.dataset.cat] ?? 0;
   }
   return { trains: fc(feats), trails: withTrails ? fc(trails) : null, alarms };
 }
 
-let last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, tick = 0, hadRipples = false;
+let shownTrains = { features: [] }, lastTip = 0, last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, lastTrail = 0, lastAnim = 0, hadRipples = false;
 function frame(ts) {
   try { tickFrame(ts); } finally { requestAnimationFrame(frame); } // one bad frame must not stop the map for good
 }
+/**
+ * How often train positions are rebuilt: about every half pixel of movement for a fast train (50 m/s), so ~1 Hz at
+ * country zoom and ~15 Hz zoomed in. Rebuilding thousands of features 20 times a second for sub-pixel moves only drained phones.
+ */
+function updateMs() {
+  const mPerPx = (78271.5 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
+  const ms = Math.min(1000, Math.max(66, (0.5 * mPerPx * 1000) / 50));
+  return incidentTrains.size && !CALM ? Math.min(ms, 250) : ms; // reported incidents blink
+}
 function tickFrame(ts) {
-  if (ts - last > 50) {
-    const dt = Math.min(ts - lastFrame, 1000);
+  if (ts - last > updateMs()) {
+    const dt = Math.min(ts - lastFrame, 1000), withTrails = ts - lastTrail > 500; // trails: twice a second is plenty
     last = lastFrame = ts;
-    const { trains, trails, alarms } = trainFeatures(dt, ts, tick++ % 2 === 0); // trails at 10 fps are enough
+    if (withTrails) lastTrail = ts;
+    const { trains, trails, alarms } = trainFeatures(dt, ts, withTrails);
+    shownTrains = trains;
     map.getSource("trains").setData(trains);
     if (trails) map.getSource("trails").setData(trails);
     const ripples = alarms.length + rippleAlerts.length > 0;
     if (ripples || hadRipples) map.getSource("ripples").setData(fc([...alarms, ...rippleAlerts.map((c) => point(c, {}))])); // nothing to clear: skip the upload
     hadRipples = ripples;
+  }
+  // blinking and breathing disruptions: only while there's something to animate
+  if (!CALM && ts - lastAnim > 50 && (hadRipples || live.alerts.some((a) => a.sev === 3 || a.sudden))) {
+    lastAnim = ts;
     const breath = 0.5 + 0.5 * Math.sin(ts / 480); // ~3 s period, never fully off
     const blinkOn = CALM || ts % 1000 < 550;
     map.setPaintProperty("alert-seg-3", "line-opacity", CALM ? 0.7 : 0.4 + 0.4 * breath);
     map.setPaintProperty("alert-seg-sudden", "line-opacity", blinkOn ? 0.95 : 0.2);
     map.setPaintProperty("alert-pts", "icon-opacity", ["case", ["==", ["get", "sudden"], 1], blinkOn ? 1 : 0.25, ["match", ["get", "sev"], 1, 0.45, 0.9]]);
-    if (!CALM) {
+    if (hadRipples) {
       const ph = (ts % 1400) / 1400; // ripple: grows and fades
       map.setPaintProperty("ripples", "circle-radius", 6 + 20 * ph);
       map.setPaintProperty("ripples", "circle-stroke-opacity", 0.85 * (1 - ph));
     }
-    updateTip();
-    if (selected?.type === "train") {
-      if (ts - lastRoute > 500) { lastRoute = ts; setRoute(selected.idx); } // the split point moves slowly: 2 Hz is plenty
-      if (follow && ts - lastFollow > 1000 && !map.isMoving()) {
-        lastFollow = ts;
-        const f = trains.features.find((x) => x.properties.i === selected.idx);
-        if (f) map.easeTo({ center: f.geometry.coordinates, duration: 950, easing: (x) => x, padding: camPad() }); // keeps the user's zoom
-        else setFollow(false); // finished, or its category is switched off
-      }
+  }
+  if (ts - lastTip > 100) { lastTip = ts; updateTip(); }
+  if (selected?.type === "train") {
+    if (ts - lastRoute > 500) { lastRoute = ts; setRoute(selected.idx); } // the split point moves slowly: 2 Hz is plenty
+    if (follow && ts - lastFollow > 1000 && !map.isMoving()) {
+      lastFollow = ts;
+      const f = shownTrains.features.find((x) => x.properties.i === selected.idx);
+      if (f) map.easeTo({ center: f.geometry.coordinates, duration: 950, easing: (x) => x, padding: camPad() }); // keeps the user's zoom
+      else setFollow(false); // finished, or its category is switched off
     }
   }
 }
@@ -379,7 +407,7 @@ map.on("load", async () => {
   map.addSource("neighbours", { type: "geojson", data: "neighbours.geojson" });
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
-  for (const id of ["rail", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples"]) map.addSource(id, { type: "geojson", data: fc([]) });
+  for (const id of ["rail", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
   // the opaque neighbour fill hides the bit of swisstopo coverage beyond the border
@@ -405,6 +433,10 @@ map.on("load", async () => {
       "line-opacity": ["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6],
     },
   });
+  // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
+  map.addLayer({ id: "lost", type: "line", source: "lost", layout: { visibility: lostOn ? "visible" : "none", "line-cap": "round" }, paint: {
+    "line-color": ["interpolate", ["linear"], ["get", "g"], 20, "#ffd23f", 60, "#ff9f1c", 120, "#ff4d4d"],
+    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.2, 12, 5], "line-opacity": 0.85 } });
   const calmSev = (n) => ["all", ["==", ["get", "sev"], n], ["==", ["get", "sudden"], 0]];
   map.addLayer({ id: "alert-seg-1", type: "line", source: "alert-seg", filter: calmSev(1), paint: { "line-color": SEV[1], "line-width": 1.4, "line-opacity": 0.4, "line-dasharray": [2, 2] } });
   map.addLayer({ id: "alert-seg-2", type: "line", source: "alert-seg", filter: calmSev(2), paint: { "line-color": SEV[2], "line-width": 2, "line-opacity": 0.7 } });
@@ -430,6 +462,8 @@ map.on("load", async () => {
   map.addLayer({ id: "labels-hub", type: "symbol", source: "stations", filter: ["==", ["get", "hub"], 1], ...text(["interpolate", ["linear"], ["zoom"], 7, 11, 12, 13], "#c7d6ff", 0.9) });
   map.addLayer({ id: "alert-pts", type: "symbol", source: "alert-pts", layout: { "icon-image": "diamond", "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.55, 12, 0.9], "icon-allow-overlap": true, "icon-ignore-placement": true }, paint: { "icon-color": ["get", "c"], "icon-opacity": ["match", ["get", "sev"], 1, 0.45, 0.9], "icon-halo-color": "#040a18", "icon-halo-width": 1 } });
 
+  map.addLayer({ id: "me-halo", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-opacity": 0.18, "circle-radius": 16, "circle-blur": 0.4 } });
+  map.addLayer({ id: "me", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-radius": 5.5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
   map.addLayer({ id: "trails", type: "line", source: "trails", layout: { "line-cap": "butt", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-opacity": ["get", "o"], "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.4, 10, 2.6, 14, 4.5] } });
   map.addLayer({ id: "ripples", type: "circle", source: "ripples", layout: { visibility: CALM ? "none" : "visible" }, paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 6, "circle-stroke-color": SEV[3], "circle-stroke-width": 2, "circle-stroke-opacity": 0.8 } });
   map.addLayer({ id: "train-glow", type: "circle", source: "trains", filter: ["==", ["get", "g"], 1], paint: { "circle-color": ["get", "c"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 6, 10, 10, 14, 18], "circle-blur": 1, "circle-opacity": ["*", 0.22, ["get", "o"]] } });
@@ -443,18 +477,23 @@ map.on("load", async () => {
     },
     paint: { "icon-color": ["get", "c"], "icon-opacity": ["get", "o"], "icon-halo-color": ["get", "h"], "icon-halo-width": ["get", "hw"], "icon-halo-blur": 0 },
   });
+  // zoomed in, every train says what it is: "IR15 2515 +4′" (long-distance trains win where labels collide)
+  map.addLayer({ id: "train-labels", type: "symbol", source: "trains", minzoom: 10.5, filter: ["has", "l"],
+    layout: { "text-field": ["get", "l"], "text-font": ["Open Sans Semibold"], "text-size": 10.5, "text-offset": [0, 1.1], "text-anchor": "top", "text-padding": 1, "symbol-sort-key": ["-", 3, ["get", "z"]] },
+    paint: { "text-color": "#dfe8ff", "text-halo-color": "#040a18", "text-halo-width": 1.4, "text-opacity": ["get", "o"] } });
 
 
   day = await dayPromise;
   pax = await paxPromise;
   indexDay();
   setStatic();
-  await pollLive();
-  $("loading").hidden = true;
+  requestAnimationFrame(frame); // first: one failed poll must not leave the map without trains or the loader up
+  try { await pollLive(); } catch (e) { console.error(e); } finally { $("loading").hidden = true; }
   setInterval(pollLive, 15000);
   setInterval(() => $("live").classList.toggle("stale", !live.time || Date.now() / 1000 - live.time > 120), 5000);
-  requestAnimationFrame(frame);
+  setInterval(patchPanel, 1000);
   openFromUrl();
+  if (lostOn) showLost();
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -462,11 +501,14 @@ let hoverPt = null, tipHtml = "";
 map.on("mousemove", (e) => { if (hoverable) hoverPt = e.point; }); // touch screens send a mousemove after a tap: no hover state there
 map.getCanvas().addEventListener("mouseleave", () => { hoverPt = null; updateTip(); });
 /** What's under a screen point: trains first, then stations, then disruptions. */
+// a finger needs a bigger target than a mouse; where several trains are close, the nearest wins, not the first drawn
+const HIT = hoverable ? 7 : 20;
+const nearest = (fs, pt) => fs.reduce((a, f) => { const q = map.project(f.geometry.coordinates), d = (q.x - pt.x) ** 2 + (q.y - pt.y) ** 2; return !a || d < a.d ? { f, d } : a; }, null)?.f;
 function hitAt(pt) {
-  const box = [[pt.x - 7, pt.y - 7], [pt.x + 7, pt.y + 7]];
-  const t = map.queryRenderedFeatures(box, { layers: ["trains"] })[0];
+  const box = [[pt.x - HIT, pt.y - HIT], [pt.x + HIT, pt.y + HIT]];
+  const t = nearest(map.queryRenderedFeatures(box, { layers: ["trains"] }), pt);
   if (t) return { type: "train", idx: t.properties.i };
-  const s = map.queryRenderedFeatures(box, { layers: ["stations-hub", "stations-mid", "stations-minor"] })[0];
+  const s = nearest(map.queryRenderedFeatures(box, { layers: ["stations-hub", "stations-mid", "stations-minor"] }), pt);
   if (s) return { type: "station", idx: s.properties.i };
   const a = map.queryRenderedFeatures(box, { layers: ["alert-pts", "alert-hit"] })[0];
   if (a) return { type: "alert", idx: a.properties.id };
@@ -511,7 +553,7 @@ map.on("click", (e) => {
 map.on("dragstart", () => setFollow(false));
 
 // ---------- chips ----------
-for (const b of $("chips").querySelectorAll("button")) {
+for (const b of $("chips").querySelectorAll("button[data-cat]")) {
   b.classList.toggle("off", hidden.has(b.dataset.cat));
   b.setAttribute("aria-pressed", String(!hidden.has(b.dataset.cat)));
   b.onclick = () => {
@@ -520,6 +562,93 @@ for (const b of $("chips").querySelectorAll("button")) {
     b.setAttribute("aria-pressed", String(!hidden.has(b.dataset.cat)));
     try { localStorage.setItem("trainnet.hidden", JSON.stringify([...hidden])); } catch {}
   };
+}
+
+// "time lost" layer: off by default (it's an analysis, not the live picture), remembered
+let lost = null, lostOn = false;
+try { lostOn = localStorage.getItem("trainnet.lost") === "1"; } catch {}
+/** Sections where trains gain delay, from /api/stats/segments, drawn on the same track paths as the trains. */
+async function showLost() {
+  lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  const ix = uicIndex(), feats = [];
+  for (const [ua, ub, gain, n] of lost) {
+    const a = ix.get(ua), b = ix.get(ub), k = a === undefined || b === undefined ? undefined : segIndex.get(segKey(a, b));
+    if (k !== undefined && gain >= 20) feats.push(line(paths[k].pts, { g: gain, n }));
+  }
+  map.getSource("lost").setData(fc(feats));
+}
+const lostBtn = $("chips").querySelector("[data-layer=lost]");
+const setLost = (on) => {
+  lostOn = on;
+  lostBtn.classList.toggle("off", !on);
+  lostBtn.setAttribute("aria-pressed", String(on));
+  try { localStorage.setItem("trainnet.lost", on ? "1" : "0"); } catch {}
+  if (map.getLayer("lost")) map.setLayoutProperty("lost", "visibility", on ? "visible" : "none");
+  if (on && day) showLost();
+};
+lostBtn.classList.toggle("off", !lostOn);
+lostBtn.setAttribute("aria-pressed", String(lostOn));
+lostBtn.onclick = () => setLost(!lostOn);
+
+// ---------- near me: the nearest station, or the train you're on ----------
+let watch = null, samples = [], watchTimer;
+function toast(text) {
+  $("toast").textContent = text;
+  $("toast").hidden = false;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => ($("toast").hidden = true), 6000);
+}
+$("locate").onclick = () => (watch === null ? startLocate() : stopLocate());
+function startLocate() {
+  if (!navigator.geolocation) return toast("This browser can't tell where you are.");
+  samples = [];
+  $("locate").setAttribute("aria-pressed", "true");
+  // your position stays in this browser: it's only compared with the trains already on the map
+  watch = navigator.geolocation.watchPosition(onPosition, (e) => { stopLocate(); toast(e.code === 1 ? "Location access is blocked for this site." : "Couldn't get your location."); },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  watchTimer = setTimeout(stopLocate, 90_000); // long enough to tell a moving train from a station; the dot stays
+}
+function stopLocate() {
+  if (watch !== null) navigator.geolocation.clearWatch(watch);
+  watch = null;
+  clearTimeout(watchTimer);
+  $("locate").setAttribute("aria-pressed", "false");
+}
+/** Where trip i is at service time t, by its expected times (the drawn icon eases toward this): [lon, lat] or null. */
+function positionAt(i, t) {
+  const e = expected(i), p = locate(e.stops, t);
+  if (!p) return null;
+  const { route, cum } = tripRoute(i), q = atDistance(route, cum, cum[p.a] + (p.at ? 0 : motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2]) * (cum[p.b] - cum[p.a])));
+  return [q.lon, q.lat];
+}
+function onPosition(pos) {
+  if (!day) return;
+  const { longitude: lon, latitude: lat, speed } = pos.coords, first = !samples.length;
+  map.getSource("me").setData(fc([point([lon, lat], {})]));
+  samples.push({ t: (pos.timestamp + clockSkew - day.base) / 1000, lon, lat, speed });
+  samples = samples.filter((x) => samples.at(-1).t - x.t <= 60);
+  if (first) {
+    let si = null, best = 2000; // the nearest station with trains, within 2 km
+    day.stations.forEach((st, i) => { const d = st[4] ? metres(lon, lat, st[1], st[2]) : Infinity; if (d < best) { best = d; si = i; } });
+    if (si !== null) open("station", si, true);
+    else map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 12), padding: camPad() });
+  }
+  // moving faster than a run (5 m/s) for a while: probably on a train. Which one: the one that moved with us.
+  const a = samples[0], b = samples.at(-1), dt = b.t - a.t;
+  if (samples.length < 3 || dt < 10 || !((b.speed ?? 0) > 5 || metres(a.lon, a.lat, b.lon, b.lat) / dt > 5)) return;
+  const t = b.t, near = [];
+  for (let i = 0; i < day.trips.length; i++) {
+    const st = day.trips[i][3];
+    if (t < st[2] || t > st[st.length - 2] + 3 * 3600) continue;
+    const q = positionAt(i, t);
+    if (q && metres(lon, lat, q[0], q[1]) < 2000) near.push(i);
+  }
+  const i = matchTrain(samples, near, positionAt);
+  if (i === null) return;
+  stopLocate();
+  open("train", i, true);
+  setFollow(true);
+  toast(`You seem to be on ${lineName(day.trips[i][0])} ${day.trips[i][2]} to ${day.trips[i][1]}`);
 }
 
 // ---------- clock, zen ----------
@@ -532,7 +661,7 @@ function setZen(on) {
   $("zen").setAttribute("aria-pressed", String(on));
   const u = new URL(location.href);
   on ? u.searchParams.set("zen", "1") : u.searchParams.delete("zen");
-  history.replaceState(null, "", u);
+  history.replaceState(history.state, "", u);
 }
 $("zen").onclick = () => setZen(!zen);
 $("zen-exit").onclick = () => setZen(false);
@@ -581,10 +710,12 @@ function search(q) {
     cands.sort(([a], [b]) => (a[2] === q ? -1 : b[2] === q ? 1 : 0) || tripRank(a, t) - tripRank(b, t));
     for (const [tr, i] of cands.slice(0, 5)) out.push({ kind: "train", idx: i, main: `${lineName(tr[0])} ${tr[2]}`, sub: `${hhmm(tr[3][2])} ${day.stations[tr[3][0]][0]} → ${tr[1]}`, route: tr[0] });
   } else {
-    // a line ("IC5", "s12"): its next train to leave, so Enter shows one on the map
+    // a line ("IC5", "s12"): all its trains on the map, the others dimmed
     const routes = day.routes.map((r, k) => k).filter((k) => fold(lineName(k)) === q.replace(/\s+/g, ""));
-    const next = routes.flatMap((k) => day.trips.map((tr, i) => [tr, i]).filter(([tr]) => tr[0] === k)).sort(([a], [b]) => tripRank(a, t) - tripRank(b, t))[0];
-    if (next) out.push({ kind: "train", idx: next[1], main: `Line ${lineName(next[0][0])}`, sub: `next: ${next[0][2]} ${hhmm(next[0][3][2])} → ${next[0][1]}`, route: next[0][0] });
+    if (routes.length) {
+      const trips = day.trips.filter((tr) => routes.includes(tr[0])), running = trips.filter((tr) => t >= tr[3][2] && t <= tr[3][tr[3].length - 2]).length;
+      out.push({ kind: "line", idx: lineName(routes[0]), main: `Line ${lineName(routes[0])}`, sub: `${running} running now · ${trips.length} trains today`, route: routes[0] });
+    }
   }
   if (folded.length !== day.stations.length) folded = day.stations.map((s) => fold(s[0]));
   const st = day.stations.map((s, i) => [s, i]).filter(([s, i]) => s[4] && folded[i].includes(q));
@@ -598,11 +729,13 @@ const tripRank = (tr, t) => (t >= tr[3][2] && t <= tr[3][tr[3].length - 2] + 180
 function showResults() {
   results = search($("q").value);
   cursor = results.length ? 0 : -1;
-  $("results").innerHTML = results.map((r, k) => `<li role="option" id="r${k}" data-k="${k}" aria-selected="${k === cursor}">${r.kind === "train" ? badge(r.route) : `<span class="rkind">Station</span>`}<span>${esc(r.main)}<br><small>${esc(r.sub)}</small></span><span class="rkind">↵</span></li>`).join("");
-  $("results").hidden = !results.length;
-  $("q").setAttribute("aria-expanded", String(!!results.length));
+  const q = $("q").value.trim();
+  $("results").innerHTML = results.map((r, k) => `<li role="option" id="r${k}" data-k="${k}" aria-selected="${k === cursor}">${r.kind !== "station" ? badge(r.route) : `<span class="rkind">Station</span>`}<span>${esc(r.main)}<br><small>${esc(r.sub)}</small></span><span class="rkind">↵</span></li>`).join("")
+    || (q && day ? `<li class="empty" role="option" aria-disabled="true">No station, train or line matches “${esc(q)}”</li>` : "");
+  $("results").hidden = !$("results").children.length;
+  $("q").setAttribute("aria-expanded", String(!$("results").hidden));
   $("q").setAttribute("aria-activedescendant", cursor >= 0 ? `r${cursor}` : "");
-  for (const li of $("results").children) li.onmousedown = (e) => { e.preventDefault(); pick(+li.dataset.k); };
+  for (const li of $("results").querySelectorAll("[data-k]")) li.onmousedown = (e) => { e.preventDefault(); pick(+li.dataset.k); };
 }
 const hideResults = () => { $("results").hidden = true; $("q").setAttribute("aria-expanded", "false"); };
 function pick(k) {
@@ -618,6 +751,7 @@ $("q").onblur = () => setTimeout(hideResults, 150);
 $("q").onkeydown = (e) => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
+    if (!results.length) return;
     cursor = (cursor + (e.key === "ArrowDown" ? 1 : results.length - 1)) % results.length;
     [...$("results").children].forEach((li, k) => li.setAttribute("aria-selected", k === cursor));
     $("q").setAttribute("aria-activedescendant", `r${cursor}`);
@@ -625,36 +759,56 @@ $("q").onkeydown = (e) => {
 };
 
 // ---------- deep links ----------
-function openFromUrl() {
+const PANEL_KEYS = ["train", "station", "alert", "line"];
+function openFromUrl(initial = true) {
   const u = new URL(location.href);
-  if (u.searchParams.get("zen") === "1") setZen(true);
-  const num = u.searchParams.get("train"), uic = u.searchParams.get("station"), aid = u.searchParams.get("alert");
+  if (initial && u.searchParams.get("zen") === "1") setZen(true);
+  const at = u.searchParams.get("at")?.split("/").map(Number); // map view: zoom/lat/lon
+  if (initial && at?.length === 3 && at.every(Number.isFinite)) map.jumpTo({ zoom: at[0], center: [at[2], at[1]] });
+  const num = u.searchParams.get("train"), uic = u.searchParams.get("station"), aid = u.searchParams.get("alert"), ln = u.searchParams.get("line");
   if (num) {
     const t = now(), cands = day.trips.map((tr, i) => [tr, i]).filter(([tr]) => tr[2] === num).sort(([a], [b]) => tripRank(a, t) - tripRank(b, t));
-    if (cands.length) open("train", cands[0][1], true);
+    if (cands.length) open("train", cands[0][1], !at, false);
   } else if (uic) {
     const i = day.stations.findIndex((s) => s[3] === uic);
-    if (i >= 0) open("station", i, true);
-  } else if (aid && live.alerts.some((a) => a.id === aid)) open("alert", aid, true);
+    if (i >= 0) open("station", i, !at, false);
+  } else if (aid && live.alerts.some((a) => a.id === aid)) open("alert", aid, !at, false);
+  else if (ln && day.routes.some((r, k) => lineName(k) === ln)) open("line", ln, !at, false);
 }
-function setUrl() {
+/** The URL names what's open (shareable). Opening a panel adds a history entry, so Back closes it. */
+function setUrl(push = false) {
   const u = new URL(location.href);
-  for (const k of ["train", "station", "alert"]) u.searchParams.delete(k);
+  for (const k of PANEL_KEYS) u.searchParams.delete(k);
   if (selected?.type === "train") u.searchParams.set("train", day.trips[selected.idx][2]);
   if (selected?.type === "station") u.searchParams.set("station", day.stations[selected.idx][3]);
   if (selected?.type === "alert") u.searchParams.set("alert", selected.idx);
-  history.replaceState(null, "", u);
+  if (selected?.type === "line") u.searchParams.set("line", selected.idx);
+  push ? history.pushState({ panel: 1 }, "", u) : history.replaceState(history.state, "", u);
 }
+addEventListener("popstate", () => {
+  const u = new URL(location.href);
+  if (PANEL_KEYS.some((k) => u.searchParams.has(k))) openFromUrl(false);
+  else closePanel(true);
+});
+map.on("moveend", () => { // the view goes into the URL too, so a copied link opens where you were looking
+  const u = new URL(location.href), c = map.getCenter();
+  u.searchParams.set("at", `${map.getZoom().toFixed(2)}/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}`);
+  history.replaceState(history.state, "", u);
+});
 
 // ---------- panel ----------
-const details = new Map(); // trip idx -> "loading" | { formation, formationStatus, occupancy, at }
-const RETRY = { busy: 20_000, window: 120_000, error: 120_000, offline: 60_000, none: 4 * 3600_000 }; // statuses worth asking again, and when
+const details = new Map(), fetching = new Set(); // trip idx -> { formation, formationStatus, occupancy, at }; asked right now
+// statuses worth asking again, and when; a formation seen is checked again every 5 min while its train is open (platform changes, coupling)
+const RETRY = { ok: 300_000, busy: 20_000, window: 120_000, error: 120_000, offline: 60_000, none: 4 * 3600_000 };
 function loadDetails(i) {
-  const d = details.get(i);
-  if (d === "loading" || (d && !(Date.now() - d.at > (RETRY[d.formationStatus] ?? Infinity)))) return;
-  details.set(i, "loading");
-  // the URL carries the day version: trip indexes change daily and the response is cached for minutes
-  fetch(`/api/train/${i}?v=${encodeURIComponent(day.v)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((x) => {
+  const d = details.get(i), v = day.v;
+  if (fetching.has(i) || (d && !(Date.now() - d.at > (RETRY[d.formationStatus] ?? Infinity)))) return;
+  fetching.add(i);
+  // the URL carries the day version: trip indexes change daily, and the server says 409 when its day moved on
+  fetch(`/api/train/${i}?v=${encodeURIComponent(v)}`).then((r) => (r.status === 409 ? "stale" : r.ok ? r.json() : null)).catch(() => null).then((x) => {
+    if (v !== day.v) return; // an answer about yesterday's trip index
+    fetching.delete(i);
+    if (x === "stale") return void pollLive(); // reloads the day, then the panel asks again
     const r = x ?? { formation: null, occupancy: null, formationStatus: "offline" };
     if (r.formationStatus === "busy") RETRY.busy = Math.max(5, r.retryAfter ?? 20) * 1000;
     details.set(i, { ...r, at: Date.now() });
@@ -662,25 +816,33 @@ function loadDetails(i) {
   });
 }
 
-function open(type, idx, fly = false) {
+function open(type, idx, fly = false, push = true) {
   if (selected?.type !== "train" || selected.idx !== idx) setFollow(false);
-  if (!selected) lastFocus = document.activeElement;
-  selected = { type, idx, tab: "dep" };
+  const was = selected;
+  if (!was) lastFocus = document.activeElement;
+  if (!$("key").hidden) toggleKey(false); // it sits over the panel
+  selected = { type, idx, tab: "dep", ...(type === "line" && { routes: new Set(day.routes.map((r, k) => k).filter((k) => lineName(k) === idx)) }) };
+  panelHtml = "";
   map.setFilter("station-selected", ["==", ["get", "i"], type === "station" ? idx : -1]);
   const a = type === "alert" ? live.alerts.find((x) => x.id === idx) : null;
   $("panel").hidden = false;
-  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : a ? (a.sudden ? SEV[3] : SEV[a.sev]) : type === "issues" ? (idx === "standing" ? STANDING : SEV[idx === "now" ? 3 : idx]) : "#5cc8ff");
+  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : type === "line" ? styles[[...selected.routes][0]].c : a ? (a.sudden ? SEV[3] : SEV[a.sev]) : type === "issues" ? (idx === "standing" ? STANDING : SEV[idx === "now" ? 3 : idx]) : "#5cc8ff");
   if (type !== "train") map.getSource("route").setData(fc([]));
-  setUrl();
+  setUrl(push && !was);
   renderPanel();
   $("sr-status").textContent = `${$("panel-body").querySelector("h2")?.textContent ?? ""} opened`;
   if (lastFocus && lastFocus !== document.body && !$("map").contains(lastFocus)) $("close").focus({ preventScroll: true }); // keyboard users land in the panel
   if (!fly) return;
-  if (a?.seg) {
+  const fit = (pts) => {
     const b = new maplibregl.LngLatBounds();
-    for (let k = 0; k < a.seg[0].length; k += 2) b.extend([a.seg[0][k], a.seg[0][k + 1]]);
+    for (const c of pts) b.extend(c);
     map.setPadding(NO_PAD); // fitBounds adds the camera's current padding to its own
-    return map.fitBounds(b, { padding: camPad(40), maxZoom: 12, duration: 1200 });
+    map.fitBounds(b, { padding: camPad(40), maxZoom: 12, duration: 1200 });
+  };
+  if (a?.seg) return fit(Array.from({ length: a.seg[0].length / 2 }, (_, k) => [a.seg[0][k * 2], a.seg[0][k * 2 + 1]]));
+  if (type === "line") {
+    const t = now(), pts = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) && locate(expected(i).stops, t) ? [trainPos(i)] : []));
+    return pts.length ? fit(pts) : undefined;
   }
   const c = type === "station" ? day.stations[idx].slice(1, 3) : type === "train" ? trainPos(idx)
     : a?.s.length ? day.stations[a.s[0]].slice(1, 3) : a?.t.length ? trainPos(a.t[0]) : null;
@@ -693,9 +855,11 @@ const camPad = (extra = 0) => {
   return { top: 70 + extra, left: extra, right: (sheet || $("panel").hidden ? 0 : 430) + extra, bottom: h + extra };
 };
 const trainPos = (i) => { const r = positionOf(i, now(), 0); return r ? [r.q.lon, r.q.lat] : day.stations[day.trips[i][3][0]].slice(1, 3); };
-function closePanel() {
+function closePanel(fromHistory = false) {
   if (!selected) return;
+  if (!fromHistory && history.state?.panel) return void history.back(); // the entry open() added: closing and Back are the same step
   selected = null;
+  panelHtml = "";
   $("panel").hidden = true;
   map.setFilter("station-selected", ["==", ["get", "i"], -1]);
   map.getSource("route").setData(fc([]));
@@ -705,7 +869,7 @@ function closePanel() {
   lastFocus?.focus?.(); // back to where the keyboard was before the panel opened
   lastFocus = null;
 }
-$("close").onclick = closePanel;
+$("close").onclick = () => closePanel();
 // phones: swipe the bottom sheet down (from its top) to close it
 let sheetY = null;
 $("panel").addEventListener("touchstart", (e) => { sheetY = $("panel").scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
@@ -728,27 +892,31 @@ const meter = (o, cls) => (o ? `<span class="meter o${o}" title="${cls} class: $
 /** Forecast occupancy, 1st and 2nd class, as two small bar meters. */
 const meters = (o) => (o && (o[0] || o[1]) ? `<span class="meters">${meter(o[0], "1st")}${meter(o[1], "2nd")}</span>` : "<span></span>");
 
+let panelHtml = "";
+/** List rows that act as buttons: Enter and Space like a button; a click inside a nested row doesn't reach the outer one. */
+const activate = (el, go) => {
+  el.onclick = (e) => { e.stopPropagation(); go(); };
+  el.onkeydown = (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(); } };
+};
 function renderPanel() {
   if (!selected || !day) return;
   const body = $("panel-body");
   const t = selected.type;
-  // re-rendered every poll: keep what the user opened and where the keyboard is
-  const opened = [...body.querySelectorAll("details")].map((d) => d.open), f = document.activeElement;
-  const focusKey = body.contains(f) ? ["data-trip", "data-alert", "data-tab", "data-station", "data-follow", "data-share"].map((a) => f.hasAttribute(a) && `[${a}="${f.getAttribute(a)}"]`).find(Boolean) : null;
-  body.innerHTML = t === "train" ? trainHtml(selected.idx) : t === "station" ? stationHtml(selected.idx) : t === "alert" ? alertPanelHtml(selected.idx) : issuesHtml(selected.idx);
+  const html = t === "train" ? trainHtml(selected.idx) : t === "station" ? stationHtml(selected.idx) : t === "alert" ? alertPanelHtml(selected.idx) : t === "line" ? lineHtml(selected.idx) : issuesHtml(selected.idx);
+  if (html === panelHtml) return patchPanel(); // nothing new: no rebuild, so a click, the focus and scroll positions stay put
+  panelHtml = html;
+  // rebuilt: keep what the user opened, where the keyboard is and how far the formation is scrolled
+  const opened = [...body.querySelectorAll("details")].map((d) => d.open), f = document.activeElement, scroll = body.querySelector(".formation")?.scrollLeft ?? 0;
+  const focusKey = body.contains(f) ? ["data-trip", "data-alert", "data-tab", "data-station", "data-follow", "data-share", "data-conn"].map((a) => f.hasAttribute(a) && `[${a}="${f.getAttribute(a)}"]`).find(Boolean) : null;
+  body.innerHTML = html;
   body.querySelectorAll("details").forEach((d, k) => opened[k] && (d.open = true));
   if (focusKey) body.querySelector(focusKey)?.focus({ preventScroll: true });
+  const fm = body.querySelector(".formation");
+  if (fm) fm.scrollLeft = scroll;
   for (const el of body.querySelectorAll("[data-station]")) el.onclick = () => open("station", +el.dataset.station, true);
-  for (const el of body.querySelectorAll("[data-alert]")) {
-    const go = () => open("alert", el.dataset.alert, true);
-    el.onclick = go;
-    el.onkeydown = (e) => e.key === "Enter" && go();
-  }
-  for (const li of body.querySelectorAll("[data-trip]")) {
-    const go = () => open("train", +li.dataset.trip, true);
-    li.onclick = go;
-    li.onkeydown = (e) => e.key === "Enter" && go();
-  }
+  for (const el of body.querySelectorAll("[data-alert]")) activate(el, () => open("alert", el.dataset.alert, true));
+  for (const li of body.querySelectorAll("[data-trip]")) activate(li, () => open("train", +li.dataset.trip, true));
+  for (const li of body.querySelectorAll("[data-conn]")) activate(li, () => { selected.conn = selected.conn === +li.dataset.conn ? null : +li.dataset.conn; renderPanel(); });
   for (const b of body.querySelectorAll("[data-tab]")) b.onclick = () => { selected.tab = b.dataset.tab; renderPanel(); };
   body.querySelector("[data-follow]")?.addEventListener("click", () => setFollow(!follow));
   body.querySelector("[data-share]")?.addEventListener("click", (e) => {
@@ -757,6 +925,32 @@ function renderPanel() {
     if (!navigator.clipboard) return void prompt("Link to this train", u.href); // http or old browsers
     navigator.clipboard.writeText(u.href).then(() => { btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy link"), 1200); }, () => prompt("Link to this train", u.href));
   });
+  patchPanel();
+}
+
+/** What moves every second in an open train panel: progress, "next stop", the age of the live data, which stops are behind. */
+function trainNow(i) {
+  const sched = day.trips[i][3], n = sched.length / 3, e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t), st = day.stations;
+  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
+  const age = live.time && live.delays[i] ? Math.max(0, Math.round((Date.now() + clockSkew) / 1000 - live.time)) : null;
+  return {
+    p, cancelled, status: status && ` · ${status}`, prog: !p ? (t < e.stops[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1),
+    age: age === null ? "" : ` · live data ${age < 90 ? `${age} s` : `${Math.round(age / 60)} min`} old`,
+    past: Array.from({ length: n }, (_, k) => (k === 0 ? e.stops[2] : e.stops[k * 3 + 2]) < t),
+  };
+}
+function patchPanel() {
+  if (selected?.type !== "train" || !day) return;
+  const body = $("panel-body"), x = trainNow(selected.idx), stem = body.querySelector(".stops.stem");
+  body.querySelector(".progress i")?.style.setProperty("--p", x.prog.toFixed(4));
+  const status = body.querySelector("[data-live=status]"), age = body.querySelector("[data-live=age]");
+  if (status && status.innerHTML !== x.status) status.innerHTML = x.status;
+  if (age) age.textContent = x.age;
+  if (!stem) return;
+  stem.style.setProperty("--p", x.prog.toFixed(4));
+  stem.querySelectorAll(":scope > li").forEach((li, k) => li.classList.toggle("past", x.past[k]));
+  const pos = stem.querySelector(".pos");
+  if (pos) pos.style.display = x.p && !x.cancelled ? "" : "none";
 }
 
 function trainHtml(i) {
@@ -764,13 +958,9 @@ function trainHtml(i) {
   const e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t);
   const st = day.stations, n = sched.length / 3;
   loadDetails(i);
-  const extra = details.get(i) === "loading" ? { formation: undefined, occupancy: null } : details.get(i);
+  const extra = details.get(i) ?? { formation: undefined, occupancy: null };
   const d = p ? e.delay[p.b] : e.delay[n - 1];
   const chip = cancelled ? `<span class="chip off">Cancelled</span>` : d >= 60 ? `<span class="chip ${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)} min</span>` : `<span class="chip">On time</span>`;
-  // before departure / after arrival by the *expected* times: a train delayed at its origin hasn't "arrived"
-  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
-  const prog = !p ? (t < e.stops[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1);
-  const age = live.time ? Math.max(0, Math.round(Date.now() / 1000 + clockSkew / 1000 - live.time)) : null;
   const inc = incidentTrains.get(i), stuckSince = !cancelled && standing(i) && live.delays[i].x;
   const banner = inc ? `<button class="banner" data-alert="${inc.id}"><strong>${esc(whyText(inc))}</strong><span>${esc(inc.h)} · Details →</span></button>`
     : stuckSince ? `<div class="banner quiet"><strong>Probably standing</strong><span>Its expected delay at the next stop has been rising since ${clock(stuckSince)}. That's our inference from the forecasts, not a report.</span></div>` : "";
@@ -820,17 +1010,17 @@ function trainHtml(i) {
   const stops = Array.from({ length: n }, (_, k) => {
     const s = st[sched[k * 3]], pl = k === 0 ? sched[2] : sched[k * 3 + 1];
     const ex = k === 0 ? e.stops[2] : e.stops[k * 3 + 1];
-    const past = (k === 0 ? e.stops[2] : e.stops[k * 3 + 2]) < t, pf = platform(i, k), dwell = k && k < n - 1 ? sched[k * 3 + 2] - sched[k * 3 + 1] : 0;
-    return `<li class="${past ? "past" : ""}${e.skipped[k] ? " skipped" : ""}">
+    const pf = platform(i, k), dwell = k && k < n - 1 ? sched[k * 3 + 2] - sched[k * 3 + 1] : 0, conn = k > 0 && !cancelled && !e.skipped[k]; // arrivals: tap for connections
+    return `<li class="${e.skipped[k] ? "skipped" : ""}${conn ? " conn-stop" : ""}"${conn ? ` data-conn="${k}" role="button" tabindex="0" aria-expanded="${selected.conn === k}" title="Connections at ${esc(s[0])}"` : ""}>
       <span>${hhmm(pl)}</span><span class="exp">${ex - pl >= 60 ? delayText(ex - pl) : ""}</span>
-      <span class="name" title="${esc(s[0])}">${esc(s[0])}${dwell >= 180 ? ` <small>dep. ${hhmm(sched[k * 3 + 2])}</small>` : ""}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span>${meters(occ?.[s[3]])}</li>`;
+      <span class="name">${esc(s[0])}${dwell >= 180 ? ` <small>dep. ${hhmm(sched[k * 3 + 2])}</small>` : ""}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span>${meters(occ?.[s[3]])}${selected.conn === k ? `<div class="conn">${connectionsHtml(i, k)}</div>` : ""}</li>`;
   }).join("");
   return `<h2>${badge(route)} <span>${esc(num)}</span> ${chip}</h2>
-    <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}${status ? ` · ${status}` : ""}${age !== null && live.delays[i] ? ` · <span class="age">live data ${age < 90 ? `${age} s` : `${Math.round(age / 60)} min`} old</span>` : ""}</div>
-    <div class="progress"><i style="--p:${prog.toFixed(4)}"></i></div>
+    <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}<span data-live="status"></span><span class="age" data-live="age"></span></div>
+    <div class="progress"><i></i></div>
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
-    <h3>Stops</h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem" style="--p:${prog.toFixed(4)}">${p && !cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
+    <h3>Stops <small>tap a stop for connections</small></h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem">${!cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
 }
 
 /** Front of the drawn strip (see frontEnd): at the stop the strip shows, toward the next station, from SBB's sector signs. */
@@ -840,6 +1030,27 @@ function frontSide(coaches, si, at, k, sched) {
   const [from, to] = k < n - 1 ? [pos(k), pos(k + 1)] : k > 0 ? [pos(k - 1), pos(k)] : [null, null];
   const letters = coaches.map((c) => c.sec?.[si]?.[0]).filter(Boolean);
   return from && frontEnd(from, to, at.ends, letters[0], letters.at(-1));
+}
+
+/** Trains leaving stop k's station 3–30 min after trip i is expected there: this train itself and its continuation left out. */
+function connectionsHtml(i, k) {
+  const si = day.trips[i][3][k * 3], arr = expected(i).stops[k * 3 + 1], skip = new Set([i, nextTrip.get(i)]);
+  const rows = byStation[si].flatMap(([j, q]) => {
+    const s = day.trips[j][3];
+    if (skip.has(j) || q === s.length / 3 - 1) return []; // ends here
+    const e = expected(j), dep = e.stops[q * 3 + 2];
+    return !e.skipped[q] && dep >= arr + 180 && dep <= arr + 1800 ? [[dep, s[q * 3 + 2], j, q]] : [];
+  }).sort((a, b) => a[0] - b[0]).slice(0, 8);
+  return rows.length ? `<ol class="stops deps">${rows.map(([dep, sched, j, q]) => tripRow(j, sched, dep, `→ ${esc(day.trips[j][1])}`, platform(j, q))).join("")}</ol>`
+    : `<div class="empty">No train leaves 3–30 min after this one arrives.</div>`;
+}
+
+function lineHtml(name) {
+  const trips = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) ? [i] : [])), rows = runningRows(trips);
+  return `<h2>${badge(day.trips[trips[0]]?.[0] ?? [...selected.routes][0])} <span>Line</span></h2>
+    <div class="sub">${rows.length} running now · ${trips.length} trains today · <a class="inline" href="/stats#/line/${encodeURIComponent(name)}">Stats ↗</a></div>
+    ${alertsHtml(live.alerts.filter((a) => a.r.some((r) => selected.routes.has(r))))}
+    <h3>Running now</h3><ol class="stops deps">${rows.join("") || `<li class="empty">None running right now</li>`}</ol>`;
 }
 
 const FORMATION_WHY = {
@@ -865,7 +1076,7 @@ function stationHtml(si) {
     const [route, head, , s] = day.trips[i], pf = platform(i, p);
     const state = live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : delayText(ex - sched);
     const where = arr ? `from ${esc(day.stations[s[0]][0])}` : esc(head);
-    return `<li data-trip="${i}" tabindex="0"><span>${hhmm(sched)}</span>${badge(route)}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
+    return `<li data-trip="${i}" role="button" tabindex="0"><span>${hhmm(sched)}</span>${badge(route)}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
   }).join("");
   const p = pax[day.stations[si][3]];
   return `<h2>${esc(name)}</h2><div class="sub">${byStation[si].length} trains today${p ? ` · ≈ ${p[0].toLocaleString("de-CH")} passengers a day` : ""} · <a class="inline" href="/stats#/station/${encodeURIComponent(day.stations[si][3])}">Stats ↗</a></div>
@@ -878,7 +1089,7 @@ function stationHtml(si) {
 function tripRow(i, sched, ex, where, pf = "") {
   const issue = trainIssue(i);
   const state = live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : issue ? `<span class="very-late">${esc(issue)}</span>` : delayText(ex - sched) + (standing(i) ? ` <span class="standing" title="Probably standing (inferred)">●</span>` : "");
-  return `<li data-trip="${i}" tabindex="0"><span>${hhmm(sched)}</span>${badge(day.trips[i][0])}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
+  return `<li data-trip="${i}" role="button" tabindex="0"><span>${hhmm(sched)}</span>${badge(day.trips[i][0])}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
 }
 /** Trains of these trips/lines that are running right now, with their current delay. */
 function runningRows(trips) {
@@ -920,7 +1131,7 @@ function issuesHtml(which) {
       ${rows ? `<ol class="stops deps">${rows}</ol>` : `<div class="empty">None right now.</div>`}`;
   }
   const list = which === "now" ? live.alerts.filter((a) => a.sudden) : live.alerts.filter((a) => a.sev === +which);
-  const items = list.map((a) => `<li data-alert="${a.id}" tabindex="0" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"><span class="sev-dot"></span>
+  const items = list.map((a) => `<li data-alert="${a.id}" role="button" tabindex="0" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"><span class="sev-dot"></span>
     <div><strong>${esc(a.h)}</strong><small>${esc(whyText(a))}${a.from ? ` · since ${clock(a.from)}` : ""}</small></div></li>`).join("");
   const title = which === "now" ? "Incidents right now" : SEV_NAME[which];
   return `<h2>${title}</h2><div class="sub">${list.length} disruption${list.length === 1 ? "" : "s"}</div>

@@ -154,3 +154,27 @@ export function slice(route, cum, d0, d1) {
   push(b.lon, b.lat);
   return out;
 }
+
+/** Metres between two points (equirectangular: plenty for a few km). */
+export const metres = (lon1, lat1, lon2, lat2) => Math.hypot((lon2 - lon1) * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180), lat2 - lat1) * 111_320;
+
+/**
+ * Which train a moving phone is on: the candidate whose position at each sample's time stays closest to it.
+ * samples: [{ t, lon, lat }] (t on the trains' clock); positionAt(i, t) → [lon, lat] or null (not running).
+ * Null when no train stays within `within` metres on average, or a second one fits nearly as well (two trains side by side).
+ */
+export function matchTrain(samples, candidates, positionAt, within = 300) {
+  let best = null, second = Infinity;
+  for (const i of candidates) {
+    let sum = 0;
+    for (const s of samples) {
+      const p = positionAt(i, s.t);
+      if (!p) { sum = Infinity; break; }
+      sum += metres(s.lon, s.lat, p[0], p[1]);
+    }
+    const m = sum / samples.length;
+    if (!best || m < best.m) { second = best?.m ?? Infinity; best = { i, m }; }
+    else second = Math.min(second, m);
+  }
+  return best && best.m < within && second > 1.5 * best.m ? best.i : null;
+}

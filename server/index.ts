@@ -132,6 +132,7 @@ const server = Bun.serve({
     "/api/stats/types": (req) => statsJson(req, stats.types),
     "/api/stats/history": (req) => statsJson(req, stats.longHistory),
     "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
+    "/api/stats/segments": (req) => statsJson(req, stats.segments),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
     "/api/train/:idx": async (req) => {
       const v = new URL(req.url).searchParams.get("v");

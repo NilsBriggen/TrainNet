@@ -527,6 +527,19 @@ export function search(d: Day, q: string) {
   return out.slice(0, 12);
 }
 
+// ---------- where time is lost (map layer) ----------
+/** Per section over the last 30 days, both directions together: [uicA, uicB, average seconds gained, trains]. */
+export function segments() {
+  return cached("segments", 3600, () => {
+    const by = new Map<string, [string, string, number, number]>();
+    for (const r of all(`SELECT a, b, sum(n) n, sum(sum_gain) s FROM agg_seg_day WHERE date >= ? GROUP BY a, b`, addDays(zurichDate(new Date()), -30))) {
+      const [x, y] = r.a < r.b ? [r.a, r.b] : [r.b, r.a], k = `${x}|${y}`, v = by.get(k) ?? by.set(k, [x, y, 0, 0]).get(k)!;
+      v[2] += r.n; v[3] += r.s;
+    }
+    return [...by.values()].filter((v) => v[2] >= 30).map(([a, b, n, s]) => [a, b, Math.round(s / n), n]);
+  });
+}
+
 // ---------- line labels ----------
 /** "S1|8500010" -> "S1 · Basel SBB", for every line whose name another line shares (today's and the history's). */
 export function lineLabels(d: Day) {

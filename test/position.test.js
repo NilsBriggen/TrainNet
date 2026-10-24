@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, frontEnd, locate, motion } from "../public/position.js";
+import { applyDelays, frontEnd, locate, matchTrain, motion } from "../public/position.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -109,4 +109,15 @@ test("front of the train: the platform end toward the next station, on the side 
   expect(frontEnd(bern, west, ends, "F", "A")).toBe("right"); // the strip starts with sector F
   expect(frontEnd(bern, west, null, "A", "F")).toBeNull(); // no sector signs known
   expect(frontEnd(bern, west, ends, "C", "C")).toBeNull(); // the whole train in one sector: can't tell
+});
+
+test("on a train: the one whose position follows the phone's wins; two trains side by side are no answer", () => {
+  // trains moving east along latitude 47 at 30 m/s from different starts; train 2 runs west
+  const at = (lon0, dir) => (t) => [lon0 + (dir * 30 * t) / (111_320 * Math.cos((47 * Math.PI) / 180)), 47];
+  const pos = { 0: at(8.0, 1), 1: at(8.01, 1), 2: at(8.02, -1) }; // train 1: ~760 m ahead
+  const phone = [0, 10, 20, 30].map((t) => ({ t, lon: pos[0](t)[0] + 0.0003, lat: 47.0002 })); // ~30 m off train 0
+  expect(matchTrain(phone, [0, 1, 2], (i, t) => pos[i](t))).toBe(0);
+  const twins = { 0: pos[0], 1: (t) => [pos[0](t)[0] + 0.0001, 47] };
+  expect(matchTrain(phone, [0, 1], (i, t) => twins[i](t))).toBeNull();
+  expect(matchTrain(phone, [1, 2], (i, t) => pos[i](t))).toBeNull(); // nothing close enough
 });
