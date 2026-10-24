@@ -420,11 +420,11 @@ async function fleetPage(current) {
   const valueBars = (x, fmt) => [Plot.barX(f.byType, { y: "type", x, fill: "type", sort: { y: "-x" }, tip: true }),
     Plot.text(f.byType, { y: "type", x, text: (d) => fmt(d[x]), textAnchor: "start", dx: 4, fill: "#8396bf" })];
   draw("c-types", { ...rows(types.length), x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: valueBars("units", n0) });
-  draw("c-km", { ...rows(types.length), x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: valueBars("km", (v) => `${n0(v)} km`) });
+  draw("c-km", { ...rows(types.length), marginRight: 72, x: { grid: true, label: null }, y: { label: null }, color: typeColor, marks: valueBars("km", (v) => `${n0(v)} km`) });
   if (f.ages.length) draw("c-ages", { ...rows(new Set(f.ages.map((a) => a.type)).size), x: { label: "built", tickFormat: "d", grid: true }, y: { label: null, domain: d3.groupSort(f.ages, (g) => d3.median(g, (a) => a.year), (a) => a.type) }, color: typeColor,
     marks: [Plot.dot(f.ages, { x: "year", y: "type", fill: "type", r: 3, fillOpacity: 0.7, tip: true }), Plot.tickX(f.ages, Plot.groupY({ x: "median" }, { x: "year", y: "type", stroke: "#fff", strokeWidth: 2 }))] });
   const mix = f.mixByLine.flatMap((l) => l.types.map((t) => ({ line: l.line, ...t })));
-  draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 60, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line), tickFormat: lineLabel }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
+  draw("c-mix", { height: 26 * f.mixByLine.length + 50, marginLeft: 130, x: { grid: true, label: null }, y: { label: null, domain: f.mixByLine.map((l) => l.line), tickFormat: lineLabel }, color: { ...typeColor, legend: true }, marks: [Plot.barX(mix, { y: "line", x: "n", fill: "type", tip: true })] });
 }
 
 /** Every month from the first to the last row, missing ones as gaps (pct null), so a line breaks instead of bridging them. */
