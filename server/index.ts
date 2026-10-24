@@ -133,6 +133,8 @@ const server = Bun.serve({
     "/api/stats/history": (req) => statsJson(req, stats.longHistory),
     "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
     "/api/stats/segments": (req) => statsJson(req, stats.segments),
+    "/api/stats/records": (req) => statsJson(req, stats.records),
+    "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
     "/api/train/:idx": async (req) => {
       const v = new URL(req.url).searchParams.get("v");

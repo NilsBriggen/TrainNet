@@ -261,7 +261,7 @@ export function longHistory() {
       WHERE line NOT LIKE '%|' GROUP BY year, line HAVING n >= 3000`).map((r) => ({ year: r.year, line: r.line, trips: r.trips, pct: pct(r.ok, r.n) }));
     const byYear = d3group(lineYears, (r) => r.year);
     return {
-      first: days[0].date, last: days.at(-1).date, days: days.length, missing: days.filter((r) => r.partial).length,
+      first: days[0].date, last: days.at(-1).date, days: days.length, missing: days.filter((r) => r.partial).length, movers: movers(months),
       months, years, calendar: days.map((r) => [r.date, pct(r.punctual, r.observed), r.trips, r.partial ? 1 : 0]),
       season: all(`SELECT CAST(substr(month, 6, 2) AS INTEGER) m, hour, sum(late) late, sum(n) n FROM hist_hour_month GROUP BY m, hour HAVING n >= 500`)
         .map((r) => ({ month: r.m, hour: r.hour, late: pct(r.late, r.n) })),
@@ -271,6 +271,32 @@ export function longHistory() {
       }),
     };
   });
+}
+/**
+ * Year to date against the same months a year earlier: the lines and stations that changed most. Complete months only,
+ * and only what ran at least 1,000 times in both periods, so a few trains can't top the list.
+ */
+function movers(months: { month: string; days: number }[]) {
+  const done = months.filter((m) => m.days >= 28), last = done.at(-1)?.month;
+  if (!last) return null;
+  const year = last.slice(0, 4), now = done.filter((m) => m.month.startsWith(year)).map((m) => m.month);
+  const before = now.map((m) => `${+year - 1}${m.slice(4)}`);
+  if (!now.length || !months.some((m) => m.month === before[0])) return null;
+  const q = (sql: string, ms: string[]) => new Map(all(sql.replace("$M", ms.map(() => "?").join(",")), ...ms).map((r) => [r.k, r]));
+  const compare = (sql: string, name?: (k: string, r: any) => string) => {
+    const a = q(sql, now), b = q(sql, before), rows: any[] = [];
+    for (const [k, x] of a) {
+      const y = b.get(k);
+      if (!y || x.n < 1000 || y.n < 1000) continue;
+      rows.push({ key: k, name: name ? name(k, x) : k, now: pct(x.ok, x.n), before: pct(y.ok, y.n), n: x.n, delta: Math.round((1000 * x.ok) / x.n - (1000 * y.ok) / y.n) / 10 });
+    }
+    rows.sort((x, y) => y.delta - x.delta);
+    return { up: rows.slice(0, 10), down: rows.slice(-10).reverse() };
+  };
+  return {
+    period: `${now[0].slice(5)}–${now.at(-1)!.slice(5)}`, year, lines: compare(`SELECT line k, sum(punctual) ok, sum(observed) n FROM hist_line_month WHERE month IN ($M) AND line NOT LIKE '%|' GROUP BY line`),
+    stations: compare(`SELECT uic k, max(name) name, sum(dep_ok) ok, sum(dep_obs) n FROM hist_station_month WHERE month IN ($M) GROUP BY uic`, (_, x) => x.name),
+  };
 }
 const d3group = <T>(rows: T[], key: (r: T) => string) => { const m = new Map<string, T[]>(); for (const r of rows) (m.get(key(r)) ?? m.set(key(r), []).get(key(r))!).push(r); return m; };
 /** Monthly punctuality of one train number / line / station's departures since 2018, and the whole span's share. */
@@ -376,6 +402,22 @@ export function fleet(d: Day) {
 }
 
 // ---------- train types ----------
+/**
+ * Punctuality of the trains each series ran (last 30 days, at the last Swiss stop) against all trains of the same lines:
+ * a series on the punctual S-Bahn isn't better than one on the Gotthard just for that. delta = its % − what its lines did.
+ */
+function seriesPunctuality() {
+  return cached("series", 1800, () => {
+    const base = new Map(all(`SELECT line, sum(observed AND NOT cancelled) n, sum(observed AND NOT cancelled AND final_delay < 180) ok FROM trip_day GROUP BY line`).map((r) => [r.line, r]));
+    const by = new Map<string, { n: number; ok: number; expected: number }>();
+    for (const r of all(`SELECT v.cls, t.line, count(*) n, sum(t.final_delay < 180) ok FROM (SELECT DISTINCT class cls, date, trip FROM vehicle_run) v
+      JOIN trip_day t ON t.date = v.date AND t.trip = v.trip WHERE t.observed = 1 AND t.cancelled = 0 GROUP BY v.cls, t.line`)) {
+      const b = base.get(r.line), x = by.get(r.cls) ?? by.set(r.cls, { n: 0, ok: 0, expected: 0 }).get(r.cls)!;
+      x.n += r.n; x.ok += r.ok; x.expected += b?.n ? (r.n * b.ok) / b.n : 0;
+    }
+    return new Map([...by].filter(([, x]) => x.n >= 50).map(([cls, x]) => [cls, { runs: x.n, pct: pct(x.ok, x.n), delta: Math.round((1000 * (x.ok - x.expected)) / x.n) / 10 }]));
+  });
+}
 /** Every series seen in a formation or listed in the register: names, how many, how far they ran, where. */
 export function types(d: Day) {
   return cached(`types:${d.version}`, 300, () => {
@@ -392,8 +434,9 @@ export function types(d: Day) {
     }
     for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE date = ? GROUP BY class`, d.date)) get(r.cls).today = r.n;
     for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run GROUP BY class`)) get(r.cls).seen = Math.max(get(r.cls).seen, r.n);
+    const punct = seriesPunctuality();
     return [...by.values()].filter((x) => x.seen || x.today || TYPE_INFO[x.cls])
-      .map((x) => ({ ...x, kmTotal: Math.round(x.kmTotal + x.kmToday), kmToday: Math.round(x.kmToday), lines: [...x.lines].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l]) => l) }))
+      .map((x) => ({ ...x, punctuality: punct.get(x.cls) ?? null, kmTotal: Math.round(x.kmTotal + x.kmToday), kmToday: Math.round(x.kmToday), lines: [...x.lines].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l]) => l) }))
       .sort((a, b) => b.today - a.today || b.seen - a.seen || b.registered - a.registered);
   });
 }
@@ -417,7 +460,7 @@ export function trainType(d: Day, cls: string) {
     if (!units.size) return null;
     const list = [...units.values()].map((u) => ({ ...u, kmToday: Math.round(u.kmToday), kmTotal: Math.round(u.kmTotal + u.kmToday) }));
     return {
-      cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null,
+      cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null, punctuality: seriesPunctuality().get(cls) ?? null,
       units: list.sort((a, b) => b.kmToday - a.kmToday || b.kmTotal - a.kmTotal || a.unit.localeCompare(b.unit)),
       lines: [...lines].sort((a, b) => b[1] - a[1]).map(([line, n]) => ({ line, n })),
       years: list.filter((u) => u.built).map((u) => +u.built.slice(0, 4)),
@@ -525,6 +568,63 @@ export function search(d: Day, q: string) {
   for (const s of d.stations.filter((s) => s[4] && fold(s[0]).includes(q)).sort((a, b) => +fold(b[0]).startsWith(q) - +fold(a[0]).startsWith(q) || b[4] - a[4]).slice(0, 8))
     out.push({ kind: "station", key: s[3], label: s[0], sub: `${s[4]} trains today` });
   return out.slice(0, 12);
+}
+
+// ---------- records ----------
+/** Bests and worsts: whole days since 2018, the longest delays and disruptions recorded, today's timetable extremes. */
+export function records(d: Day) {
+  return cached(`records:${d.version}`, 600, () => {
+    const h = longHistory(), days = (h?.calendar ?? []).filter((x: any) => !x[3] && x[1] != null);
+    const byPct = [...days].sort((a: any, b: any) => a[1] - b[1]);
+    const canc = all(`SELECT date, cancelled, trips FROM hist_net_day ORDER BY cancelled * 1.0 / trips DESC LIMIT 40`).filter((r) => days.some((x: any) => x[0] === r.date)).slice(0, 5);
+    // busiest hour of a weekday: departures recorded per hour, averaged over the weekdays imported
+    const weekdays = one(`SELECT count(*) n FROM hist_net_day WHERE CAST(strftime('%w', date) AS INTEGER) BETWEEN 1 AND 5`).n || 1;
+    const hours = all(`SELECT hour, sum(n) n, sum(late) late FROM hist_hour_month WHERE dow < 5 GROUP BY hour ORDER BY hour`).map((r) => ({ hour: r.hour, perDay: Math.round(r.n / weekdays), late: pct(r.late, r.n) }));
+    const F = facts(d);
+    return {
+      bestDays: byPct.slice(-5).reverse().map(([date, p, trips]: any) => ({ date, pct: p, trips })),
+      worstDays: byPct.slice(0, 5).map(([date, p, trips]: any) => ({ date, pct: p, trips })),
+      cancelDays: canc.map((r) => ({ date: r.date, cancelled: r.cancelled, pct: pct(r.cancelled, r.trips) })),
+      months: (h?.months ?? []).filter((m: any) => m.days >= 28 && !m.missing).sort((a: any, b: any) => a.pct - b.pct).filter((_: any, k: number, a: any[]) => k < 3 || k >= a.length - 3),
+      hours,
+      delays: all(`SELECT train_no, line, month, max_delay FROM hist_train_month WHERE line NOT LIKE '%|' ORDER BY max_delay DESC LIMIT 8`),
+      delaysLive: all(`SELECT date, train_no, line, origin, dest, max_delay FROM trip_day WHERE observed = 1 ORDER BY max_delay DESC LIMIT 8`),
+      disruptions: all(`SELECT id, h, why, kind, sev_max, coalesce(since, first_seen) start, last_seen, last_seen - coalesce(since, first_seen) dur FROM alert_log
+        WHERE sev_max >= 2 ORDER BY dur DESC LIMIT 8`),
+      fastest: F.fastest.slice(0, 3), longest: F.longestTrips.slice(0, 3), longestNonstop: F.longestNonstop.slice(0, 3),
+    };
+  });
+}
+
+// ---------- commute ----------
+/**
+ * Every recorded train from station a to station b (the same run, b after a) over the last 30 days: how punctual at b,
+ * by hour of departure from a, and per train. Live recordings only: the official history has no per-stop pairs.
+ */
+export function commute(d: Day, a: string, b: string) {
+  const A = station(d, a), B = station(d, b);
+  if (!A || !B || a === b) return null;
+  return cached(`commute:${d.date}:${a}:${b}`, 1800, () => {
+    const rows = all(`SELECT x.date, x.train_no, x.line, x.sched_dep dep, y.sched_arr arr, y.arr_delay delay FROM stop_obs x
+      JOIN stop_obs y ON y.date = x.date AND y.trip = x.trip AND y.idx > x.idx
+      WHERE x.uic = ? AND y.uic = ? AND x.date >= ? AND x.sched_dep IS NOT NULL AND y.arr_delay IS NOT NULL AND y.skipped = 0`, a, b, addDays(d.date, -30));
+    const q = (xs: number[], f: number) => { const s = [...xs].sort((u, v) => u - v); return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * f))] : null; };
+    const hours = new Map<number, number[]>(), trains = new Map<string, { train_no: string; line: string; n: number; ok: number; dep: number }>();
+    for (const r of rows) {
+      const h = zurich(r.dep).hour;
+      (hours.get(h) ?? hours.set(h, []).get(h)!).push(r.delay);
+      const t = trains.get(r.train_no) ?? trains.set(r.train_no, { train_no: r.train_no, line: r.line, n: 0, ok: 0, dep: r.dep }).get(r.train_no)!;
+      t.n++; t.ok += +(r.delay < 180);
+    }
+    const all_ = rows.map((r) => r.delay), days = new Set(rows.map((r) => r.date)).size;
+    return {
+      a: A, b: B, runs: rows.length, days, perDay: days ? Math.round(rows.length / days) : 0,
+      pct: pct(all_.filter((x) => x < 180).length, all_.length), median: q(all_, 0.5), p90: q(all_, 0.9),
+      minutes: q(rows.map((r) => r.arr - r.dep), 0.5),
+      hours: [...hours].sort((x, y) => x[0] - y[0]).map(([hour, xs]) => ({ hour, n: xs.length, pct: pct(xs.filter((x) => x < 180).length, xs.length), median: q(xs, 0.5), p90: q(xs, 0.9) })),
+      trains: [...trains.values()].sort((x, y) => y.n - x.n).slice(0, 20).map((t) => ({ ...t, pct: pct(t.ok, t.n), dep: zurich(t.dep).hour * 60 + Math.floor((t.dep % 3600) / 60) })),
+    };
+  });
 }
 
 // ---------- where time is lost (map layer) ----------

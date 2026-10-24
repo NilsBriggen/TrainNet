@@ -40,10 +40,10 @@ export function lineKeys(trips: { name: string; cat: string; uics: string[] }[],
 /** "S1|8500010" -> "S1" */
 export const lineName = (key: string) => (key.includes("|") ? key.slice(0, key.lastIndexOf("|")) : key);
 
-/** Labels for keys whose name is shared by another line: "S1 · Basel SBB". Unambiguous keys need none (their name). */
+/** Labels for keys whose name is shared by another line: "S1 · Basel SBB". Unambiguous keys need none (their name); categories ("EC|") and bare names from before keys aren't counted. */
 export function ambiguousLabels(keys: Iterable<string>, stationName: (uic: string) => string | undefined) {
   const byName = new Map<string, string[]>();
-  for (const k of new Set(keys)) if (!k.endsWith("|")) (byName.get(lineName(k)) ?? byName.set(lineName(k), []).get(lineName(k))!).push(k);
+  for (const k of new Set(keys)) if (/\|[^|]+$/.test(k)) (byName.get(lineName(k)) ?? byName.set(lineName(k), []).get(lineName(k))!).push(k);
   const out: Record<string, string> = {};
   for (const [name, ks] of byName) if (ks.length > 1) for (const k of ks) out[k] = `${name} · ${stationName(k.slice(k.lastIndexOf("|") + 1)) ?? "?"}`;
   return out;
