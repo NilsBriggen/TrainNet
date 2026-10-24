@@ -69,3 +69,16 @@ test("an upstream failure is retried later, not cached as 'none'", async () => {
   status = 500;
   expect((await details(trip("704", 11, 13), base)).formationStatus).toBe("error");
 });
+
+test("a 403 is the token, not 'not published': an error, retried later", async () => {
+  status = 403;
+  expect((await details(trip("706", 11, 13), base)).formationStatus).toBe("error");
+});
+
+test("a visitor over their lookup share hears 'busy' without an upstream call; cached answers stay free", async () => {
+  await details(trip("707", 11, 13), base);
+  const r = await details(trip("708", 11, 13), base, () => false);
+  expect(r).toMatchObject({ formationStatus: "busy", retryAfter: 120 });
+  expect((await details(trip("707", 11, 13), base, () => false)).formationStatus).toBe("ok");
+  expect(calls).toBe(1);
+});

@@ -1,4 +1,5 @@
 // Per-train extras: coach formation with vehicle identities (on demand + nightly crawl) and occupancy forecast (daily file).
+import { rmSync } from "node:fs";
 import { Budget, Busy, upstream } from "./upstream";
 import { db } from "./record";
 import { download, latestResource } from "./gtfs";
@@ -128,7 +129,7 @@ async function fetchFormation(evu: string, num: string, date: string, background
 
 const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
-export function formationFor(trip: Trip, { fetch = true, background = false } = {}): Promise<FormationResult> {
+export function formationFor(trip: Trip, { fetch = true, background = false, allow = () => true } = {}): Promise<FormationResult> {
   const evu = EVU[trip.agency];
   if (!evu || !trip.num) return Promise.resolve({ status: "unsupported", f: null });
   const key = `${evu}:${trip.num}:${trip.date}`;
@@ -137,6 +138,7 @@ export function formationFor(trip: Trip, { fetch = true, background = false } = 
   if (trip.date < zurichDate(new Date())) return Promise.resolve({ status: "past", f: null }); // "dates older than today will not return results"
   if (!fetch) return Promise.resolve({ status: "window", f: null });
   if (!inflight.has(key)) {
+    if (!allow()) return Promise.resolve({ status: "busy", f: null, retryAfter: 120 }); // this visitor's share of lookups is used up
     const store = (status: FormationStatus, f: Formation | null = null) => {
       db.query("INSERT OR REPLACE INTO formation_cache VALUES (?, ?, ?, ?, ?)").run(key, trip.date, status, Date.now(), f && JSON.stringify(f));
       return { status, f };
@@ -146,8 +148,9 @@ export function formationFor(trip: Trip, { fetch = true, background = false } = 
       .catch((e): FormationResult => {
         if (e instanceof Busy) return { status: "busy", f: null, retryAfter: e.retryAfter }; // not cached: nothing was asked
         if (e instanceof Budget) return { status: "budget", f: null };
-        if (/HTTP 40[034]/.test(e.message)) return store("none"); // 400 "no formation data", 403 not published, 404 unknown
-        console.error(`[details] formation ${key}: ${e.message}`);
+        if (/HTTP 40[04]/.test(e.message)) return store("none"); // 400 "no formation data", 404 unknown
+        // a 403 is the token (lapsed, or the API moved): an error to retry and to notice, never "not published"
+        console.error(`[details] formation ${key}: ${e.message}${/HTTP 403/.test(e.message) ? " — check the FORMATION_SERVICE token" : ""}`);
         return store("error");
       })
       .finally(() => inflight.delete(key)));
@@ -155,10 +158,10 @@ export function formationFor(trip: Trip, { fetch = true, background = false } = 
   return inflight.get(key)!;
 }
 
-export async function details(trip: Trip, base: number) {
+export async function details(trip: Trip, base: number, allow?: () => boolean) {
   // an open endpoint must not let anyone drain the formation quota: only trains running around now are fetched
   const t = Date.now() / 1000 - base / 1000, s = trip.stops;
-  const r = await formationFor(trip, { fetch: t >= s[2] - 3600 && t <= s[s.length - 2] + 2 * 3600 });
+  const r = await formationFor(trip, { fetch: t >= s[2] - 3600 && t <= s[s.length - 2] + 2 * 3600, allow });
   return {
     formation: r.f?.coaches ?? null, units: r.f?.units ?? [], stops: r.f?.stops ?? [], goals: r.f?.goals ?? [],
     formationStatus: r.status, retryAfter: r.retryAfter, occupancy: occupancy.get(`${trip.agency}:${trip.num}`)?.byStop ?? null,
@@ -167,13 +170,25 @@ export async function details(trip: Trip, base: number) {
 
 export const occupancyAll = () => occupancy;
 
+let occDate = "", occTried = "", occTry = 0;
+/** The date the loaded forecast is for ("" = none): the caller retries until it's today's. */
+export const occupancyDate = () => occDate;
+
 export async function loadOccupancy(date: string) {
+  if (occTried === date && Date.now() - occTry < 3600_000) return; // a failed day is asked again hourly
+  occTried = date;
+  occTry = Date.now();
+  if (occDate !== date) occupancy = new Map(); // yesterday's forecast would be wrong for today
   const { url } = await latestResource("occupancy-forecast-json-dataset");
   const zip = await download(url, `occupancy_${date}.zip`, "occupancy_");
-  const list = await new Response(Bun.spawn(["unzip", "-Z1", zip, `${date}/*`]).stdout).text();
+  const list = (await new Response(Bun.spawn(["unzip", "-Z1", zip, `${date}/*`], { timeout: 120_000 }).stdout).text()).split("\n").filter(Boolean);
+  if (!list.length) {
+    rmSync(zip, { force: true }); // published before today's forecast was in it: download again on the next try
+    throw new Error(`no forecast for ${date} in the published zip`);
+  }
   const next: typeof occupancy = new Map();
-  for (const file of list.split("\n").filter(Boolean)) {
-    const j: any = JSON.parse(await new Response(Bun.spawn(["unzip", "-p", zip, file]).stdout).text());
+  for (const file of list) {
+    const j: any = JSON.parse(await new Response(Bun.spawn(["unzip", "-p", zip, file], { timeout: 120_000 }).stdout).text());
     for (const t of j.trains ?? []) {
       const byStop: Record<string, [number, number]> = {}, sec: [string, number, number][] = [];
       for (const s of t.sections ?? []) {
@@ -185,5 +200,6 @@ export async function loadOccupancy(date: string) {
     }
   }
   occupancy = next;
+  occDate = date;
   console.log(`[details] occupancy for ${next.size} trains on ${date}`);
 }

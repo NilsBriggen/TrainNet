@@ -40,11 +40,13 @@ async function crawl(d: Day) {
   const ins = db.query("INSERT OR REPLACE INTO vehicle_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const uic = (st: number) => d.stations[st][3], base = d.base / 1000;
   console.log(`[fleet] crawling ${todo.size} formations for ${d.date}`);
-  let n = 0, units = 0;
+  let n = 0, units = 0, errors = 0;
   for (const [k, trip] of todo) {
     if (latest !== d.version) return; // a new day started meanwhile
     const { status, f } = await formationFor(trip, { background: true }); // waits for slots visitors don't need
     if (status === "budget") return console.log(`[fleet] stopped at ${n}/${todo.size}: the day's share of the formation quota is used`);
+    // the API is down: stop spending slots on it until the next pass
+    if ((errors = status === "error" ? errors + 1 : 0) >= 5) return console.log(`[fleet] stopped at ${n}/${todo.size}: 5 errors in a row`);
     if (!cached.has(k)) await Bun.sleep(1500); // spread out, so a visitor rarely meets a full minute
     db.transaction(() => {
       f?.units.forEach((u, pos) => {

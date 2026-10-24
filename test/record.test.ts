@@ -73,3 +73,26 @@ test("a day with nothing observed (the tail of the first start) is not aggregate
   maintain(new Date(Date.parse("2026-10-25T10:00:00Z")));
   expect(db.query("SELECT count(*) n FROM agg_net_day").get()).toEqual({ n: 0 });
 });
+
+test("a write that rolls back leaves the trip to be stored on the next flush", () => {
+  recordTrips(day, { 0: { u: [[2, 60, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
+  db.exec("CREATE TRIGGER fail BEFORE INSERT ON trip_day BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  expect(() => flush(day, at("1200"), 0)).toThrow("disk full");
+  db.exec("DROP TRIGGER fail");
+  flush(day, at("1201"), 0);
+  expect(db.query("SELECT count(*) n FROM trip_day").get()).toEqual({ n: 2 });
+});
+
+test("yesterday's summary is redone once after 11:00 (night trains), not on every check", () => {
+  recordTrips(day, { 0: { u: [[2, 60, null, 0]] } }, at("1000"), [2, 0, 0, 0, 2]);
+  flush(day, at("1200"), 0);
+  const logs: string[] = [], log = console.log;
+  console.log = (m: string) => logs.push(m);
+  try {
+    maintain(new Date(Date.parse("2026-10-24T03:00:00Z"))); // 05:00: first summary
+    maintain(new Date(Date.parse("2026-10-24T05:00:00Z"))); // 07:00: nothing
+    maintain(new Date(Date.parse("2026-10-24T10:00:00Z"))); // 12:00: once more
+    maintain(new Date(Date.parse("2026-10-24T10:10:00Z")));
+  } finally { console.log = log; }
+  expect(logs.filter((m) => m.includes("aggregated 2026-10-23"))).toHaveLength(2);
+});

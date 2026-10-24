@@ -1,6 +1,12 @@
 // Routes station-to-station segments along the OSM rail graph (data/rail.json) with A*.
 // Results are cached in data/paths.json keyed by station UICs, so timetable updates only cost new pairs.
-import { existsSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
+
+/** Write via a temp file and rename, so a crash mid-write never leaves a truncated file behind. */
+export async function writeAtomic(file: string, data: string) {
+  await Bun.write(`${file}.tmp`, data);
+  renameSync(`${file}.tmp`, file);
+}
 
 export type Graph = {
   nodes: Float64Array; adj: Int32Array[]; len: Float32Array[]; grid: Map<number, number[]>; comp: Int32Array;
@@ -193,7 +199,7 @@ const CACHE_V = 2; // 2: tunnels and bridges per path. Another version (or a reb
  * (null = draw a straight line) and writes the cache back.
  */
 export async function segmentPaths(g: Graph | null, segments: number[], stations: { uic: string; lon: number; lat: number }[], cacheFile: string) {
-  const file = existsSync(cacheFile) ? await Bun.file(cacheFile).json() : null;
+  const file = existsSync(cacheFile) ? await Bun.file(cacheFile).json().catch(() => null) : null; // unreadable: route again
   const graphId = g ? `${g.nodes.length}:${g.names.length}` : "";
   const cache: Record<string, [Path, Structs] | null> = file?.v === CACHE_V && file.graph === graphId ? file.segs : {};
   let computed = 0, matched = 0;
@@ -211,7 +217,7 @@ export async function segmentPaths(g: Graph | null, segments: number[], stations
     paths.push(c?.[0] ?? null);
     structs.push(c?.[1].length ? c[1] : null);
   }
-  if (computed && g) await Bun.write(cacheFile, JSON.stringify({ v: CACHE_V, graph: graphId, segs: cache }));
+  if (computed && g) await writeAtomic(cacheFile, JSON.stringify({ v: CACHE_V, graph: graphId, segs: cache }));
   console.log(`[paths] ${matched}/${segments.length / 2} segments on track (${computed} newly routed, ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   return { paths, structs };
 }

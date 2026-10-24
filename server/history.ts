@@ -151,6 +151,7 @@ export async function listArchive(): Promise<{ month: string; url: string }[]> {
 }
 
 let lastTry = 0, busy = false;
+const failed = new Map<string, number>(); // date -> when its import last failed
 /**
  * Days on CKAN (the last ~50, published the next morning) not imported yet, oldest first; at most one attempt per hour.
  * Streams each CSV (~650 MB) straight from the download: nothing lands on disk.
@@ -169,9 +170,15 @@ async function importAvailable(db: Database, now: number) {
     .filter((r) => r.date && r.date < today && r.date >= first && !db.query("SELECT 1 FROM hist_done WHERE date = ?").get(r.date))
     .sort((a, b) => a.date!.localeCompare(b.date!));
   for (const r of todo) {
-    const t0 = Date.now(), dl = await fetch(r.url, { signal: AbortSignal.timeout(30 * 60_000) });
-    if (!dl.ok || !dl.body) throw new Error(`${r.date}: HTTP ${dl.status}`);
-    const x = await importDay(db, dl.body, r.date);
-    console.log(`[history] ${x.date}: ${x.trips} trains from the daily file, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+    if (now - (failed.get(r.date!) ?? 0) < 86400_000) continue; // a broken file is tried once a day, and doesn't hold up the rest
+    try {
+      const t0 = Date.now(), dl = await fetch(r.url, { signal: AbortSignal.timeout(30 * 60_000) });
+      if (!dl.ok || !dl.body) throw new Error(`HTTP ${dl.status}`);
+      const x = await importDay(db, dl.body, r.date);
+      console.log(`[history] ${x.date}: ${x.trips} trains from the daily file, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+    } catch (e: any) {
+      failed.set(r.date!, now);
+      console.error(`[history] ${r.date}: ${e.message}`);
+    }
   }
 }

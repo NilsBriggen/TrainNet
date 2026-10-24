@@ -164,6 +164,7 @@ async function pollTrips(day: () => Day | undefined) {
     });
     if (u.length) next[idx] = { u: u.sort((a, b) => a[0]! - b[0]!) };
   }
+  if (Number(feed.header.timestamp) === feedTime) return; // the feed updates every ~30 s, we poll every 15 s: nothing new
   delays = next;
   feedTime = Number(feed.header.timestamp);
   const [run, late, canc, obs] = sample(d, feedTime - d.base / 1000, (i, dl, stop) => {
@@ -174,8 +175,8 @@ async function pollTrips(day: () => Day | undefined) {
   const nStuck = Object.values(delays).filter((v) => v.x).length;
   stats.push([feedTime, run, late, canc, nStuck, obs]);
   if (stats.length > STATS_KEEP) stats.shift();
-  recordTrips(d, delays, feedTime, [run, late, canc, nStuck, obs]);
-  publish(d);
+  publish(d); // first: a database problem must not freeze the live map
+  try { recordTrips(d, delays, feedTime, [run, late, canc, nStuck, obs]); } catch (e: any) { console.error(`[record] ${e.message}`); }
 }
 
 /**

@@ -68,7 +68,7 @@ export async function download(url: string, name: string, prefix: string) {
 
 /** Calls fn with the columns of each data row of a quoted CSV inside a zip, streamed. */
 export async function eachRow(zip: string, file: string, fn: (cols: string[], line: string) => void) {
-  const p = Bun.spawn(["unzip", "-p", zip, file], { stdout: "pipe" });
+  const p = Bun.spawn(["unzip", "-p", zip, file], { stdout: "pipe", timeout: 10 * 60_000 }); // a hung archive mount must not block the day
   const dec = new TextDecoder();
   let buf = "", header = true;
   const row = (line: string) => {
@@ -150,11 +150,20 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   const t0 = Date.now();
   // shortcut: on the December change Sunday the new year's zip doesn't know Saturday's services, so trains still running
   // after midnight from the old timetable are missing for those few hours; reading both zips that day would fix it
-  const { url, name } = await latestResource(`timetable-${timetableYear(date)}-gtfs2020`);
-  const version = `${date}_${name}_${FORMAT}`; // deterministic per zip + date
+  let c: DayCache | null = null;
+  try {
+    c = existsSync(CACHE) && existsSync(CACHE_PAYLOAD) ? ((await Bun.file(CACHE).json()) as DayCache) : null;
+  } catch (e: any) {
+    console.error(`[gtfs] day cache unreadable (${e.message}), parsing the zip`);
+  }
+  const res = await latestResource(`timetable-${timetableYear(date)}-gtfs2020`).catch((e) => {
+    // CKAN down during a restart: today's parsed day is still good, whichever zip it came from
+    if (c?.date === date && c.version.endsWith(`_${FORMAT}`)) return null;
+    throw e;
+  });
+  const version = res ? `${date}_${res.name}_${FORMAT}` : c!.version; // deterministic per zip + date
   // a restart on the same day and zip reads the parsed day back in a second or two instead of re-reading the 290 MB zip
   try {
-    const c = existsSync(CACHE) && existsSync(CACHE_PAYLOAD) ? ((await Bun.file(CACHE).json()) as DayCache) : null;
     if (c?.version === version) {
       const d = dayFromCache(c, new Uint8Array(await Bun.file(CACHE_PAYLOAD).arrayBuffer()), graph);
       console.log(`[gtfs] ${date}: ${d.trips.length} trips from the day cache, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
@@ -163,7 +172,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   } catch (e: any) {
     console.error(`[gtfs] day cache unreadable (${e.message}), parsing the zip`);
   }
-  const zip = await download(url, name, "gtfs_");
+  const zip = await download(res!.url, res!.name, "gtfs_");
 
   const agencies: Record<string, string> = {};
   await eachRow(zip, "agency.txt", ([id, name]) => (agencies[id] = name));

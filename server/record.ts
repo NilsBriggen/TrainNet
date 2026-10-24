@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS vehicle_run (date TEXT, unit TEXT, class TEXT, type T
   from_uic TEXT, to_uic TEXT, dep INTEGER, arr INTEGER, km REAL, length_m REAL, seats1 INTEGER, seats2 INTEGER, has_wr INTEGER,
   PRIMARY KEY (date, unit, trip));
 CREATE INDEX IF NOT EXISTS vehicle_run_trip ON vehicle_run (date, train_no);
+CREATE INDEX IF NOT EXISTS vehicle_run_unit ON vehicle_run (unit);
 CREATE TABLE IF NOT EXISTS agg_net_day (date TEXT PRIMARY KEY, trips INTEGER, observed INTEGER, punctual INTEGER, cancelled INTEGER,
   km REAL, avg_delay REAL, p90_delay INTEGER, stop_obs INTEGER, stop_ok INTEGER);
 CREATE TABLE IF NOT EXISTS agg_train_day (date TEXT, train_no TEXT, line TEXT, cat TEXT, agency TEXT, trips INTEGER, observed INTEGER,
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS agg_station_day (date TEXT, uic TEXT, deps INTEGER, d
   PRIMARY KEY (date, uic));
 CREATE TABLE IF NOT EXISTS agg_line_day (date TEXT, line TEXT, cat TEXT, trips INTEGER, observed INTEGER, punctual INTEGER,
   cancelled INTEGER, avg_delay REAL, km REAL, PRIMARY KEY (date, line));
+CREATE INDEX IF NOT EXISTS agg_train_day_no ON agg_train_day (train_no);
 CREATE TABLE IF NOT EXISTS upstream_call (api TEXT, t INTEGER);
 CREATE INDEX IF NOT EXISTS upstream_call_t ON upstream_call (api, t);
 CREATE TABLE IF NOT EXISTS formation_cache (key TEXT PRIMARY KEY, date TEXT, status TEXT, t INTEGER, json TEXT);
@@ -41,6 +43,8 @@ CREATE TABLE IF NOT EXISTS sbb_loaded (name TEXT PRIMARY KEY, t INTEGER);
 CREATE TABLE IF NOT EXISTS alert_entity (entity TEXT PRIMARY KEY, id TEXT, last_seen INTEGER);
 CREATE TABLE IF NOT EXISTS platform_sector (uic TEXT, track TEXT, sector TEXT, lon REAL, lat REAL, PRIMARY KEY (uic, track, sector));
 CREATE TABLE IF NOT EXISTS agg_vehicle_day (date TEXT, unit TEXT, class TEXT, type TEXT, runs INTEGER, km REAL, PRIMARY KEY (date, unit));
+CREATE INDEX IF NOT EXISTS agg_vehicle_day_unit ON agg_vehicle_day (unit);
+CREATE INDEX IF NOT EXISTS agg_vehicle_day_class ON agg_vehicle_day (class);
 `;
 const KEEP_DAYS = 30;
 const LATE = 180; // punctual = less than 3 min late, the SBB threshold
@@ -98,7 +102,7 @@ export function flush(d: Day, nowSec: number, grace: number) {
   const t = nowSec - d.base / 1000;
   const insTrip = db.query("INSERT OR REPLACE INTO trip_day VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const insStop = db.query("INSERT OR REPLACE INTO stop_obs VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-  let n = 0;
+  const done: string[] = [];
   db.transaction(() => {
     d.trips.forEach((trip, i) => {
       const k = key(trip.id, trip.date);
@@ -119,11 +123,11 @@ export function flush(d: Day, nowSec: number, grace: number) {
       insTrip.run(trip.date, trip.id, trip.num, line, d.routes[trip.route][1], trip.agency, stations[s[0]][0], stations[s[last * 3]][0],
         base + s[2], base + s[last * 3 + 1], +trip.km[last].toFixed(2), observed, st?.c ? 1 : 0,
         observed ? final : null, observed ? max : null, stops, observed ? ok : null, st?.stuck ?? 0);
-      flushed.add(k);
-      n++;
+      done.push(k);
     });
   })();
-  if (n) console.log(`[record] stored ${n} finished trips`);
+  for (const k of done) flushed.add(k); // only once committed: a rolled-back write is tried again
+  if (done.length) console.log(`[record] stored ${done.length} finished trips`);
 }
 
 type Alert = { id: string; h: string; d: string; sev: number; sudden?: 1; kind: string; cause: string; why: string; from: number; s: number[]; r: number[] };
@@ -140,17 +144,19 @@ export function recordAlerts(d: Day, alerts: Alert[], nowSec = Date.now() / 1000
 /** Write what's finished, e.g. before the process stops: trips that ended within the grace period are otherwise lost. */
 export const flushAll = () => dayOf && flush(dayOf, Date.now() / 1000, 0);
 
+let refreshed = ""; // the yesterday whose summary was redone after the night trains
 /** Aggregate finished days, then drop detail older than 30 days. Cheap; called every 10 min. */
 export function maintain(now = new Date()) {
   const today = zurichDate(now), yesterday = addDays(today, -1), hour = (now.getTime() - serviceBase(today)) / 3600_000;
   // yesterday's last trips run until ~03:00 today, so wait until 04:00 before summarising it
   const ready = (date: string) => date < yesterday || (date === yesterday && hour > 4);
   // a day only seen as the after-midnight tail of the first start (nothing observed) isn't a day of data
-  const pending = db.query(`SELECT date FROM trip_day WHERE date < ? AND date NOT IN (SELECT date FROM agg_net_day)
-    GROUP BY date HAVING sum(observed) > 0`).all(today) as { date: string }[];
-  for (const { date } of pending) if (ready(date)) aggregate(date);
-  // night trains dated yesterday arrive until ~10:00 and are stored after that: refresh yesterday's summary until noon
-  if (hour > 4 && hour < 12 && !pending.some((p) => p.date === yesterday) && db.query("SELECT 1 FROM agg_net_day WHERE date = ?").get(yesterday)) aggregate(yesterday);
+  const pending = (db.query("SELECT DISTINCT date FROM trip_day WHERE date < ? AND date NOT IN (SELECT date FROM agg_net_day)").all(today) as { date: string }[])
+    .filter(({ date }) => ready(date) && db.query("SELECT 1 FROM trip_day WHERE date = ? AND observed = 1 LIMIT 1").get(date));
+  for (const { date } of pending) aggregate(date);
+  // night trains dated yesterday arrive until ~10:00 and are stored after that: summarise yesterday once more after 11:00
+  if (hour > 11 && refreshed !== yesterday && !pending.length && db.query("SELECT 1 FROM agg_net_day WHERE date = ?").get(yesterday)) aggregate(yesterday);
+  if (hour > 11) refreshed = yesterday;
   const cutoff = addDays(today, -KEEP_DAYS);
   db.query("DELETE FROM stop_obs WHERE date < ?").run(cutoff);
   db.query("DELETE FROM trip_day WHERE date < ?").run(cutoff);
@@ -159,6 +165,7 @@ export function maintain(now = new Date()) {
   db.query("DELETE FROM upstream_call WHERE t < ?").run(now.getTime() - 2 * 86400_000);
   db.query("DELETE FROM alert_entity WHERE last_seen < ?").run(now.getTime() / 1000 - KEEP_DAYS * 86400);
   db.query("DELETE FROM net_sample WHERE t < ?").run(serviceBase(cutoff) / 1000);
+  db.query("DELETE FROM alert_log WHERE last_seen < ?").run(now.getTime() / 1000 - 365 * 86400);
 }
 
 const P = `observed = 1 AND cancelled = 0 AND final_delay < ${LATE}`;

@@ -3,6 +3,7 @@
 // (sidings, crossovers). Those are kept because main lines are sometimes only connected through them at junctions.
 // kind: per edge 0 open track, 1 tunnel, 2 bridge; name: per edge index into names (tunnel names), -1 = none.
 import { mkdirSync } from "node:fs";
+import { writeAtomic } from "../server/paths";
 
 const OUT = `${process.env.DATA_DIR ?? "data"}/rail.json`;
 const BBOX = "45.6,5.7,48.0,10.8"; // Switzerland plus ~80 km margin for cross-border legs
@@ -15,6 +16,7 @@ export async function buildRail(out = OUT) {
     method: "POST",
     headers: { "User-Agent": "TrainNet/0.1 (live Swiss train map)" },
     body: QUERY,
+    signal: AbortSignal.timeout(15 * 60_000), // the query itself may take 10 min
   });
   if (!res.ok) throw new Error(`overpass HTTP ${res.status}`);
   const ways: any[] = (await res.json()).elements;
@@ -60,7 +62,7 @@ export async function buildRail(out = OUT) {
   for (let e = 0; e < edges.length; e += 2) if (keep(edges[e])) outEdges.push(remap[edges[e]], remap[edges[e + 1]]), outSvc.push(svc[e / 2]), outKind.push(kind[e / 2]), outName.push(name[e / 2]);
 
   mkdirSync(out.slice(0, out.lastIndexOf("/")), { recursive: true });
-  await Bun.write(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names }));
+  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names }));
   console.log(`[rail] ${ways.length} ways → ${outNodes.length / 2} nodes, ${outEdges.length / 2} edges, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
 
