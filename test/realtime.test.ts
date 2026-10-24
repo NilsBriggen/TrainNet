@@ -12,6 +12,9 @@ test("classify reads the reason sentence from real feed texts", () => {
   expect(classify("Information on IC 1 727", "This is due to a technical fault on the train.", "TECHNICAL_PROBLEM").kind).toBe("train");
   expect(classify("Interrupted service", "This is due to technical difficulties on the infrastructure.", "TECHNICAL_PROBLEM").kind).toBe("infra");
   expect(classify("Interrupted service", "", "WEATHER")).toEqual({ why: "", kind: "weather" });
+  // "personnel" is staff, not a person on the track
+  expect(classify("Limited service between Palézieux and Vevey [train]", "This is due to a shortage of personnel.", "OTHER_CAUSE")).toEqual({ why: "shortage of personnel", kind: "staff" });
+  expect(classify("Interrupted service between Olten and Aarau", "This is due to an accident involving a person.", "ACCIDENT").kind).toBe("person");
 });
 
 const now = 1_800_000_000;

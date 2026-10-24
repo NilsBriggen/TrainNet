@@ -160,11 +160,24 @@ type Alert = { id: string; h: string; d: string; sev: number; sudden?: 1; kind: 
 export function recordAlerts(d: Day, alerts: Alert[], nowSec = Date.now() / 1000) {
   const up = db.query(`INSERT INTO alert_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
     last_seen = excluded.last_seen, sev_max = max(sev_max, excluded.sev_max), sudden = max(sudden, excluded.sudden),
-    h = excluded.h, d = excluded.d, why = excluded.why, stations = excluded.stations, lines = excluded.lines`);
+    kind = excluded.kind, h = excluded.h, d = excluded.d, why = excluded.why, stations = excluded.stations, lines = excluded.lines`);
   db.transaction(() => {
     for (const a of alerts) up.run(a.id, nowSec, nowSec, a.from || null, a.sev, a.sudden ? 1 : 0, a.kind, a.cause, a.why, a.h, a.d,
       JSON.stringify(a.s.map((i) => d.stations[i][3])), JSON.stringify(a.r.map((r) => lineOf(d, r))));
   })();
+}
+
+/** Kinds of logged alerts by today's rules (the rules improve; a row keeps the kind of its first sighting otherwise). */
+export function reclassifyAlerts(kindOf: (h: string, d: string, cause: string) => string) {
+  const set = db.query("UPDATE alert_log SET kind = ? WHERE id = ?");
+  let n = 0;
+  db.transaction(() => {
+    for (const r of db.query("SELECT id, h, d, cause, kind FROM alert_log").all() as { id: string; h: string; d: string; cause: string; kind: string }[]) {
+      const k = kindOf(r.h ?? "", r.d ?? "", r.cause ?? "");
+      if (k !== r.kind) { set.run(k, r.id); n++; }
+    }
+  })();
+  if (n) console.log(`[record] ${n} logged alerts re-classified`);
 }
 
 /** Write what's finished, e.g. before the process stops: trips that ended within the grace period are otherwise lost. */

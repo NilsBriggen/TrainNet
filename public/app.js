@@ -9,7 +9,7 @@ const hhmm = (t) => TIME.format(day.base + t * 1000);
 const SEV = { 1: "#5a6b8c", 2: "#ffb547", 3: "#ff4d4d" };
 const STANDING = "#ff9f5a"; // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const SEV_NAME = { 1: "Planned", 2: "Limited service", 3: "Interrupted" };
-const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", other: "Disruption" };
+const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", staff: "Staff shortage", other: "Disruption" };
 const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
 const TRAIL_O = [0.7, 0.45, 0.25, 0.1]; // trail pieces, nearest the train first
 const clock = (sec) => TIME.format(sec * 1000);

@@ -38,7 +38,7 @@ async function api(p, missingOk = false) {
 const CAT = { "Long distance": "#ff3d5a", InterRegio: "#ff9f1c", RegioExpress: "#2ee6a6", Regional: "#5cc8ff", "S-Bahn": "#8fa8ff", Private: "#c792ff", Panorama: "#ffd166" };
 const KIND = {
   person: ["Person / accident", "#ff4d4d"], signal: ["Signal / points", "#ffb547"], power: ["Overhead line", "#ffd23f"], train: ["Train fault", "#ff7ab6"],
-  infra: ["Infrastructure", "#9f8cff"], weather: ["Weather", "#5cc8ff"], police: ["Police / emergency", "#3ddc97"], other: ["Other", "#8396bf"],
+  infra: ["Infrastructure", "#9f8cff"], weather: ["Weather", "#5cc8ff"], police: ["Police / emergency", "#3ddc97"], staff: ["Staff shortage", "#e0a3ff"], other: ["Other", "#8396bf"],
 };
 const SEV = { 1: ["Planned", "#5a6b8c"], 2: ["Limited", "#ffb547"], 3: ["Interrupted", "#ff4d4d"] };
 const CAUSE = { TECHNICAL_PROBLEM: "technical problem", ACCIDENT: "accident", WEATHER: "weather", CONSTRUCTION: "construction work", MAINTENANCE: "maintenance", POLICE_ACTIVITY: "police operation", MEDICAL_EMERGENCY: "medical emergency", STRIKE: "strike", DEMONSTRATION: "demonstration", HOLIDAY: "holiday", OTHER_CAUSE: "" };

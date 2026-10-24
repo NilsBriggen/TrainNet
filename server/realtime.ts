@@ -33,7 +33,9 @@ function severity(h: string, cause: string, activeNow: boolean): 1 | 2 | 3 {
 }
 
 const KINDS: [string, RegExp][] = [
-  ["person", /person|people|personenunfall|accident involving|on the track/],
+  // before "person": "shortage of personnel" is about staff, not someone on the track
+  ["staff", /personnel|staff|crew|personalmangel|personalausfall|manque de personnel|mancanza di personale/],
+  ["person", /\bpersons?\b|people|personenunfall|accident involving|on the track/],
   ["signal", /signal|interlocking|points|switch|stellwerk|weiche|level crossing|barrier|aiguillage|enclenchement/],
   ["power", /overhead line|power|electric|catenary|fahrleitung|strom|ligne de contact/],
   ["train", /(fault|defect|problem|difficult\w*) (on|with|of) (a|the)? ?(train|vehicle|rolling)|defective (train|vehicle)|vehicle (fault|defect)|breakdown|fahrzeugstörung|panne/],
