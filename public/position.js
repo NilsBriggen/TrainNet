@@ -57,6 +57,27 @@ export function motion(f, dur) {
 }
 
 /**
+ * Where line speed makes a train slow: cumulative running time along a stretch between two stops, from its line speeds.
+ * speeds: [{ d0, d1, v }] (metres along the stretch in travel order, km/h); untagged track counts as `untagged` km/h.
+ * Returns { d, t }: metres and the share of the running time spent until there (0..1), for distanceAt().
+ */
+export function timeTable(len, speeds = [], untagged = 80) {
+  const d = [0], t = [0];
+  let at = 0, time = 0;
+  const to = (x, v) => { if (x > at) { time += (x - at) / v; at = x; d.push(at); t.push(time); } };
+  for (const s of speeds) { to(Math.min(s.d0, len), untagged); to(Math.min(s.d1, len), s.v); }
+  to(len, untagged);
+  return { d, t: t.map((x) => (time ? x / time : 0)) };
+}
+/** Metres along the stretch once `u` (0..1) of its running time is spent, by timeTable(). */
+export function distanceAt({ d, t }, u) {
+  let k = 1;
+  while (k < t.length - 1 && t[k] < u) k++;
+  const span = t[k] - t[k - 1];
+  return d[k - 1] + (span > 0 ? (Math.min(Math.max(u, t[k - 1]), t[k]) - t[k - 1]) / span : 1) * (d[k] - d[k - 1]);
+}
+
+/**
  * Which end of a drawn formation is the front of the train: "left", "right" or null (unknown).
  * from → to: [lon, lat] of this stop and the next (at a terminus: the previous stop and this one).
  * ends: [lon, lat] of the platform's first sector and of its last ([lonA, latA, lonZ, latZ]).

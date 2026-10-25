@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, frontEnd, locate, matchTrain, motion } from "../public/position.js";
+import { applyDelays, distanceAt, frontEnd, locate, matchTrain, motion, timeTable } from "../public/position.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -120,4 +120,16 @@ test("on a train: the one whose position follows the phone's wins; two trains si
   const twins = { 0: pos[0], 1: (t) => [pos[0](t)[0] + 0.0001, 47] };
   expect(matchTrain(phone, [0, 1], (i, t) => twins[i](t))).toBeNull();
   expect(matchTrain(phone, [1, 2], (i, t) => pos[i](t))).toBeNull(); // nothing close enough
+});
+
+test("line speed: a train crawls through a slow station area and makes up for it on the open line", () => {
+  // 10 km: the first km at 40 km/h (the station throat), the rest at 160: the first km takes 0.025 h of 0.08125 h
+  const tt = timeTable(10_000, [{ d0: 0, d1: 1000, v: 40 }, { d0: 1000, d1: 10_000, v: 160 }]);
+  expect(distanceAt(tt, 0.025 / 0.08125)).toBeCloseTo(1000, 0);
+  expect(distanceAt(tt, 0.5)).toBeCloseTo(1000 + ((0.5 - 0.025 / 0.08125) / (0.05625 / 0.08125)) * 9000, 0);
+  expect([distanceAt(tt, 0), distanceAt(tt, 1)]).toEqual([0, 10_000]);
+  // no speeds: the same as a steady speed; an untagged gap counts as 80 km/h
+  expect(distanceAt(timeTable(5000), 0.3)).toBeCloseTo(1500, 6);
+  const gap = timeTable(3000, [{ d0: 1000, d1: 3000, v: 160 }]); // 1 km untagged (80), 2 km at 160: equal times
+  expect(distanceAt(gap, 0.5)).toBeCloseTo(1000, 0);
 });

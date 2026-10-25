@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cumStops, frontEnd, locate, matchTrain, metres, motion, slice, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle } from "./colors.js";
 import { HINTS } from "./hints.js";
 
@@ -52,8 +52,10 @@ function tripRoute(i) {
   if (!r) {
     const s = day.trips[i][3], pl = (k) => day.trips[i][4]?.[k] ?? 0, route = [];
     for (let k = 3; k < s.length; k += 3) {
-      const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3);
-      route.push({ path: paths[segIndex.get(segKey(a, pa, b, pb))], reverse: !first(a, pa, b, pb) });
+      const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3), path = paths[segIndex.get(segKey(a, pa, b, pb))], reverse = !first(a, pa, b, pb);
+      // line speeds in travel order: where the train is slow (a station throat at 40, a bridge at 60) it takes longer
+      const total = path.cum[path.cum.length - 1], sp = reverse ? path.speeds.map((x) => ({ d0: total - x.d1, d1: total - x.d0, v: x.v })).reverse() : path.speeds;
+      route.push({ path, reverse, tt: timeTable(total, sp) });
     }
     routeCache.set(i, (r = { route, cum: cumStops(route) }));
   }
@@ -302,17 +304,23 @@ function inTunnel(i, d) {
 }
 
 /** Position of a trip eased along its own track (never across it) so delay corrections roll instead of jump. */
+/** Metres along trip i's route at position p: the share of the stretch's time spent, through its line speeds (eased at both ends). */
+function alongRoute(i, e, p) {
+  const { route, cum } = tripRoute(i);
+  return cum[p.a] + (p.at ? 0 : distanceAt(route[p.a].tt, motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2])));
+}
 function positionOf(i, t, dt) {
   const e = expected(i), p = locate(e.stops, t);
   if (!p) return null;
   const { route, cum } = tripRoute(i);
-  const target = cum[p.a] + (p.at ? 0 : motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2]) * (cum[p.b] - cum[p.a]));
+  const target = alongRoute(i, e, p);
   let d = shown.get(i);
   const last = shownTarget.get(i) ?? target;
   shownTarget.set(i, target);
   if (d === undefined || Math.abs(d - target) > 5000) d = target; // first frame or a big correction
-  else if (d < target) { // ahead of its expected position (a new delay), it just waits there: never rolls back
-    // its own motion since the last frame, plus a gentle catch-up of at most 25 m/s when it's behind
+  // ahead of its expected position (a new delay): it just waits there, never rolls back. Behind: its own motion since
+  // the last frame, plus a gentle catch-up of at most 25 m/s
+  else if (d < target) {
     d = Math.min(target, d + Math.max(0, target - last));
     d += Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
   }
@@ -689,7 +697,7 @@ function stopLocate() {
 function positionAt(i, t) {
   const e = expected(i), p = locate(e.stops, t);
   if (!p) return null;
-  const { route, cum } = tripRoute(i), q = atDistance(route, cum, cum[p.a] + (p.at ? 0 : motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2]) * (cum[p.b] - cum[p.a])));
+  const { route, cum } = tripRoute(i), q = atDistance(route, cum, alongRoute(i, e, p));
   return [q.lon, q.lat];
 }
 function onPosition(pos) {
