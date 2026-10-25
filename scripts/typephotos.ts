@@ -1,7 +1,7 @@
 // One-off, re-run when a type is added: a photo per train type from Wikimedia Commons (the type's Wikidata image), saved
 // into public/types/ with its author and licence, so the pages show it without the visitor's browser asking Wikimedia.
 //   bun scripts/typephotos.ts            (all types below)   bun scripts/typephotos.ts 502 511   (just these)
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 
 // series -> what to look up on Wikidata (its English label; the first hit with an image wins), or a Commons file where
 // Wikidata's image is GFDL (needs the licence text shown), missing, or a trade-fair shot
@@ -47,6 +47,7 @@ if (import.meta.main) {
     if (!/^(CC BY|CC0|Public domain)/i.test(p.licence)) { console.log(`${cls}: ${p.file} is ${p.licence}, skipped`); continue; }
     await Bun.write(`${DIR}${cls}.jpg`, await (await get(p.thumb)).arrayBuffer());
     Bun.spawnSync(["magick", "mogrify", "-resize", "480x>", "-quality", "78", "-strip", `${DIR}${cls}.jpg`]); // ~40 KB instead of ~200
+    chmodSync(`${DIR}${cls}.jpg`, 0o644); // mogrify leaves 600: the server's user couldn't read it
     all[cls] = { src: `/types/${cls}.jpg`, author: p.author, licence: p.licence, licenceUrl: p.licenceUrl, page: p.page };
     console.log(`${cls}: ${p.label} (${p.about}) — ${p.file} · ${p.author} · ${p.licence}`);
   }
