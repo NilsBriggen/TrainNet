@@ -356,9 +356,11 @@ async function trainPage(num, current) {
     const live = await fetch(`/api/train/${run.idx}?v=${encodeURIComponent(t.v)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     const box = current() && document.getElementById("trainsets"), units = live?.units ?? [];
     if (!box) return;
+    const types = live?.types ?? [];
     box.innerHTML = units.length ? unitsHtml(ph, units.map((u) => ({ ...u, km: null })))
+      : types.length ? photoFigure(ph[types[0].cls], types[0].type) + `<p class="sub">${types.map((u) => `<a class="inline" href="#/type/${encodeURIComponent(u.cls)}">About the ${esc(u.type)} →</a>`).join(" · ")}</p><p class="muted">Today the formation service names its car types but not the vehicle numbers.</p>`
       : empty(["busy", "error", "offline"].includes(live?.formationStatus ?? "offline") ? "The formation service is busy or didn't answer: reload in a minute." // the map retries, this page doesn't
-        : FORMATION_WHY[live.formationStatus]?.(live) ?? (live.formation ? "Its vehicles aren't numbered in a way we can read as trainsets." : "No formation for this train."));
+        : FORMATION_WHY[live.formationStatus]?.(live) ?? (live.formation ? "Its cars are listed, but without vehicle numbers that tell its trainsets." : "No formation for this train."));
     const k = document.querySelector(".kpi-units");
     if (k && units.length) (k.querySelector(".value").textContent = units.length), (k.querySelector(".note").textContent = [...new Set(units.map((u) => u.type))].join(", "));
   }

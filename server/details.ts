@@ -107,7 +107,10 @@ export type Formation = {
   coaches: Coach[]; units: Unit[];
   stops: { uic: string; track: string; moved: boolean }[]; // where the train calls, its platform, platform changed
   goals: [from: number, to: number, uic: string][]; // coach positions -> destination, when the train splits
+  types?: { cls: string; type: string }[]; // no vehicle numbers published, but the car types name the train (a TGV's "ET(2N2)")
 };
+// car type codes that name a train's type when its vehicle numbers are missing
+const TYPE_CODES: [RegExp, string][] = [[/\(2N2\)/, "F310"]];
 /** ok: here it is · none: not published (yet) · unsupported: operator not in the service · window: only looked up around the trip
  * past: the service only answers for today, this run started yesterday · busy/budget: request quota (per minute / per day) in use
  * error: upstream failed, retried in 2 min */
@@ -152,7 +155,8 @@ export function parseFormation(j: any, evu = ""): Formation | null {
       sec: stops.map((x) => { const sc = at.get(x.uic) as string | undefined; return sc && sc !== "N/A" ? sc.replaceAll(",", "") : ""; }),
     };
   });
-  return { coaches, units: [...units.values()], stops, goals };
+  const types = units.size ? [] : [...new Set(vehicles.flatMap((v) => TYPE_CODES.filter(([re]) => re.test(v.vehicleIdentifier?.typeCodeName ?? "")).map(([, cls]) => cls)))];
+  return { coaches, units: [...units.values()], stops, goals, ...(types.length && { types: types.map((cls) => ({ cls, type: typeName(cls) })) }) };
 }
 
 async function fetchFormation(evu: string, num: string, date: string, background: boolean): Promise<Formation | null> {
@@ -163,7 +167,7 @@ async function fetchFormation(evu: string, num: string, date: string, background
 }
 
 // the cache holds parsed formations: a parser that reads more (vehicle numbers in parts, RhB's numbering) starts it over
-const PARSED = 3; // 2: numbers in parts, RhB; 3: country codes, sets numbered car by car
+const PARSED = 4; // 2: numbers in parts, RhB; 3: country codes, sets numbered car by car; 4: types from car codes
 export const formationKey = (evu: string, num: string, date: string) => `${evu}:${num}:${date}:${PARSED}`;
 const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
@@ -201,7 +205,7 @@ export async function details(trip: Trip, base: number, allow?: () => boolean) {
   const t = Date.now() / 1000 - base / 1000, s = trip.stops;
   const r = await formationFor(trip, { fetch: t >= s[2] - 3600 && t <= s[s.length - 2] + 2 * 3600, allow });
   return {
-    formation: r.f?.coaches ?? null, units: r.f?.units ?? [], stops: r.f?.stops ?? [], goals: r.f?.goals ?? [],
+    formation: r.f?.coaches ?? null, units: r.f?.units ?? [], types: r.f?.types ?? [], stops: r.f?.stops ?? [], goals: r.f?.goals ?? [],
     formationStatus: r.status, retryAfter: r.retryAfter, occupancy: occupancy.get(`${trip.agency}:${trip.num}`)?.byStop ?? null,
   };
 }

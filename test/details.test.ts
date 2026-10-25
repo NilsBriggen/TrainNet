@@ -102,3 +102,11 @@ test("the country decides a series: a TGV's coaches aren't DB 147s; ICE 4 and ET
   expect(unitOf("93 85 5 610 104-4")?.id).toBe("610-04");
   expect(unitOf("93 85 1 501 231-9")?.id).toBe("501-231"); // Swiss: unchanged
 });
+
+test("no vehicle numbers: the car type codes still name a TGV Euroduplex", async () => {
+  const { parseFormation } = await import("../server/details");
+  const v = (n: number, code: string) => ({ position: n, number: n, vehicleIdentifier: { evn: null, typeCodeName: code }, vehicleProperties: {} });
+  const f = parseFormation({ formations: [{ formationVehicles: [v(1, "ET(2N2)"), v(2, "B(2N2)3"), v(3, "ET(2N2)")] }] })!;
+  expect(f.units).toEqual([]);
+  expect(f.types).toEqual([{ cls: "F310", type: "TGV Euroduplex" }]);
+});
