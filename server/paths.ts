@@ -15,6 +15,7 @@ export type Graph = {
   speed: Uint16Array[]; // per adjacency entry: OSM maxspeed, km/h, 0 = unknown
   svc: Uint8Array[]; ref: Int32Array[]; refs: string[]; // per adjacency entry: 0 main, 1 siding/yard/spur, 2 crossover; track number index
   gauge: Uint8Array[]; // per adjacency entry: 0 standard, 1 narrow; a route stays on one
+  built?: number; // when scripts/rail.ts made it: a rebuild with moved tracks but the same counts is still another graph
   edges: Map<number, number[]>; // grid cell -> flat [u, j, ...]: every edge in every cell it passes (a 3 km straight has nodes only at its ends)
 };
 /** Routing cost per metre by track kind: a yard is never a shortcut, but still connects where it's the only track. */
@@ -275,8 +276,8 @@ export function simplify(p: Path, tol = 4): Path {
 
 export async function loadGraph(file: string): Promise<Graph | null> {
   if (!existsSync(file)) return null;
-  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge } = await Bun.file(file).json();
-  return makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge);
+  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, built } = await Bun.file(file).json();
+  return Object.assign(makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge), { built });
 }
 
 /** A routed path as pieces of track: length (m) with the edge's tunnel/bridge, tunnel name, line speed and service kind. */
@@ -391,7 +392,7 @@ const CACHE_V = 10; // 2: tunnels and bridges, 3: line speeds, 4: ends snapped o
  */
 export async function segmentPaths(g: Graph | null, segments: number[], stations: { uic: string; lon: number; lat: number; platform?: string }[], cacheFile: string) {
   const file = existsSync(cacheFile) ? await Bun.file(cacheFile).json().catch(() => null) : null; // unreadable: route again
-  const graphId = g ? `${g.nodes.length}:${g.names.length}:${g.refs.length}:${g.gauge.length}` : "";
+  const graphId = g ? `${g.nodes.length}:${g.names.length}:${g.refs.length}:${g.gauge.length}:${g.built ?? 0}` : "";
   const same = file?.v === CACHE_V && file.graph === graphId;
   const cache: Record<string, [Path, Structs, Speeds, number, number] | null> = same ? file.segs : {}, fails: Record<string, string> = same ? file.fails ?? {} : {};
   let computed = 0, matched = 0;
