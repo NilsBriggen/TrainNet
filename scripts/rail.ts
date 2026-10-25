@@ -6,6 +6,8 @@
 // speed: per edge the OSM maxspeed in km/h, 0 = not tagged (94 % of Swiss main-line ways are).
 // ref: per edge index into refs (railway:track_ref, its number: "7" for "7a"), -1 = none: puts a train on its platform's track.
 // gauge: per edge 0 standard, 1 narrow (metre gauge): a route stays on one, even where OSM joins the networks (dual-gauge track).
+// side: per edge on Swiss main track, where its parallel track lies seen from a to b: 1 left, -1 right, 0 single track or
+// abroad. Swiss trains run on the left, so the router makes travel with the other track on the left a little costlier.
 // height: per node, metres above sea level from swissTLM3D's 3D railway lines (null: none within 15 m, e.g. abroad), for
 // the trains' elevation profiles; RAIL_TLM keeps the extract like RAIL_OSM keeps the Overpass answer.
 // Street tracks (railway=tram) are in, costly like sidings: Appenzeller Bahnen trains run through St. Gallen on them.
@@ -122,6 +124,43 @@ export function nodeHeights(nodes: number[], edges: number[], kind: number[], li
   return out;
 }
 
+/**
+ * Per edge, the side of its parallel track (2.5–8 m away, within 10°), seen from a to b: 1 left, -1 right, 0 none.
+ * Only between main tracks (svc 0), and only where `inside` says left-hand running applies.
+ */
+export function trackSides(nodes: number[], edges: number[], svc: number[], inside: (lon: number, lat: number) => boolean): Int8Array {
+  const C = 0.0003, cells = new Map<string, number[]>(), side = new Int8Array(edges.length / 2);
+  const mid = (e: number) => [(nodes[edges[e * 2] * 2] + nodes[edges[e * 2 + 1] * 2]) / 2, (nodes[edges[e * 2] * 2 + 1] + nodes[edges[e * 2 + 1] * 2 + 1]) / 2];
+  for (let e = 0; e < side.length; e++) if (svc[e] === 0) { const [x, y] = mid(e), k = `${Math.floor(x / C)}|${Math.floor(y / C)}`; (cells.get(k) ?? cells.set(k, []).get(k)!).push(e); }
+  for (let e = 0; e < side.length; e++) {
+    if (svc[e] !== 0) continue;
+    const [a, b] = [edges[e * 2], edges[e * 2 + 1]], [mx, my] = mid(e);
+    if (!inside(mx, my)) continue;
+    const kx = Math.cos((my * Math.PI) / 180) * 111_320, ky = 110_540, dx = (nodes[b * 2] - nodes[a * 2]) * kx, dy = (nodes[b * 2 + 1] - nodes[a * 2 + 1]) * ky, len = Math.hypot(dx, dy);
+    if (len < 15) continue; // too short to have a direction worth comparing (switch pieces)
+    let bd = 8.001;
+    for (let x = -2; x <= 2; x++) for (let y = -2; y <= 2; y++) for (const f of cells.get(`${Math.floor(mx / C) + x}|${Math.floor(my / C) + y}`) ?? []) {
+      const [p, q] = [edges[f * 2], edges[f * 2 + 1]];
+      if (p === a || p === b || q === a || q === b) continue;
+      const ex = (nodes[q * 2] - nodes[p * 2]) * kx, ey = (nodes[q * 2 + 1] - nodes[p * 2 + 1]) * ky, el = Math.hypot(ex, ey);
+      if (el < 5 || Math.abs((dx * ex + dy * ey) / (len * el)) < 0.985) continue;
+      const wx = (mx - nodes[p * 2]) * kx, wy = (my - nodes[p * 2 + 1]) * ky, t = (wx * ex + wy * ey) / (el * el);
+      if (t < 0 || t > 1) continue;
+      const ox = t * ex - wx, oy = t * ey - wy, d = Math.hypot(ox, oy); // from the midpoint across to the other track
+      if (d >= 2.5 && d < bd) (bd = d), (side[e] = dx * oy - dy * ox > 0 ? 1 : -1);
+    }
+  }
+  return side;
+}
+/** Switzerland's outline (public/switzerland.geojson): where trains keep left. */
+async function inSwitzerland() {
+  const j = await Bun.file(new URL("../public/switzerland.geojson", import.meta.url).pathname).json();
+  const g = (j.features ?? [j]).flatMap((f: any) => (f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates));
+  const inRing = (r: number[][], x: number, y: number) => { let c = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) if ((r[i][1] > y) !== (r[j][1] > y) && x < ((r[j][0] - r[i][0]) * (y - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) c = !c; return c; };
+  const memo = new Map<string, boolean>(); // per ~1 km cell: the outline test is the slow part
+  return (lon: number, lat: number) => { const k = `${Math.floor(lon * 100)}|${Math.floor(lat * 100)}`; let v = memo.get(k); if (v === undefined) memo.set(k, (v = g.some((p: number[][][]) => inRing(p[0], lon, lat) && !p.slice(1).some((h) => inRing(h, lon, lat))))); return v; };
+}
+
 /** swissTLM3D's railway lines (latest release, only that layer read from the remote zip), trams and funiculars left out. */
 async function tlmRailways(dir: string) {
   const file = process.env.RAIL_TLM ?? `${dir}/tlm-rail.geojsonl`;
@@ -217,7 +256,9 @@ export async function buildRail(out = OUT, ways_ = false) {
   // heights are a bonus: without swisstopo (down, or no GDAL) the graph is still built, just without elevation profiles
   const heights = await tlmRailways(out.slice(0, out.lastIndexOf("/"))).then((l) => nodeHeights(outNodes, outEdges, outKind, l)).catch((e) => (console.error(`[rail] no heights: ${e.message}`), null));
   if (heights) console.log(`[rail] heights for ${heights.filter((h) => !Number.isNaN(h)).length} of ${heights.length} nodes`);
-  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge,
+  const side = trackSides(outNodes, outEdges, outSvc, await inSwitzerland());
+  console.log(`[rail] ${side.filter(Boolean).length} main-track edges with a parallel track`);
+  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge, side: Array.from(side),
     height: heights && Array.from(heights, (h) => (Number.isNaN(h) ? null : Math.round(h * 10) / 10)), built: Date.now() }));
   if (ways_) await writeWays(all, `${out.slice(0, out.lastIndexOf("/"))}/rail-ways.geojson`);
   console.log(`[rail] ${ways.length} ways → ${outNodes.length / 2} nodes, ${outEdges.length / 2} edges, ${((Date.now() - t0) / 1000).toFixed(0)} s`);

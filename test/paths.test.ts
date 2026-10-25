@@ -174,3 +174,20 @@ test("profileOf: heights every ~100 m, gaps bridged, a single wrong match smooth
   expect(Math.abs(h[6] - 560)).toBeLessThanOrEqual(10); // the spike is gone
   expect(profileOf(pts, hs.map((x, i) => (i < 8 ? NaN : x)))).toBeNull();
 });
+
+test("keeping left: each direction of a double-track line takes its own track", async () => {
+  const { trackSides } = await import("../scripts/rail");
+  const { makeGraph, routeWith } = await import("../server/paths");
+  // two tracks 4.4 m apart running east (south: nodes 1-3, north: 4-6), joined at a (0) in the west and b (7) in the east
+  const S = 46.9, Nn = 46.90004;
+  const nodes = [7.395, 46.90002, 7.4, S, 7.405, S, 7.41, S, 7.4, Nn, 7.405, Nn, 7.41, Nn, 7.415, 46.90002];
+  const edges = [0, 1, 1, 2, 2, 3, 3, 7, 0, 4, 4, 5, 5, 6, 6, 7], svc = edges.map(() => 0).slice(0, edges.length / 2);
+  const side = trackSides(nodes, edges, svc, () => true);
+  expect(side[1]).toBe(1); // south track, seen eastward: the other track is on the left
+  expect(side[5]).toBe(-1); // north track, seen eastward: the other one is on the right
+  expect(side[3]).toBe(0); // the joining pieces have no parallel
+  const g = makeGraph(nodes, edges, svc, [], [], [], [], [], [], [], Array.from(side));
+  const lat = (p: number[]) => p.filter((_, k) => k % 2 === 1 && Math.abs(p[k - 1] - 7.405) < 0.004);
+  expect(lat(routeWith(g, [7.395, 46.90002], [7.415, 46.90002])!.p).every((y) => y > 46.90003)).toBe(true); // eastbound: north = its left
+  expect(lat(routeWith(g, [7.415, 46.90002], [7.395, 46.90002])!.p).every((y) => y < 46.90001)).toBe(true); // westbound: south
+});

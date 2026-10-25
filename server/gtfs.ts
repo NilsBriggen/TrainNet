@@ -35,7 +35,7 @@ export type Day = {
   agencies: Record<string, string>; // agency_id -> name
   platforms: string[]; // shared table, [0] = ""
   trips: Trip[];
-  segments: number[]; // flat [a, pa, b, pb, ...]: unique legs, station + platform index at each end, (a, pa) before (b, pb)
+  segments: number[]; // flat [a, pa, b, pb, ...]: legs in travel order, station + platform index at each end; a way back on the same track isn't one (run backwards)
   paths: (Path | null)[]; // track geometry per segment, null = straight
   profiles?: (number[] | null)[]; // per segment: heights every ~100 m from a to b (server only: /api/profile); missing in old day caches
   tripIndex: Map<string, number>; // `${trip_id}|${YYYYMMDD}` -> index
@@ -127,7 +127,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f9"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f10"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
@@ -156,9 +156,9 @@ export function tripProfile(d: Day, i: number) {
   if (!legs) legsOf.set(d, (legs = new Map(Array.from({ length: d.segments.length / 4 }, (_, k) => [d.segments.slice(k * 4, k * 4 + 4).join(":"), k]))));
   const pts: ([number, number] | null)[] = [];
   for (let k = 0; k + 1 < t.stops.length / 3; k++) {
-    let [a, pa, b, pb] = [t.stops[k * 3], t.plat[k], t.stops[k * 3 + 3], t.plat[k + 1]], rev = false;
-    if (b < a || (b === a && pb < pa)) [a, pa, b, pb, rev] = [b, pb, a, pa, true]; // stored from the lower station to the higher
-    const h = d.profiles[legs.get(`${a}:${pa}:${b}:${pb}`) ?? -1];
+    const [a, pa, b, pb] = [t.stops[k * 3], t.plat[k], t.stops[k * 3 + 3], t.plat[k + 1]];
+    const fwd = legs.get(`${a}:${pa}:${b}:${pb}`), rev = fwd === undefined; // a day cache from before per-direction legs: the way back, reversed
+    const h = d.profiles[fwd ?? legs.get(`${b}:${pb}:${a}:${pa}`) ?? -1];
     if (!h) { if (pts.at(-1)) pts.push(null); continue; }
     const k0 = t.km[k], k1 = t.km[k + 1], n = h.length - 1;
     for (let j = pts.at(-1) ? 1 : 0; j <= n; j++) pts.push([Math.round((k0 + ((k1 - k0) * j) / n) * 100) / 100, rev ? h[n - j] : h[j]]); // the stop is the last leg's end
@@ -265,8 +265,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   // legs are platform to platform: a train stands at its own platform, and the track there leads to it
   const kept: Trip[] = [], tripIndex = new Map<string, number>(), legs = new Map<string, number>(), segments: number[] = [];
   const legOf = (a: number, pa: number, b: number, pb: number) => {
-    if (b < a || (b === a && pb < pa)) [a, pa, b, pb] = [b, pb, a, pa];
-    const k = `${a}:${pa}|${b}:${pb}`;
+    const k = `${a}:${pa}|${b}:${pb}`; // per direction: on double track each runs on its own (left) track
     return legs.get(k) ?? (legs.set(k, segments.push(a, pa, b, pb) / 4 - 1), legs.size - 1);
   };
   trips.forEach((t, i) => {
@@ -302,17 +301,26 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     t.km = [0];
     for (let k = 3; k < t.stops.length; k += 3) t.km.push(t.km.at(-1)! + legKm[legOf(t.stops[k - 3], t.plat[k / 3 - 1], t.stops[k], t.plat[k / 3])]); // along its own platforms' track
   }
+  // the way back along the very same track (single track, or one track both ways) isn't kept: the client runs the leg
+  // there backwards; only legs where the directions part (double track, keeping left) cost payload
+  const mirrored = (p: Path | null, q: Path | null) => p === q || (!!p && !!q && p.length === q.length && p.every((x, i) => Math.abs(x - q[q.length - 2 - (i - (i % 2)) + (i % 2)]) < 2e-5));
+  const keep = Array.from({ length: segments.length / 4 }, (_, k) => k).filter((k) => {
+    const back = legs.get(`${segments[k * 4 + 2]}:${segments[k * 4 + 3]}|${segments[k * 4]}:${segments[k * 4 + 1]}`);
+    return back === undefined || back > k || !mirrored(paths[k], paths[back]);
+  });
+  const pick = <T,>(xs: T[]) => keep.map((k) => xs[k]);
+  const legSegs = keep.flatMap((k) => segments.slice(k * 4, k * 4 + 4));
 
   const hintSets = [""], hintIdx = new Map([["", 0]]);
   const hintSet = (h: string) => hintIdx.get(h) ?? (hintIdx.set(h, hintSets.push(h) - 1), hintSets.length - 1);
   const base = serviceBase(date);
   const json = Bun.gzipSync(JSON.stringify({
-    v: version, date, base, stations, routes, platforms, segments, paths: paths.map((p) => p && packPath(p)), structs, speeds, // tunnels and bridges, line speeds per path
+    v: version, date, base, stations, routes, platforms, segments: legSegs, paths: pick(paths).map((p) => p && packPath(p)), structs: pick(structs), speeds: pick(speeds), // tunnels and bridges, line speeds per path
     trips: kept.map((t) => [t.route, t.head, t.num, t.stops, t.plat.some(Boolean) ? t.plat : 0, hintSet(t.hints)]),
     hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));
-  console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${(json.length / 1e6).toFixed(1)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, profiles, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
+  console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${keep.length} legs, ${(json.length / 1e6).toFixed(2)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments: legSegs, paths: pick(paths), profiles: pick(profiles), tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
     track: (a, b) => graph && route(graph, [stations[a][1], stations[a][2]], [stations[b][1], stations[b][2]]) };
   // payload first, cache last: a cache file whose version matches always has its payload next to it
   const stopStation = [...stops.keys()].flatMap((id): [string, number][] => { const i = stationOf(id, false); return i === undefined ? [] : [[id, i]]; });

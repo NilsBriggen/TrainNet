@@ -21,6 +21,9 @@ export type Graph = {
 };
 /** Routing cost per metre by track kind: a yard is never a shortcut, but still connects where it's the only track. */
 const COST = [1, 8, 1.5];
+// Swiss trains keep left: on double track, running with the other track on your left costs this much more, so each
+// direction takes its own track (49 % of Bern–Zürich's double track on the right one before, 94 % after)
+const WRONG_SIDE = 1.2;
 export type Path = number[]; // flat [lon, lat, ...]
 /** Tunnels and bridges along a path: [fromShare, toShare, kind (1 tunnel, 2 bridge), name] with shares of its length, 0..1. */
 export type Structs = [number, number, number, string][];
@@ -38,14 +41,14 @@ export const dist = (lon1: number, lat1: number, lon2: number, lat2: number) => 
 const cell = (lon: number, lat: number) => Math.round(lon * 100) * 100000 + Math.round(lat * 100);
 
 export function makeGraph(nodes: number[], edges: number[], svc: number[] = [], kind: number[] = [], name: number[] = [], names: string[] = [], speed: number[] = [],
-  ref: number[] = [], refs: string[] = [], gauge: number[] = []): Graph {
+  ref: number[] = [], refs: string[] = [], gauge: number[] = [], side: number[] = []): Graph {
   const n = nodes.length / 2, L = () => Array.from({ length: n }, (): number[] => []);
   const adjL = L(), lenL = L(), kindL = L(), nameL = L(), speedL = L(), svcL = L(), refL = L(), gaugeL = L();
   for (let e = 0; e < edges.length; e += 2) {
     const a = edges[e], b = edges[e + 1], x = e / 2, sv = svc[x] ?? 0;
     const d = dist(nodes[a * 2], nodes[a * 2 + 1], nodes[b * 2], nodes[b * 2 + 1]) * (COST[sv] ?? 1);
-    for (const [u, v] of [[a, b], [b, a]]) {
-      adjL[u].push(v), lenL[u].push(d), kindL[u].push(kind[x] ?? 0), nameL[u].push(name[x] ?? -1), speedL[u].push(speed[x] ?? 0), svcL[u].push(sv), refL[u].push(ref[x] ?? -1), gaugeL[u].push(gauge[x] ?? 0);
+    for (const [u, v, s] of [[a, b, 1], [b, a, -1]]) {
+      adjL[u].push(v), lenL[u].push(side[x] === s ? d * WRONG_SIDE : d), kindL[u].push(kind[x] ?? 0), nameL[u].push(name[x] ?? -1), speedL[u].push(speed[x] ?? 0), svcL[u].push(sv), refL[u].push(ref[x] ?? -1), gaugeL[u].push(gauge[x] ?? 0);
     }
   }
   const grid = new Map<number, number[]>(), edgeGrid = new Map<number, number[]>();
@@ -218,7 +221,7 @@ export function astarTurns(g: Graph, starts: [number, number, number, boolean][]
     if (fr) free.add(k);
     if (h(t) <= limit && c < (gs.get(k) ?? Infinity)) gs.set(k, c), open.push(c + h(t), k);
   }
-  let best = -1, next = -1, total = Infinity;
+  let best = -1, next = -1, total = Infinity, bestFree = false;
   while (open.size) {
     const k = open.pop();
     if (k === END) break; // the cheapest way onto a goal edge, its last bit included
@@ -228,7 +231,7 @@ export function astarTurns(g: Graph, starts: [number, number, number, boolean][]
     if (gx > limit * 2) return null;
     for (const [y, tail, fr] of goals.get(x) ?? []) {
       const t = gx + tail + (fr || straightOn(f, x, y) ? 0 : TURN_BACK);
-      if (t < total) (total = t), (best = k), (next = y), open.push(total, END);
+      if (t < total) (total = t), (best = k), (next = y), (bestFree = fr), open.push(total, END);
     }
     for (let m = 0; m < g.adj[x].length; m++) {
       const y = g.adj[x][m];
@@ -242,8 +245,14 @@ export function astarTurns(g: Graph, starts: [number, number, number, boolean][]
   for (let k: number | undefined = best; k !== undefined; k = prev.get(k)) states.push(k);
   states.reverse();
   const nodes = states.map((k) => g.adj[Math.floor(k / 1024)][k % 1024]), from = Math.floor(states[0] / 1024);
-  let back = 0; // turns back taken anyway (no other way in OSM), for railcheck
-  [from, ...nodes, next].forEach((x, k, a) => { if (k >= 1 && k < a.length - 1 && !straightOn(a[k - 1], x, a[k + 1])) back++; });
+  // turns back taken anyway (no other way in OSM), for railcheck: only the charged ones, not a reversal at the stop itself
+  let back = 0;
+  for (let i = 1; i < states.length; i++) {
+    const p = states[i - 1], f = Math.floor(p / 1024), x = g.adj[f][p % 1024];
+    if (!free.has(p) && !straightOn(f, x, g.adj[x][states[i] % 1024])) back++;
+  }
+  const last = states.at(-1)!, lf = Math.floor(last / 1024);
+  if (!bestFree && !straightOn(lf, g.adj[lf][last % 1024], next)) back++;
   return { nodes, from, next, back };
 }
 
@@ -277,8 +286,8 @@ export function simplify(p: Path, tol = 4): Path {
 
 export async function loadGraph(file: string): Promise<Graph | null> {
   if (!existsSync(file)) return null;
-  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, built, height } = await Bun.file(file).json();
-  return Object.assign(makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge), { built, height: height ? Float32Array.from(height, (h: number | null) => h ?? NaN) : undefined });
+  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, built, height, side } = await Bun.file(file).json();
+  return Object.assign(makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, side), { built, height: height ? Float32Array.from(height, (h: number | null) => h ?? NaN) : undefined });
 }
 
 /** A routed path as pieces of track: length (m) with the edge's tunnel/bridge, tunnel name, line speed and service kind. */
@@ -410,7 +419,7 @@ function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms
   return { why };
 }
 
-const CACHE_V = 11; // 2: tunnels and bridges, 3: line speeds, 4: ends snapped onto track edges, 5: a stop may sit on any nearby track, 6: one gauge, main tracks over spurs, 7: no turning back at switches; long edges found, 8: paths within 1 m of the track, 9: track numbers only right at the platform, 10: turning back costs 3 km, 11: heights every 100 m. Another version (or a rebuilt rail graph) starts over.
+const CACHE_V = 13; // 2: tunnels and bridges, 3: line speeds, 4: ends snapped onto track edges, 5: a stop may sit on any nearby track, 6: one gauge, main tracks over spurs, 7: no turning back at switches; long edges found, 8: paths within 1 m of the track, 9: track numbers only right at the platform, 10: turning back costs 3 km, 11: heights every 100 m, 12: legs per direction, keeping left, 13: turn-backs counted as charged. Another version (or a rebuilt rail graph) starts over.
 
 /**
  * Paths for all segments, from cache + routing. Returns paths and their tunnels/bridges aligned with `segments`

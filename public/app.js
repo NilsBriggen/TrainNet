@@ -42,8 +42,8 @@ function expected(i) {
   return e;
 }
 // a leg: station + platform index at each end, in the server's order ((a, pa) before (b, pb))
-const first = (a, pa, b, pb) => a < b || (a === b && pa <= pb);
-const segKey = (a, pa, b, pb) => (first(a, pa, b, pb) ? `${a}:${pa}|${b}:${pb}` : `${b}:${pb}|${a}:${pa}`);
+// legs come per direction (each on its own track); one stored only the other way round is run backwards
+const segKey = (a, pa, b, pb) => `${a}:${pa}>${b}:${pb}`;
 const pairKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
 const straight = (a, b) => unpackPath([Math.round(a[1] * 1e5), Math.round(a[2] * 1e5), Math.round((b[1] - a[1]) * 1e5), Math.round((b[2] - a[2]) * 1e5)]);
 /** Track model of a trip: segments in travel order plus metres at each stop. */
@@ -52,7 +52,7 @@ function tripRoute(i) {
   if (!r) {
     const s = day.trips[i][3], pl = (k) => day.trips[i][4]?.[k] ?? 0, route = [];
     for (let k = 3; k < s.length; k += 3) {
-      const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3), path = paths[segIndex.get(segKey(a, pa, b, pb))], reverse = !first(a, pa, b, pb);
+      const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3), fwd = segIndex.get(segKey(a, pa, b, pb)), reverse = fwd === undefined, path = paths[fwd ?? segIndex.get(segKey(b, pb, a, pa))];
       // line speeds in travel order: where the train is slow (a station throat at 40, a bridge at 60) it takes longer
       const total = path.cum[path.cum.length - 1], sp = reverse ? path.speeds.map((x) => ({ d0: total - x.d1, d1: total - x.d0, v: x.v })).reverse() : path.speeds;
       route.push({ path, reverse, tt: timeTable(total, sp) });
