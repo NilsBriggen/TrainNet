@@ -449,8 +449,8 @@ map.on("load", async () => {
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
   // the real track network (every OSM track, sidings and yards too) as vector tiles, drawn from z 11 (server/tiles.ts)
-  // ?v: browsers keep tiles a week; bump it when the tiles are rebuilt with other properties
-  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=2`], minzoom: 10, maxzoom: 15 });
+  // ?v: browsers keep tiles a day; bump it when the tiles are rebuilt with other properties
+  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=3`], minzoom: 10, maxzoom: 15 });
   for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
@@ -471,7 +471,8 @@ map.on("load", async () => {
   map.addLayer({ id: "rail-glow", type: "line", source: "rail", maxzoom: 11.5, filter: ["all", ["==", ["get", "w"], 2], ["!=", ["get", "k"], 1]], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": fadeOut(0.22) } });
   // bridges: a faint light casing under the track; tunnels: thin dashes instead of the line
   map.addLayer({ id: "rail-bridge", type: "line", source: "rail", minzoom: 9, maxzoom: 11.5, filter: ["==", ["get", "k"], 2], paint: { "line-color": "#8fb0ff", "line-opacity": fadeOut(0.3), "line-width": ["interpolate", ["linear"], ["zoom"], 9, 3, 13, 6] } });
-  osm("osm-bridge", ["==", ["get", "b"], 1], { "line-color": "#8fb0ff", "line-opacity": fadeIn(0.22), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 16, 8] });
+  const built = ["!=", ["get", "k"], 3]; // k 3: under construction, drawn on its own
+  osm("osm-bridge", ["all", built, ["==", ["get", "b"], 1]], { "line-color": "#8fb0ff", "line-opacity": fadeIn(0.22), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 16, 8] });
   // the path tunnels stay (transparent from z 11.5): they carry the tunnel names for the hover tip
   map.addLayer({ id: "rail-tunnel", type: "line", source: "rail", filter: ["==", ["get", "k"], 1], paint: { "line-color": "#4a74c9", "line-opacity": fadeOut(0.55), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 12, 1.6] } });
   map.addLayer({
@@ -482,17 +483,17 @@ map.on("load", async () => {
       "line-opacity": fadeOut(["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6]),
     },
   });
-  // yards and spurs (k 1): the shunting tracks, faint, from z 13. Station sidings and crossovers are drawn like main track
-  osm("osm-service", ["all", ["==", ["get", "k"], 1], ["!=", ["get", "t"], 1]], { "line-color": "#2a4677", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.4, 16, 0.6], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.5, 17, 1.4] }, 13); // a yard of 40 tracks stays a texture, not a blue block
-  osm("osm-tunnel", ["==", ["get", "t"], 1], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.5), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 16, 2] });
-  osm("osm-main", ["all", ["!=", ["get", "k"], 1], ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.85), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 14, 1.5, 17, 2.2] });
+  // every built track looks the same, yards included: a selected train's route is what shows the way it takes through them
+  osm("osm-construction", ["==", ["get", "k"], 3], { "line-color": "#8fa3c9", "line-opacity": fadeIn(0.45), "line-dasharray": [2, 2], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.8, 16, 1.6] });
+  osm("osm-tunnel", ["all", built, ["==", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.5), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 16, 2] });
+  osm("osm-main", ["all", built, ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.85), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 14, 1.5, 17, 2.2] });
   // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
   const vis = (k) => (overlays.has(k) ? "visible" : "none");
   // line speed (OSM maxspeed): blue for slow branch lines up to red for the 250 km/h base tunnels
   const speedColor = ["interpolate", ["linear"], ["get", "v"], 60, "#3b5998", 100, "#5cc8ff", 140, "#2ee6a6", 180, "#ffd23f", 230, "#ff3d5a"];
   map.addLayer({ id: "speed", type: "line", source: "speed", maxzoom: 11.5, layout: { visibility: vis("speed"), "line-cap": "round" }, paint: {
     "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 12, 4.5], "line-opacity": fadeOut(0.9) } });
-  map.addLayer({ id: "speed-osm", type: "line", source: "osm-rail", "source-layer": "rail", minzoom: 10.5, filter: ["all", [">", ["get", "v"], 0], ["!=", ["get", "k"], 1]],
+  map.addLayer({ id: "speed-osm", type: "line", source: "osm-rail", "source-layer": "rail", minzoom: 10.5, filter: ["all", [">", ["get", "v"], 0], built],
     layout: { visibility: vis("speed"), "line-cap": "round" }, paint: { "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 11, 2.5, 16, 5], "line-opacity": fadeIn(0.9) } });
   // traffic: every train a day per section (freight too), width by trains, colour by the freight share
   map.addLayer({ id: "traffic", type: "line", source: "traffic", layout: { visibility: vis("traffic"), "line-cap": "round" }, paint: {
@@ -507,8 +508,9 @@ map.on("load", async () => {
   map.addLayer({ id: "alert-seg-3", type: "line", source: "alert-seg", filter: calmSev(3), paint: { "line-color": SEV[3], "line-width": 2.6, "line-opacity": 0.6, "line-blur": 0.4 } });
   map.addLayer({ id: "alert-seg-sudden", type: "line", source: "alert-seg", filter: ["==", ["get", "sudden"], 1], layout: { "line-cap": "round" }, paint: { "line-color": SEV[3], "line-width": 3.4 } });
   map.addLayer({ id: "alert-hit", type: "line", source: "alert-seg", paint: { "line-color": "#000", "line-width": 18, "line-opacity": 0.01 } }); // wide invisible target for clicks
-  map.addLayer({ id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "part"], "ahead"], paint: { "line-color": ["get", "c"], "line-width": 2, "line-opacity": 0.35 } });
-  map.addLayer({ id: "route-behind", type: "line", source: "route", filter: ["==", ["get", "part"], "behind"], paint: { "line-color": ["get", "c"], "line-width": 2.2, "line-opacity": 0.85 } });
+  const routeWidth = (w) => ["interpolate", ["linear"], ["zoom"], 12, w, 16, w * 1.8]; // wider than the tracks it runs on
+  map.addLayer({ id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "part"], "ahead"], paint: { "line-color": ["get", "c"], "line-width": routeWidth(2), "line-opacity": 0.45 } });
+  map.addLayer({ id: "route-behind", type: "line", source: "route", filter: ["==", ["get", "part"], "behind"], paint: { "line-color": ["get", "c"], "line-width": routeWidth(2.2), "line-opacity": 0.9 } });
 
   map.addLayer({ id: "stations-minor", type: "circle", source: "stations", minzoom: 9.5, filter: ["<", ["get", "n"], 60], paint: { "circle-color": "#6e86b8", "circle-radius": ["interpolate", ["linear"], ["zoom"], 9.5, 1.2, 13, 3], "circle-opacity": 0.7 } });
   map.addLayer({ id: "stations-mid", type: "circle", source: "stations", filter: ["all", [">=", ["get", "n"], 60], ["==", ["get", "hub"], 0]], paint: { "circle-color": "#93aadb", "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 1.6, 10, 2.8, 13, 4.5], "circle-opacity": ["interpolate", ["linear"], ["zoom"], 7, 0.5, 9, 0.85], "circle-stroke-color": "#040a18", "circle-stroke-width": 1 } });
@@ -578,14 +580,18 @@ function hitAt(pt) {
   if (a) return { type: "alert", idx: a.properties.id };
   const tn = map.queryRenderedFeatures(box, { layers: ["rail-tunnel"] }).find((f) => f.properties.name);
   if (tn) return { type: "tunnel", idx: tn.properties };
+  const bu = map.queryRenderedFeatures(box, { layers: ["osm-construction"] })[0];
+  if (bu) return { type: "building", idx: bu.properties };
   const ov = map.queryRenderedFeatures(box, { layers: ["traffic", "speed", "speed-osm", "lost"].filter((k) => overlays.has(k.replace("-osm", ""))) })[0];
   return ov ? { type: "overlay", idx: { layer: ov.layer.id.replace("-osm", ""), ...ov.properties } } : null;
 }
+const TIP_ONLY = new Set(["tunnel", "building", "overlay"]); // hover tips only, nothing to open
 // re-checked every frame: trains drive away from a still cursor, which fires no mouse events
 function updateTip() {
   const hit = hoverPt && !zen ? hitAt(hoverPt) : null;
-  map.getCanvas().style.cursor = hit && hit.type !== "tunnel" && hit.type !== "overlay" ? "pointer" : "";
+  map.getCanvas().style.cursor = hit && !TIP_ONLY.has(hit.type) ? "pointer" : "";
   const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : hit.type === "tunnel" ? `<span>${esc(hit.idx.name)}</span><span class="sub">tunnel · ${hit.idx.km} km</span>`
+    : hit.type === "building" ? `<span>Track under construction</span>${hit.idx.o ? `<span class="sub">opening ${esc(hit.idx.o)}</span>` : ""}`
     : hit.type === "overlay" ? overlayTip(hit.idx) : stationTip(hit.idx);
   if (!html) { $("tip").hidden = true; tipHtml = ""; return; }
   if (html !== tipHtml) $("tip").innerHTML = tipHtml = html;
@@ -619,7 +625,7 @@ function alertTip(id) {
 map.on("click", (e) => {
   if (zen) return showZenExit();
   const hit = hitAt(e.point);
-  if (hit && hit.type !== "tunnel" && hit.type !== "overlay") open(hit.type, hit.idx, hit.type === "alert");
+  if (hit && !TIP_ONLY.has(hit.type)) open(hit.type, hit.idx, hit.type === "alert");
   else if (selected) closePanel(); // empty map: deselect, un-dim the other trains
 });
 map.on("dragstart", () => setFollow(false));

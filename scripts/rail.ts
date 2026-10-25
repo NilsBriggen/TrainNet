@@ -1,4 +1,4 @@
-// One-off: fetch the rail network from OpenStreetMap (Overpass) and write data/rail.json as a graph.
+// Fetch the rail network from OpenStreetMap (Overpass) and write data/rail.json as a graph.
 // nodes: flat [lon, lat, ...]; edges: flat [a, b, ...] (indexes into nodes); svc: per edge 0 main track, 1 siding / yard /
 // spur (and the links healing OSM gaps), 2 crossover. Service track is kept because main lines are sometimes only
 // connected through it at junctions; routing makes it costly.
@@ -50,17 +50,21 @@ export function healGaps(nodes: number[], edges: number[], way: Int32Array, max 
 
 const OUT = `${process.env.DATA_DIR ?? "data"}/rail.json`;
 const BBOX = "45.6,5.7,48.0,10.8"; // Switzerland plus ~80 km margin for cross-border legs
-const QUERY = `[out:json][timeout:600];way["railway"~"^(rail|narrow_gauge|light_rail|tram)$"](${BBOX});out geom;`;
+// tracks under construction come too: drawn (dashed), never routed on
+const QUERY = `[out:json][timeout:600];(way["railway"~"^(rail|narrow_gauge|light_rail|tram)$"](${BBOX});way["railway"="construction"]["construction"~"^(rail|narrow_gauge|light_rail)$"](${BBOX}););out geom;`;
 
-/** Every way as a GeoJSON line with what the map styles by: k 0 track trains use (main, and sidings: OSM tags many platform
- * tracks service=siding, 41 of Bern's), 1 yard or spur (the shunting tracks, drawn faint), 2 crossover; g narrow gauge,
- * t tunnel, b bridge, v maxspeed. Input for the track tiles (ogr2ogr -f MBTiles). */
+/** What the map styles a way by: k 0 track trains use (main, and sidings: OSM tags many platform tracks service=siding,
+ * 41 of Bern's), 1 yard or spur (the shunting tracks, drawn faint), 2 crossover, 3 under construction (o: its opening
+ * date, as mapped); g narrow gauge, t tunnel, b bridge, v maxspeed. */
+export function wayProps(t: any) {
+  const tunnel = t.tunnel && t.tunnel !== "no", v = parseInt(t.maxspeed ?? "", 10), building = t.railway === "construction";
+  return { k: building ? 3 : t.service === "yard" || t.service === "spur" ? 1 : t.service === "crossover" ? 2 : 0, g: t.railway === "narrow_gauge" || t.construction === "narrow_gauge" ? 1 : 0,
+    t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0, ...(building && { o: /^\d{4}/.test(t.opening_date ?? "") ? t.opening_date : "" }) };
+}
+/** Every way as a GeoJSON line: the input for the track tiles (ogr2ogr -f MBTiles). City trams aren't railway track to draw. */
 async function writeWays(ways: any[], file: string) {
-  const features = ways.filter((w) => w.tags?.railway !== "tram").map((w) => { // city trams aren't railway track to draw
-    const t = w.tags ?? {}, tunnel = t.tunnel && t.tunnel !== "no", v = parseInt(t.maxspeed ?? "", 10);
-    return { type: "Feature", geometry: { type: "LineString", coordinates: w.geometry.map((p: any) => [+p.lon.toFixed(6), +p.lat.toFixed(6)]) },
-      properties: { k: t.service === "yard" || t.service === "spur" ? 1 : t.service === "crossover" ? 2 : 0, g: t.railway === "narrow_gauge" ? 1 : 0, t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0 } };
-  });
+  const features = ways.filter((w) => w.tags?.railway !== "tram").map((w) => ({ type: "Feature", properties: wayProps(w.tags ?? {}),
+    geometry: { type: "LineString", coordinates: w.geometry.map((p: any) => [+p.lon.toFixed(6), +p.lat.toFixed(6)]) } }));
   await writeAtomic(file, JSON.stringify({ type: "FeatureCollection", features }));
   console.log(`[rail] ${features.length} ways written to ${file}`);
 }
@@ -76,8 +80,10 @@ export async function buildRail(out = OUT, ways_ = false) {
     signal: AbortSignal.timeout(15 * 60_000), // the query itself may take 10 min
   });
   if (!res.ok) throw new Error(`overpass HTTP ${res.status}`);
-  const ways: any[] = (await res.json()).elements;
-  if (process.env.RAIL_OSM && !cached) await Bun.write(process.env.RAIL_OSM, JSON.stringify({ elements: ways })); // to rebuild without asking Overpass again
+  const json = await res.json();
+  if (json.remark) throw new Error(`overpass: ${json.remark}`); // a timeout mid-query still answers 200, with part of the ways
+  const all: any[] = json.elements, ways = all.filter((w) => w.tags?.railway !== "construction"); // routing: built track only
+  if (process.env.RAIL_OSM && !cached) await Bun.write(process.env.RAIL_OSM, JSON.stringify({ elements: all })); // to rebuild without asking Overpass again
 
   const index = new Map<number, number>(), nodes: number[] = [], edges: number[] = [], svc: number[] = [], kind: number[] = [], name: number[] = [], speed: number[] = [], ref: number[] = [], gauge: number[] = [];
   const names: string[] = [], nameIdx = new Map<string, number>(), refs: string[] = [], refIdx = new Map<string, number>(), wayOf: number[] = [];
@@ -130,9 +136,10 @@ export async function buildRail(out = OUT, ways_ = false) {
   for (let e = 0; e < edges.length; e += 2) if (keep(edges[e])) outEdges.push(remap[edges[e]], remap[edges[e + 1]]), outSvc.push(svc[e / 2]), outKind.push(kind[e / 2]), outName.push(name[e / 2]), outSpeed.push(speed[e / 2]), outRef.push(ref[e / 2]), outGauge.push(gauge[e / 2]);
 
   mkdirSync(out.slice(0, out.lastIndexOf("/")), { recursive: true });
-  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge }));
-  if (ways_) await writeWays(ways, out.replace(/rail\.json$/, "rail-ways.geojson"));
+  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge, built: Date.now() }));
+  if (ways_) await writeWays(all, `${out.slice(0, out.lastIndexOf("/"))}/rail-ways.geojson`);
   console.log(`[rail] ${ways.length} ways → ${outNodes.length / 2} nodes, ${outEdges.length / 2} edges, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
 
-if (import.meta.main) await buildRail(OUT, process.argv.includes("--ways"));
+// bun scripts/rail.ts [--ways] [--out file]   (the server's weekly rebuild writes rail.json.new, then swaps it in)
+if (import.meta.main) await buildRail(process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : OUT, process.argv.includes("--ways"));

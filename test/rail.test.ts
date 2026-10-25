@@ -23,3 +23,10 @@ test("buffer stops side by side aren't linked; a way ending just short of a trac
   const tee = [m(100), 47, m(200), 47, m(0), 47, m(94), 47, m(100), n(-50)];
   expect(healGaps(tee, [0, 1, 0, 4, 2, 3], Int32Array.from([0, 0, 1, 1, 0]))).toContain(3);
 });
+
+test("way properties: yards faint-coded, construction kept apart with its opening date", async () => {
+  const { wayProps } = await import("../scripts/rail");
+  expect(wayProps({ railway: "rail", service: "yard" }).k).toBe(1);
+  expect(wayProps({ railway: "rail", service: "siding", maxspeed: "40" })).toEqual({ k: 0, g: 0, t: 0, b: 0, v: 40 });
+  expect(wayProps({ railway: "construction", construction: "narrow_gauge", opening_date: "2031" })).toMatchObject({ k: 3, g: 1, o: "2031" });
+});

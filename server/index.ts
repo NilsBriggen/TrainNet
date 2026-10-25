@@ -1,17 +1,17 @@
 import { loadDay, type Day } from "./gtfs";
 import { alertsBody, classify, live, resetRealtime, startRealtime } from "./realtime";
 import { details, loadOccupancy, occupancyDate } from "./details";
-import { zurichDate } from "./time";
+import { serviceBase, zurichDate } from "./time";
 import { loadGraph, type Graph } from "./paths";
 import { buildRail } from "../scripts/rail";
-import { rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { DATA_DIR } from "./gtfs";
 import { db, flushAll, initRecord, maintain, reclassifyAlerts, startDay } from "./record";
 import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
 import { buildSections, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
-import { tileOf } from "./tiles";
+import { reopenTiles, tileOf } from "./tiles";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
 const LIVE_FROM = process.env.LIVE_FROM;
@@ -39,6 +39,41 @@ async function loadRail() {
   });
 }
 
+// OSM's tracks change (stations rebuilt, new lines opened): once a week, late in the evening, the track graph and tiles are
+// rebuilt into data/next/ and swapped in with the next day's timetable, so the drawn tracks and the trains' paths change together
+const NEXT = `${DATA_DIR}/next`, TILES = `${DATA_DIR}/rail.mbtiles`;
+let rebuilding = false;
+async function run(cmd: string[]) {
+  const p = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" }); // its own process: a 60 MB Overpass answer never sits in the server's heap
+  if ((await p.exited) !== 0) throw new Error(`${cmd[0]} ${cmd[1]} exited with ${p.exitCode}`);
+}
+async function rebuildRail() {
+  const hour = (Date.now() - serviceBase(zurichDate(new Date()))) / 3600_000;
+  if (LIVE_FROM || rebuilding || hour < 23 || existsSync(`${NEXT}/rail.mbtiles`) || !existsSync(RAIL) || Date.now() - statSync(RAIL).mtimeMs < 6.5 * 86400_000) return;
+  rebuilding = true;
+  try {
+    mkdirSync(NEXT, { recursive: true });
+    await run(["bun", new URL("../scripts/rail.ts", import.meta.url).pathname, "--ways", "--out", `${NEXT}/rail.json`]);
+    if (Bun.file(`${NEXT}/rail.json`).size < 0.9 * Bun.file(RAIL).size) throw new Error("the new track graph is under 90 % of the current one: kept the current");
+    rmSync(`${NEXT}/building.mbtiles`, { force: true });
+    await run(["ogr2ogr", "-f", "MBTiles", `${NEXT}/building.mbtiles`, `${NEXT}/rail-ways.geojson`, "-nln", "rail", "-dsco", "MINZOOM=10", "-dsco", "MAXZOOM=15"]);
+    renameSync(`${NEXT}/building.mbtiles`, `${NEXT}/rail.mbtiles`); // last: its presence means the build is complete
+    console.log("[rail] rebuilt from OSM, swapped in with the next timetable day");
+  } catch (e: any) {
+    console.error(`[rail] weekly rebuild: ${e.message}; tried again at the next check`);
+    rmSync(`${NEXT}/rail.json`, { force: true });
+  } finally {
+    rmSync(`${NEXT}/rail-ways.geojson`, { force: true });
+    rebuilding = false;
+  }
+}
+function swapRail() {
+  renameSync(`${NEXT}/rail.json`, RAIL);
+  renameSync(`${NEXT}/rail.mbtiles`, TILES);
+  reopenTiles();
+  graph = null; // loaded again below; paths.json sees another graph and routes every leg anew (~12 s)
+}
+
 // checked every 10 min so the new service day is picked up shortly after midnight
 async function refresh() {
   const date = zurichDate(new Date());
@@ -47,9 +82,11 @@ async function refresh() {
   if (!LIVE_FROM) importRecentDays(db).catch((e) => console.error(`[history] ${e.message}`));
   if (!LIVE_FROM && day) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // hourly; it skips what's known
   if (day?.date === date && occupancyDate() !== date) await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`)); // retried hourly
+  rebuildRail();
   if (loading || day?.date === date) return;
   loading = true;
   try {
+    if (day && existsSync(`${NEXT}/rail.mbtiles`)) swapRail(); // only at a day change: a restart's day comes from the day cache, routed on the current graph
     if (!graph) await loadRail();
     const next = await loadDay(date, graph);
     startDay(next); // stores the previous day's remaining finished trips first
@@ -144,8 +181,9 @@ const server = Bun.serve({
     "/tiles/rail/:z/:x/:y": (req) => {
       const [z, x, y] = [req.params.z, req.params.x, req.params.y].map(Number);
       if (![z, x, y].every(Number.isInteger) || z < 0 || z > 15 || x < 0 || y < 0 || x >= 1 << z || y >= 1 << z) return notFound();
-      const t = tileOf(`${DATA_DIR}/rail.mbtiles`, z, x, y);
-      return t ? new Response(t, { headers: { "Content-Type": "application/x-protobuf", "Content-Encoding": "gzip", "Cache-Control": "public, max-age=604800" } }) : new Response(null, { status: 204 });
+      const t = tileOf(TILES, z, x, y);
+      // shortcut: a day's caching, so after the weekly swap a browser may show its cached old tiles until tomorrow; a build stamp in the tile URL would fix it
+      return t ? new Response(t, { headers: { "Content-Type": "application/x-protobuf", "Content-Encoding": "gzip", "Cache-Control": "public, max-age=86400" } }) : new Response(null, { status: 204 });
     },
     "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
