@@ -61,10 +61,16 @@ export function wayProps(t: any) {
   return { k: building ? 3 : t.service === "yard" || t.service === "spur" ? 1 : t.service === "crossover" ? 2 : 0, g: t.railway === "narrow_gauge" || t.construction === "narrow_gauge" ? 1 : 0,
     t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0, ...(building && { o: /^\d{4}/.test(t.opening_date ?? "") ? t.opening_date : "" }) };
 }
-/** Every way as a GeoJSON line: the input for the track tiles (ogr2ogr -f MBTiles). City trams aren't railway track to draw. */
+// The lakes for the tiles (k 4): swissTLM3D's lake polygons over 0.2 km², border lakes whole, both halves of its west/east
+// split joined, simplified to 3 m (© swisstopo). The shore a lakeside line runs along, unlike the coarse lakes.geojson.
+//   ogr2ogr -f GPKG -append -nln w -dim XY -dialect SQLite -sql "SELECT geometry FROM swissTLM3D_TLM_BODENBEDECKUNG_WEST WHERE OBJEKTART = 'Stehende Gewaesser' AND ST_Area(geometry) > 200000" lakes.gpkg /vsizip//vsicurl/<swisstlm3d shp.zip>/TLM_BB/swissTLM3D_TLM_BODENBEDECKUNG_WEST.shp   (and _OST)
+//   ogr2ogr -f GeoJSON -s_srs EPSG:2056 -t_srs EPSG:4326 -lco COORDINATE_PRECISION=5 -explodecollections -dialect SQLite -sql "SELECT ST_Simplify(ST_Union(ST_Buffer(GEOMETRY, 0.01)), 3) AS geometry FROM w" scripts/lakes.geojson lakes.gpkg
+const LAKES = new URL("lakes.geojson", import.meta.url).pathname;
+/** Every way as a GeoJSON line, and the lakes: the input for the track tiles (ogr2ogr -f MBTiles). City trams aren't railway track to draw. */
 async function writeWays(ways: any[], file: string) {
-  const features = ways.filter((w) => w.tags?.railway !== "tram").map((w) => ({ type: "Feature", properties: wayProps(w.tags ?? {}),
+  const features: any[] = ways.filter((w) => w.tags?.railway !== "tram").map((w) => ({ type: "Feature", properties: wayProps(w.tags ?? {}),
     geometry: { type: "LineString", coordinates: w.geometry.map((p: any) => [+p.lon.toFixed(6), +p.lat.toFixed(6)]) } }));
+  for (const f of (await Bun.file(LAKES).json()).features) features.push({ type: "Feature", properties: { k: 4 }, geometry: f.geometry });
   await writeAtomic(file, JSON.stringify({ type: "FeatureCollection", features }));
   console.log(`[rail] ${features.length} ways written to ${file}`);
 }
