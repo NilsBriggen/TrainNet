@@ -95,7 +95,7 @@ function indexDay() {
     path.speeds = (day.speeds?.[k] ?? []).map(([f0, f1, v]) => ({ d0: f0 * total, d1: f1 * total, v }));
     return path;
   });
-  for (const m of [expCache, routeCache, shown, shownTarget, details, fetching, nextTrip, prevTrip]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, shownTarget, details, fetching, nextTrip, prevTrip, profiles]) m.clear(); // trip indexes changed
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
@@ -918,6 +918,37 @@ function loadDetails(i) {
   });
 }
 
+// elevation along a train's route (/api/profile: swisstopo heights along its track), once per train and day
+const profiles = new Map(); // trip idx -> { pts: [[km, m] | null], stops: [km] } | null; undefined while loading
+function loadProfile(i) {
+  if (profiles.has(i)) return;
+  const v = day.v;
+  profiles.set(i, undefined);
+  fetch(`/api/profile/${i}?v=${encodeURIComponent(v)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((p) => {
+    if (v !== day.v) return;
+    profiles.set(i, p);
+    if (p && selected?.type === "train" && selected.idx === i) renderPanel();
+  });
+}
+const EW = 300, EH = 64; // the chart's viewBox
+function elevationHtml(i) {
+  const pr = profiles.get(i), ok = pr?.pts.filter(Boolean) ?? [];
+  if (ok.length < 2) return "";
+  const hs = ok.map((p) => p[1]), lo = Math.min(...hs), hi = Math.max(...hs), span = Math.max(hi - lo, 40), kmMax = pr.stops.at(-1) || ok.at(-1)[0];
+  const x = (km) => ((km / kmMax) * EW).toFixed(1), y = (h) => (EH - 6 - ((h - lo) / span) * (EH - 14)).toFixed(1);
+  let up = 0, down = 0, ref = ok[0][1];
+  for (const [, h] of ok) if (h - ref >= 5) (up += h - ref), (ref = h); else if (ref - h >= 5) (down += ref - h), (ref = h); // 5 m steps: no noise counted as climbing
+  const runs = [[]];
+  for (const p of pr.pts) p ? runs.at(-1).push(p) : runs.push([]);
+  const area = runs.filter((r) => r.length > 1).map((r) => `M${x(r[0][0])},${EH}L${r.map(([k, h]) => `${x(k)},${y(h)}`).join("L")}L${x(r.at(-1)[0])},${EH}Z`).join("");
+  const line = runs.filter((r) => r.length > 1).map((r) => `M${r.map(([k, h]) => `${x(k)},${y(h)}`).join("L")}`).join("");
+  const ticks = pr.stops.map((k) => `<line x1="${x(k)}" x2="${x(k)}" y1="${EH - 3}" y2="${EH}"/>`).join("");
+  const m = (v) => Math.round(v).toLocaleString("de-CH");
+  return `<h3>Elevation <small>↑ ${m(up)} m · ↓ ${m(down)} m · ${m(lo)}–${m(hi)} m</small></h3>
+    <svg class="elev" viewBox="0 0 ${EW} ${EH}" role="img" aria-label="Elevation along the route, from ${m(lo)} to ${m(hi)} m" data-lo="${lo}" data-span="${span}" data-km="${kmMax}">
+      <path class="area" d="${area}"/><path class="line" d="${line}"/><g class="ticks">${ticks}</g><circle data-live="elev" r="3.5" cx="-10" cy="-10"/></svg>`;
+}
+
 function open(type, idx, fly = false, push = true) {
   if (selected?.type !== "train" || selected.idx !== idx) setFollow(false);
   const was = selected;
@@ -1058,6 +1089,14 @@ function patchPanel() {
   const status = body.querySelector("[data-live=status]"), age = body.querySelector("[data-live=age]");
   if (status && status.innerHTML !== x.status) status.innerHTML = x.status;
   if (age) age.textContent = x.age;
+  // where the train is on the elevation chart: between its stops' km, its height there
+  const dot = body.querySelector("[data-live=elev]"), pr = profiles.get(selected.idx);
+  if (dot && pr) {
+    const km = x.p ? pr.stops[x.p.a] + (pr.stops[x.p.b] - pr.stops[x.p.a]) * (x.p.at ? 0 : x.p.f) : null, svg = dot.ownerSVGElement;
+    const near = km == null ? null : pr.pts.reduce((b, p) => (p && (!b || Math.abs(p[0] - km) < Math.abs(b[0] - km)) ? p : b), null);
+    dot.setAttribute("cx", near ? ((km / +svg.dataset.km) * EW).toFixed(1) : -10);
+    dot.setAttribute("cy", near ? (EH - 6 - ((near[1] - +svg.dataset.lo) / +svg.dataset.span) * (EH - 14)).toFixed(1) : -10);
+  }
   if (!stem) return;
   stem.style.setProperty("--p", x.prog.toFixed(4));
   stem.querySelectorAll(":scope > li").forEach((li, k) => li.classList.toggle("past", x.past[k]));
@@ -1070,6 +1109,7 @@ function trainHtml(i) {
   const e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t);
   const st = day.stations, n = sched.length / 3;
   loadDetails(i);
+  loadProfile(i);
   const extra = details.get(i) ?? { formation: undefined, occupancy: null };
   const d = p ? e.delay[p.b] : e.delay[n - 1];
   const chip = cancelled ? `<span class="chip off">Cancelled</span>` : d >= 60 ? `<span class="chip ${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)} min</span>` : `<span class="chip">On time</span>`;
@@ -1133,7 +1173,7 @@ function trainHtml(i) {
     <div class="progress"><i></i></div>
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
-    <h3>Stops <small>tap a stop for connections</small></h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem">${!cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
+    ${elevationHtml(i)}<h3>Stops <small>tap a stop for connections</small></h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem">${!cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
 }
 
 /** Front of the drawn strip (see frontEnd): at the stop the strip shows, toward the next station, from SBB's sector signs. */

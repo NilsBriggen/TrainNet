@@ -297,3 +297,8 @@ h3 small { color: var(--dim); font-weight: 400; font-size: 11px; margin-left: 6p
 #results li.empty { color: var(--dim); cursor: default; }
 .unit-row a:first-child { display: inline-flex; align-items: center; }
 .unit-row .unit-photo { width: 36px; height: 24px; object-fit: cover; border-radius: 4px; margin: -2px 7px -2px -4px; }
+.elev { display: block; width: 100%; height: auto; margin: 2px 0 12px; overflow: visible; }
+.elev .area { fill: color-mix(in srgb, var(--line, #5cc8ff) 18%, transparent); }
+.elev .line { fill: none; stroke: var(--line, #5cc8ff); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.elev .ticks line { stroke: var(--muted); stroke-width: 1; }
+.elev circle { fill: #fff; stroke: var(--line, #5cc8ff); stroke-width: 2; }

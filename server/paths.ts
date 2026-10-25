@@ -15,6 +15,7 @@ export type Graph = {
   speed: Uint16Array[]; // per adjacency entry: OSM maxspeed, km/h, 0 = unknown
   svc: Uint8Array[]; ref: Int32Array[]; refs: string[]; // per adjacency entry: 0 main, 1 siding/yard/spur, 2 crossover; track number index
   gauge: Uint8Array[]; // per adjacency entry: 0 standard, 1 narrow; a route stays on one
+  height?: Float32Array; // per node, m above sea level (NaN: unknown); missing in graphs built without swisstopo
   built?: number; // when scripts/rail.ts made it: a rebuild with moved tracks but the same counts is still another graph
   edges: Map<number, number[]>; // grid cell -> flat [u, j, ...]: every edge in every cell it passes (a 3 km straight has nodes only at its ends)
 };
@@ -276,8 +277,8 @@ export function simplify(p: Path, tol = 4): Path {
 
 export async function loadGraph(file: string): Promise<Graph | null> {
   if (!existsSync(file)) return null;
-  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, built } = await Bun.file(file).json();
-  return Object.assign(makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge), { built });
+  const { nodes, edges, svc, kind, name, names, speed, ref, refs, gauge, built, height } = await Bun.file(file).json();
+  return Object.assign(makeGraph(nodes, edges, svc, kind, name, names, speed, ref, refs, gauge), { built, height: height ? Float32Array.from(height, (h: number | null) => h ?? NaN) : undefined });
 }
 
 /** A routed path as pieces of track: length (m) with the edge's tunnel/bridge, tunnel name, line speed and service kind. */
@@ -312,6 +313,28 @@ export function route(g: Graph, a: [number, number], b: [number, number]): Path 
  * platform and its number) and the path starts and ends on the track: never at the given points, which are often a
  * station building. A* runs from both ends of the start edge to both ends of the goal edge, partial edges included.
  */
+/**
+ * Heights along a route, every ~100 m with both ends: from the heights at its points (NaN = unknown, bridged by
+ * interpolation), a median of 5 against the odd wrong match where lines cross. Null when under half the length has heights.
+ */
+export function profileOf(pts: number[], hs: number[]): number[] | null {
+  const cum = [0];
+  for (let i = 2; i < pts.length; i += 2) cum.push(cum.at(-1)! + dist(pts[i - 2], pts[i - 1], pts[i], pts[i + 1]));
+  const total = cum.at(-1)!, kd: number[] = [], kh: number[] = [];
+  let known = 0;
+  for (let i = 0; i < hs.length; i++) if (!Number.isNaN(hs[i])) kd.push(cum[i]), kh.push(hs[i]);
+  for (let i = 1; i < hs.length; i++) if (!Number.isNaN(hs[i]) && !Number.isNaN(hs[i - 1])) known += cum[i] - cum[i - 1];
+  if (!kd.length || (total > 0 ? known / total < 0.5 : false)) return null;
+  const n = Math.max(2, Math.round(total / 100) + 1), raw: number[] = [];
+  for (let s = 0, j = 0; s < n; s++) {
+    const d = (total * s) / (n - 1);
+    while (j < kd.length - 2 && kd[j + 1] < d) j++;
+    const [d0, d1] = [kd[j], kd[Math.min(j + 1, kd.length - 1)]], [h0, h1] = [kh[j], kh[Math.min(j + 1, kh.length - 1)]];
+    raw.push(d <= d0 || d1 === d0 ? (d <= d0 ? h0 : h1) : d >= d1 ? h1 : h0 + ((h1 - h0) * (d - d0)) / (d1 - d0));
+  }
+  return raw.map((_, i) => { const r = Math.min(2, i, raw.length - 1 - i), w = raw.slice(i - r, i + r + 1).sort((x, y) => x - y); return Math.round(w[r]); }); // centred: the ends keep their own height
+}
+
 export function routeWith(g: Graph, a: [number, number], b: [number, number], platforms: { a?: string; b?: string } = {}) {
   const r = routeTry(g, a, b, platforms);
   return "why" in r ? null : r;
@@ -327,7 +350,7 @@ export function routeTry(g: Graph, a: [number, number], b: [number, number], pla
   }
   return r;
 }
-function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms: { a?: string; b?: string } = {}): { p: Path; t: Structs; s: Speeds; y: number; back?: number } | { why: string } {
+function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms: { a?: string; b?: string } = {}): { p: Path; t: Structs; s: Speeds; y: number; back?: number; h: number[] | null } | { why: string } {
   const As = nearEdges(g, a[0], a[1], platforms.a), Bs = nearEdges(g, b[0], b[1], platforms.b);
   if (!As.size || !Bs.size) return { why: `no track within 500 m of ${As.size ? "the second" : "the first"} stop` };
   // the network and gauge both stops are nearest to first (a stop beside a tram terminus is still an S-Bahn stop)
@@ -341,16 +364,18 @@ function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms
     const u = s.u, v = g.adj[u][s.j], full = dist(...nd(u), ...nd(v)), d = full * (toV ? 1 - s.t : s.t);
     return { node: toV ? v : u, other: toV ? u : v, d, cost: (full ? (g.len[u][s.j] * d) / full : 0) + (s.score - best), s };
   };
+  const H = g.height, hAt = (s: Snap) => { const u = H![s.u], v = H![g.adj[s.u][s.j]]; return Number.isNaN(u) ? v : Number.isNaN(v) ? u : u + (v - u) * s.t; };
   const sameEdge = (x: Snap, y: Snap) => { const xv = g.adj[x.u][x.j], yv = g.adj[y.u][y.j]; return (x.u === y.u && xv === yv) || (x.u === yv && xv === y.u); };
   let why = "no connection between them in the OSM graph";
   for (const comp of comps) {
     const ca = As.get(comp)!, cb = Bs.get(comp)!;
-    let legs: Leg[], p: Path, A: Snap, B: Snap, back = 0;
+    let legs: Leg[], p: Path, A: Snap, B: Snap, back = 0, hs: number[] = [];
     const direct = ca.flatMap((x) => cb.filter((y) => sameEdge(x, y)).map((y) => [x, y] as const))[0]; // both on one edge
     if (direct) {
       [A, B] = direct;
       p = [A.lon, A.lat, B.lon, B.lat];
       legs = [legOf(g, A.u, A.j, dist(A.lon, A.lat, B.lon, B.lat))];
+      if (H) hs = [hAt(A), hAt(B)];
     } else {
       // leaving the start edge either way (a train may reverse at a stop); arriving onto the goal edge from either end
       const starts = ca.flatMap((s) => [part(s, true, ca[0].score), part(s, false, ca[0].score)]), goals = new Map<number, [number, number][]>(), goalInfo = new Map<string, ReturnType<typeof part>>();
@@ -367,6 +392,7 @@ function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms
       p = [A.lon, A.lat];
       for (const i of nodes) p.push(...nd(i));
       p.push(B.lon, B.lat);
+      if (H) hs = [hAt(A), ...nodes.map((i) => H[i]), hAt(B)];
       legs = [legOf(g, A.u, A.j, s0.d)];
       for (let k = 1; k < nodes.length; k++) {
         const u = nodes[k - 1], v = nodes[k];
@@ -379,12 +405,12 @@ function routeOnce(g: Graph, a: [number, number], b: [number, number], platforms
     if (len > 2.5 * crow + 3000) { why = `detour: ${(len / 1000).toFixed(1)} km of track for ${(crow / 1000).toFixed(1)} km`; continue; }
     const y = legs.reduce((x, l) => x + (l.svc === 1 ? l.d : 0), 0) / (len || 1);
     // within 1 m of the OSM track (its stored precision): zoomed in, a train and its route lie exactly on the drawn track
-    return { p: simplify(p, 1).map((x) => +x.toFixed(5)), t: structsOf(legs, len || 1), s: speedsOf(legs, len || 1), y: +y.toFixed(3), back };
+    return { p: simplify(p, 1).map((x) => +x.toFixed(5)), t: structsOf(legs, len || 1), s: speedsOf(legs, len || 1), y: +y.toFixed(3), back, h: H ? profileOf(p, hs) : null };
   }
   return { why };
 }
 
-const CACHE_V = 10; // 2: tunnels and bridges, 3: line speeds, 4: ends snapped onto track edges, 5: a stop may sit on any nearby track, 6: one gauge, main tracks over spurs, 7: no turning back at switches; long edges found, 8: paths within 1 m of the track, 9: track numbers only right at the platform, 10: turning back costs 3 km. Another version (or a rebuilt rail graph) starts over.
+const CACHE_V = 11; // 2: tunnels and bridges, 3: line speeds, 4: ends snapped onto track edges, 5: a stop may sit on any nearby track, 6: one gauge, main tracks over spurs, 7: no turning back at switches; long edges found, 8: paths within 1 m of the track, 9: track numbers only right at the platform, 10: turning back costs 3 km, 11: heights every 100 m. Another version (or a rebuilt rail graph) starts over.
 
 /**
  * Paths for all segments, from cache + routing. Returns paths and their tunnels/bridges aligned with `segments`
@@ -394,15 +420,15 @@ export async function segmentPaths(g: Graph | null, segments: number[], stations
   const file = existsSync(cacheFile) ? await Bun.file(cacheFile).json().catch(() => null) : null; // unreadable: route again
   const graphId = g ? `${g.nodes.length}:${g.names.length}:${g.refs.length}:${g.gauge.length}:${g.built ?? 0}` : "";
   const same = file?.v === CACHE_V && file.graph === graphId;
-  const cache: Record<string, [Path, Structs, Speeds, number, number] | null> = same ? file.segs : {}, fails: Record<string, string> = same ? file.fails ?? {} : {};
+  const cache: Record<string, [Path, Structs, Speeds, number, number, number[] | null] | null> = same ? file.segs : {}, fails: Record<string, string> = same ? file.fails ?? {} : {};
   let computed = 0, matched = 0;
   const t0 = Date.now();
-  const paths: (Path | null)[] = [], structs: (Structs | null)[] = [], speeds: (Speeds | null)[] = [];
+  const paths: (Path | null)[] = [], structs: (Structs | null)[] = [], speeds: (Speeds | null)[] = [], profiles: (number[] | null)[] = [];
   for (let k = 0; k < segments.length; k += 2) {
     const A = stations[segments[k]], B = stations[segments[k + 1]], key = `${A.uic}|${B.uic}`;
     if (!(key in cache) && g) {
       const r = routeTry(g, [A.lon, A.lat], [B.lon, B.lat], { a: A.platform, b: B.platform });
-      cache[key] = "why" in r ? null : [r.p, r.t, r.s, r.y, r.back ?? 0];
+      cache[key] = "why" in r ? null : [r.p, r.t, r.s, r.y, r.back ?? 0, r.h];
       if ("why" in r) fails[key] = r.why;
       computed++;
     }
@@ -411,8 +437,9 @@ export async function segmentPaths(g: Graph | null, segments: number[], stations
     paths.push(c?.[0] ?? null);
     structs.push(c?.[1].length ? c[1] : null);
     speeds.push(c?.[2]?.length ? c[2] : null);
+    profiles.push(c?.[5] ?? null);
   }
   if (computed && g) await writeAtomic(cacheFile, JSON.stringify({ v: CACHE_V, graph: graphId, segs: cache, fails }));
   console.log(`[paths] ${matched}/${segments.length / 2} segments on track (${computed} newly routed, ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
-  return { paths, structs, speeds };
+  return { paths, structs, speeds, profiles };
 }

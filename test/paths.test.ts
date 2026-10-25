@@ -159,3 +159,18 @@ test("no turning back at a switch: a proper way in wins even when longer; with n
   expect(r.back).toBe(0);
   expect(Math.max(...r.p.filter((_: number, i: number) => i % 2 === 0))).toBeCloseTo(x(2050), 4);
 });
+
+test("profileOf: heights every ~100 m, gaps bridged, a single wrong match smoothed away; too little known gives null", async () => {
+  const { profileOf } = await import("../server/paths");
+  // 1 km east (11 points ~100 m apart), climbing 500 → 600 m; one point unknown, one a 40 m spike (the line below a bridge)
+  const pts: number[] = [], hs: number[] = [];
+  for (let i = 0; i <= 10; i++) pts.push(7.4 + (i * 0.0131) / 10, 46.9), hs.push(500 + i * 10);
+  hs[3] = NaN, hs[6] = 520;
+  const h = profileOf(pts, hs)!;
+  expect(h.length).toBe(11);
+  expect(h[0]).toBe(500);
+  expect(h[10]).toBe(600);
+  expect(h[3]).toBe(530);
+  expect(Math.abs(h[6] - 560)).toBeLessThanOrEqual(10); // the spike is gone
+  expect(profileOf(pts, hs.map((x, i) => (i < 8 ? NaN : x)))).toBeNull();
+});

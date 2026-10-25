@@ -1,4 +1,4 @@
-import { loadDay, type Day } from "./gtfs";
+import { loadDay, tripProfile, type Day } from "./gtfs";
 import { alertsBody, classify, live, resetRealtime, startRealtime } from "./realtime";
 import { details, loadOccupancy, occupancyDate } from "./details";
 import { serviceBase, zurichDate } from "./time";
@@ -187,6 +187,13 @@ const server = Bun.serve({
     "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
+    // a train's elevation profile; computed here even in dev (no upstream calls), the URL carries the day version
+    "/api/profile/:idx": (req) => {
+      const v = new URL(req.url).searchParams.get("v");
+      if (!day || (v && v !== day.version)) return new Response("timetable changed", { status: 409 });
+      const p = tripProfile(day, Number(req.params.idx));
+      return p ? Response.json(p, { headers: { "Cache-Control": "public, max-age=86400" } }) : notFound();
+    },
     "/api/train/:idx": async (req) => {
       const v = new URL(req.url).searchParams.get("v");
       if (LIVE_FROM) return borrow(`/api/train/${req.params.idx}${v ? `?v=${encodeURIComponent(v)}` : ""}`);

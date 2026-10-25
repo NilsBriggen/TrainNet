@@ -37,6 +37,7 @@ export type Day = {
   trips: Trip[];
   segments: number[]; // flat [a, pa, b, pb, ...]: unique legs, station + platform index at each end, (a, pa) before (b, pb)
   paths: (Path | null)[]; // track geometry per segment, null = straight
+  profiles?: (number[] | null)[]; // per segment: heights every ~100 m from a to b (server only: /api/profile); missing in old day caches
   tripIndex: Map<string, number>; // `${trip_id}|${YYYYMMDD}` -> index
   routeIndex: Map<string, number>;
   stationOfStop: (stopId: string) => number | undefined;
@@ -126,7 +127,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f8"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f9"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
@@ -144,6 +145,27 @@ export function dayFromCache(c: DayCache, json: Uint8Array, graph: Graph | null)
     stationOfStop: (id) => stopStation.get(id),
     track: (a, b) => graph && route(graph, [c.stations[a][1], c.stations[a][2]], [c.stations[b][1], c.stations[b][2]]),
   };
+}
+
+const legsOf = new WeakMap<Day, Map<string, number>>();
+/** A trip's elevation along its whole route: [km, m] points in travel order (null where a leg has no heights) and its stops' km. */
+export function tripProfile(d: Day, i: number) {
+  const t = d.trips[i];
+  if (!t || !d.profiles) return null;
+  let legs = legsOf.get(d);
+  if (!legs) legsOf.set(d, (legs = new Map(Array.from({ length: d.segments.length / 4 }, (_, k) => [d.segments.slice(k * 4, k * 4 + 4).join(":"), k]))));
+  const pts: ([number, number] | null)[] = [];
+  for (let k = 0; k + 1 < t.stops.length / 3; k++) {
+    let [a, pa, b, pb] = [t.stops[k * 3], t.plat[k], t.stops[k * 3 + 3], t.plat[k + 1]], rev = false;
+    if (b < a || (b === a && pb < pa)) [a, pa, b, pb, rev] = [b, pb, a, pa, true]; // stored from the lower station to the higher
+    const h = d.profiles[legs.get(`${a}:${pa}:${b}:${pb}`) ?? -1];
+    if (!h) { if (pts.at(-1)) pts.push(null); continue; }
+    const k0 = t.km[k], k1 = t.km[k + 1], n = h.length - 1;
+    for (let j = pts.at(-1) ? 1 : 0; j <= n; j++) pts.push([Math.round((k0 + ((k1 - k0) * j) / n) * 100) / 100, rev ? h[n - j] : h[j]]); // the stop is the last leg's end
+  }
+  if (!pts.some(Boolean)) return null;
+  const every = Math.ceil(pts.length / 800); // a 300 km trip has 3000 points; 800 draw the same 300 px chart
+  return { pts: pts.filter((p, k) => !p || k % every === 0 || !pts[k + 1]), stops: t.km.map((x) => Math.round(x * 100) / 100) };
 }
 
 export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
@@ -269,7 +291,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     return q ? { uic: `${s[3]}:${platforms[pl]}`, lon: q[0], lat: q[1], platform: trackNo(platforms[pl]) } : { uic: s[3], lon: s[1], lat: s[2] };
   };
   const ends = Array.from({ length: segments.length / 2 }, (_, k) => end(segments[k * 2], segments[k * 2 + 1]));
-  const { paths, structs, speeds } = await segmentPaths(graph, ends.map((_, k) => k), ends, `${DATA_DIR}/paths.json`);
+  const { paths, structs, speeds, profiles } = await segmentPaths(graph, ends.map((_, k) => k), ends, `${DATA_DIR}/paths.json`);
   const legKm = paths.map((p, k) => {
     const a = segments[k * 4], b = segments[k * 4 + 2], pts = p ?? [stations[a][1], stations[a][2], stations[b][1], stations[b][2]];
     let m = 0;
@@ -290,7 +312,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));
   console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${(json.length / 1e6).toFixed(1)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
+  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments, paths, profiles, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
     track: (a, b) => graph && route(graph, [stations[a][1], stations[a][2]], [stations[b][1], stations[b][2]]) };
   // payload first, cache last: a cache file whose version matches always has its payload next to it
   const stopStation = [...stops.keys()].flatMap((id): [string, number][] => { const i = stationOf(id, false); return i === undefined ? [] : [[id, i]]; });

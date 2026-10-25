@@ -30,3 +30,15 @@ test("way properties: yards faint-coded, construction kept apart with its openin
   expect(wayProps({ railway: "rail", service: "siding", maxspeed: "40" })).toEqual({ k: 0, g: 0, t: 0, b: 0, v: 40 });
   expect(wayProps({ railway: "construction", construction: "narrow_gauge", opening_date: "2031" })).toMatchObject({ k: 3, g: 1, o: "2031" });
 });
+
+test("node heights: nearest 3D line, interpolated; a bridge track takes the bridge, not the line below", async () => {
+  const { nodeHeights } = await import("../scripts/rail");
+  // a line running east at 500→510 m, and a bridge crossing it north–south at 520 m
+  const lines = [{ c: [[7.40, 46.90, 500], [7.41, 46.90, 510]], k: 0 }, { c: [[7.405, 46.899, 520], [7.405, 46.901, 520]], k: 2 }];
+  // node 0 on the line, a quarter of the way; nodes 1–2 at the crossing: 1 on a bridge edge (1–2), 3 is far from both
+  const nodes = [7.4025, 46.90001, 7.405, 46.9, 7.405, 46.9005, 7.5, 47.0], edges = [1, 2], kind = [2];
+  const h = nodeHeights(nodes, edges, kind, lines);
+  expect(h[0]).toBeCloseTo(502.5, 1);
+  expect(h[1]).toBe(520); // on the bridge edge: the bridge, although the line below is just as near
+  expect(Number.isNaN(h[3])).toBe(true);
+});

@@ -6,6 +6,8 @@
 // speed: per edge the OSM maxspeed in km/h, 0 = not tagged (94 % of Swiss main-line ways are).
 // ref: per edge index into refs (railway:track_ref, its number: "7" for "7a"), -1 = none: puts a train on its platform's track.
 // gauge: per edge 0 standard, 1 narrow (metre gauge): a route stays on one, even where OSM joins the networks (dual-gauge track).
+// height: per node, metres above sea level from swissTLM3D's 3D railway lines (null: none within 15 m, e.g. abroad), for
+// the trains' elevation profiles; RAIL_TLM keeps the extract like RAIL_OSM keeps the Overpass answer.
 // Street tracks (railway=tram) are in, costly like sidings: Appenzeller Bahnen trains run through St. Gallen on them.
 // With --tiles it also builds the map's tiles next to it (rail.mbtiles: layer "rail" from z 10, "lakes" from z 5; needs GDAL),
 // with --ways only their track source, rail-ways.geojson.
@@ -87,6 +89,59 @@ export async function buildTiles(dir: string) {
   console.log(`[rail] tiles written to ${dir}/rail.mbtiles`);
 }
 
+/**
+ * Height per node from 3D railway lines ({ c: [[lon, lat, z], …], k: 0 open, 1 tunnel, 2 bridge }): the nearest line
+ * within `max` m, interpolated along its segment. A line of the node's own structure wins by 15 m, so a track on a bridge
+ * takes the bridge's height and not the line it crosses. NaN where nothing is near.
+ */
+export function nodeHeights(nodes: number[], edges: number[], kind: number[], lines: { c: number[][]; k: number }[], max = 15): Float32Array {
+  const CX = 0.0004, CY = 0.0003, cells = new Map<string, number[]>(); // ~30 m cells: [line, vertex, …]
+  for (const [li, l] of lines.entries())
+    for (let v = 1; v < l.c.length; v++) {
+      const [a, b] = [l.c[v - 1], l.c[v]];
+      for (let x = Math.floor(Math.min(a[0], b[0]) / CX); x <= Math.floor(Math.max(a[0], b[0]) / CX); x++)
+        for (let y = Math.floor(Math.min(a[1], b[1]) / CY); y <= Math.floor(Math.max(a[1], b[1]) / CY); y++) (cells.get(`${x}|${y}`) ?? cells.set(`${x}|${y}`, []).get(`${x}|${y}`)!).push(li, v);
+    }
+  const struct = new Uint8Array(nodes.length / 2); // a node in a tunnel or on a bridge: one of its edges is
+  for (let e = 0; e < edges.length; e += 2) if (kind[e / 2]) struct[edges[e]] = struct[edges[e + 1]] = kind[e / 2];
+  const out = new Float32Array(nodes.length / 2).fill(NaN);
+  for (let i = 0; i < out.length; i++) {
+    const lon = nodes[i * 2], lat = nodes[i * 2 + 1], kx = Math.cos((lat * Math.PI) / 180) * 111_320, ky = 110_540;
+    let best = Infinity;
+    for (let x = Math.floor(lon / CX) - 1; x <= Math.floor(lon / CX) + 1; x++) for (let y = Math.floor(lat / CY) - 1; y <= Math.floor(lat / CY) + 1; y++) {
+      const c = cells.get(`${x}|${y}`) ?? [];
+      for (let j = 0; j < c.length; j += 2) {
+        const l = lines[c[j]], a = l.c[c[j + 1] - 1], b = l.c[c[j + 1]];
+        const ax = (b[0] - a[0]) * kx, ay = (b[1] - a[1]) * ky, px = (lon - a[0]) * kx, py = (lat - a[1]) * ky, len2 = ax * ax + ay * ay;
+        const t = len2 ? Math.max(0, Math.min(1, (ax * px + ay * py) / len2)) : 0, d = Math.hypot(px - t * ax, py - t * ay);
+        const score = d + (l.k === struct[i] ? 0 : 15);
+        if (d <= max && score < best) (best = score), (out[i] = a[2] + t * (b[2] - a[2]));
+      }
+    }
+  }
+  return out;
+}
+
+/** swissTLM3D's railway lines (latest release, only that layer read from the remote zip), trams and funiculars left out. */
+async function tlmRailways(dir: string) {
+  const file = process.env.RAIL_TLM ?? `${dir}/tlm-rail.geojsonl`;
+  if (!process.env.RAIL_TLM || !(await Bun.file(file).exists())) {
+    const items = (await (await fetch("https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swisstlm3d/items?limit=100")).json()).features as any[];
+    const zip = items.flatMap((it) => Object.values(it.assets ?? {}).map((a: any) => a.href as string)).filter((h) => h.endsWith(".shp.zip")).sort().at(-1);
+    if (!zip) throw new Error("no swissTLM3D release found");
+    rmSync(file, { force: true });
+    const p = Bun.spawn(["ogr2ogr", "-f", "GeoJSONSeq", file, `/vsizip//vsicurl/${zip}/TLM_OEV/swissTLM3D_TLM_EISENBAHN.shp`, "-s_srs", "EPSG:2056", "-t_srs", "EPSG:4326", "-dim", "XYZ",
+      "-select", "KUNSTBAUTE", "-where", "VERKEHRSMI <> 'Tram' AND STANDSEILB = 'Falsch'", "-lco", "COORDINATE_PRECISION=6"], { stdout: "inherit", stderr: "inherit" });
+    if ((await p.exited) !== 0) throw new Error(`ogr2ogr exited with ${p.exitCode}`);
+  }
+  const lines = (await Bun.file(file).text()).split("\n").filter(Boolean).map((s) => JSON.parse(s)).flatMap((f) => {
+    const k = /^Tunnel|^Galerie/.test(f.properties.KUNSTBAUTE ?? "") ? 1 : /Bruecke/.test(f.properties.KUNSTBAUTE ?? "") ? 2 : 0;
+    return (f.geometry.type === "LineString" ? [f.geometry.coordinates] : f.geometry.coordinates).map((c: number[][]) => ({ c, k }));
+  });
+  if (!process.env.RAIL_TLM) rmSync(file, { force: true });
+  return lines;
+}
+
 export async function buildRail(out = OUT, ways_ = false) {
   const t0 = Date.now();
   console.log("[rail] fetching OSM rail network…");
@@ -154,7 +209,11 @@ export async function buildRail(out = OUT, ways_ = false) {
   for (let e = 0; e < edges.length; e += 2) if (keep(edges[e])) outEdges.push(remap[edges[e]], remap[edges[e + 1]]), outSvc.push(svc[e / 2]), outKind.push(kind[e / 2]), outName.push(name[e / 2]), outSpeed.push(speed[e / 2]), outRef.push(ref[e / 2]), outGauge.push(gauge[e / 2]);
 
   mkdirSync(out.slice(0, out.lastIndexOf("/")), { recursive: true });
-  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge, built: Date.now() }));
+  // heights are a bonus: without swisstopo (down, or no GDAL) the graph is still built, just without elevation profiles
+  const heights = await tlmRailways(out.slice(0, out.lastIndexOf("/"))).then((l) => nodeHeights(outNodes, outEdges, outKind, l)).catch((e) => (console.error(`[rail] no heights: ${e.message}`), null));
+  if (heights) console.log(`[rail] heights for ${heights.filter((h) => !Number.isNaN(h)).length} of ${heights.length} nodes`);
+  await writeAtomic(out, JSON.stringify({ nodes: outNodes.map((x) => +x.toFixed(6)), edges: outEdges, svc: outSvc, kind: outKind, name: outName, names, speed: outSpeed, ref: outRef, refs, gauge: outGauge,
+    height: heights && Array.from(heights, (h) => (Number.isNaN(h) ? null : Math.round(h * 10) / 10)), built: Date.now() }));
   if (ways_) await writeWays(all, `${out.slice(0, out.lastIndexOf("/"))}/rail-ways.geojson`);
   console.log(`[rail] ${ways.length} ways → ${outNodes.length / 2} nodes, ${outEdges.length / 2} edges, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
