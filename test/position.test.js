@@ -133,3 +133,12 @@ test("line speed: a train crawls through a slow station area and makes up for it
   const gap = timeTable(3000, [{ d0: 1000, d1: 3000, v: 160 }]); // 1 km untagged (80), 2 km at 160: equal times
   expect(distanceAt(gap, 0.5)).toBeCloseTo(1000, 0);
 });
+
+test("line km: nearest marker, interpolated along its line; nothing far from any line", async () => {
+  const { kmIndex, kmAt } = await import("../public/position.js");
+  // line 290 runs east along a parallel: a marker every 0.002° (~150 m), km 10.0, 10.2, 10.4
+  const idx = kmIndex({ 290: { n: "Bern - Thun", p: [7.400, 46.9, 10.0, 7.402, 46.9, 10.2, 7.404, 46.9, 10.4] } });
+  expect(kmAt(idx, 7.401, 46.9)).toEqual({ line: "290", name: "Bern - Thun", km: 10.1 });
+  expect(kmAt(idx, 7.4026, 46.90005).km).toBe(10.3); // 30 % of the way from the 2nd to the 3rd marker, a few metres off the line
+  expect(kmAt(idx, 7.402, 46.91)).toBeNull(); // 1 km north
+});

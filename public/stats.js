@@ -544,6 +544,10 @@ async function networkPage(current) {
     ${card("Busiest sections", "Trains a day, both directions", t(n.busiest, [{ h: "Trains", num: 1, f: (x) => n0(x.perDay) }, { h: "Freight", num: 1, f: (x) => pctv(x.freight) }]), 6)}
     ${card("Freight corridors", "Freight trains a day", t(n.freight, [{ h: "Freight", num: 1, f: (x) => n0(x.freightPerDay) }, { h: "of all", num: 1, f: (x) => pctv(x.freight) }]), 6)}
     ${card("Heaviest sections", "Gross tonnes a day, trains included", t(n.heaviest, [{ h: "Tonnes", num: 1, f: (x) => n0(x.tonnesPerDay) }, { h: "Trains", num: 1, f: (x) => n0(x.perDay) }]), 12)}
+    ${n.lines?.length ? card("Where trains lose time, by line", "Delay gained between stops on each line of the network (SBB's line numbers), last 30 days: seconds a train loses per 10 km on average, and the section where it loses the most",
+      table([{ h: "Line", f: (x) => `<b>${esc(x.line)}</b> <span class="muted">${esc(x.name)}</span>` }, { h: "Per 10 km", num: 1, f: (x) => `${x.per10 > 0 ? "+" : ""}${x.per10} s` },
+        { h: "Worst section", f: (x) => (x.worst ? `${esc(x.worst.a)} – ${esc(x.worst.b)} <span class="muted">km ${x.worst.from}–${x.worst.to} · ${x.worst.gain > 0 ? "+" : ""}${x.worst.gain} s</span>` : "–") },
+        { h: "Train runs", num: 1, f: (x) => n0(x.runs) }], n.lines.slice(0, 20)), 12) : ""}
   </div>`;
 }
 

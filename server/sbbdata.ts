@@ -1,17 +1,21 @@
 // Open SBB datasets (data.sbb.ch, no token), refreshed weekly into stats.db: passengers per station (passagierfrequenz)
 // and through the day (bahnhofbenutzer-tagesverlauf), the rolling stock register (rollmaterial: build date, exact type per
 // vehicle), where the sector signs stand on each platform (sektortafel: which end of a train is the front), every train
-// per line section including freight (zugzahlen) and the platform edges' length and height (BehiG Haltekanten).
+// per line section including freight (zugzahlen), the platform edges' length and height (BehiG Haltekanten), and the
+// infrastructure: junctions, crossovers and passing loops (ATLAS service points), the line kilometres along each line
+// (linienkilometrierung) and where the stations sit on the lines (linie-mit-betriebspunkten).
 import { db } from "./record";
 import { setRegisterNames, unitOf } from "./details";
 import { segmentPaths, type Graph } from "./paths";
+import { kmAt, kmIndex } from "../public/position.js";
+import { zurichDate } from "./time";
 
 const API = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets";
 const WEEK = 7 * 86400_000;
-const LOADED = "v3"; // bump when a dataset is added, so the next start loads all of them
+const LOADED = "v4"; // bump when a dataset is added, so the next start loads all of them
 
-const exportJson = async (ds: string, select: string) => {
-  const res = await fetch(`${API}/${ds}/exports/json?select=${encodeURIComponent(select)}`, { signal: AbortSignal.timeout(120_000) });
+const exportJson = async (ds: string, select: string, where = "") => {
+  const res = await fetch(`${API}/${ds}/exports/json?select=${encodeURIComponent(select)}${where ? `&where=${encodeURIComponent(where)}` : ""}`, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) throw new Error(`${ds}: HTTP ${res.status}`);
   return (await res.json()) as any[];
 };
@@ -110,6 +114,42 @@ export function usePlatformEdges() {
 /** A platform's edge length and height, for "12" also trying the number of "12A"-style names, like platformEnds. */
 export const platformEdge = (uic: string, track: string) => edges.get(`${uic}|${track}`) ?? edges.get(`${uic}|${track.match(/^\d+/)?.[0] ?? ""}`) ?? null;
 
+// ATLAS operating point types we label on the map; city tram junctions (their operators) are left out
+const KINDS = ["BRANCH", "LANE_CHANGE", "INTERSECTION"], TRAM = new Set(["VBZ", "BVB", "TPG", "SVB Auto", "BLT", "VBG", "TL", "MBC Auto"]);
+/** Junctions (0), crossovers (1) and passing loops (2); the km markers and the stations' km on each line. */
+export function importInfra(points: any[], kms: any[], onLine: any[]) {
+  db.transaction(() => {
+    for (const t of ["junction", "line_km", "line_point"]) db.query(`DELETE FROM ${t}`).run();
+    const j = db.query("INSERT OR REPLACE INTO junction VALUES (?, ?, ?, ?, ?, ?)");
+    for (const r of points) if (r.geopos && !TRAM.has(r.businessorganisationabbreviationde)) j.run(String(r.number), r.designationofficial, KINDS.indexOf(r.operatingpointtechnicaltimetabletype), r.businessorganisationabbreviationde ?? "", r.geopos.lon, r.geopos.lat);
+    const k = db.query("INSERT INTO line_km VALUES (?, ?, ?, ?, ?)");
+    for (const r of kms) if (r.geo_point_2d && r.linienr != null) k.run(String(r.linienr), r.km, r.liniename ?? "", r.geo_point_2d.lon, r.geo_point_2d.lat);
+    const p = db.query("INSERT INTO line_point VALUES (?, ?, ?, ?, ?)");
+    for (const r of onLine) if (r.bpuic && r.linie != null) p.run(String(r.linie), String(r.bpuic), r.km, r.bezeichnung_bps ?? "", r.linienname ?? "");
+  })();
+  return { junctions: points.length, markers: kms.length };
+}
+
+let junctionsGz: Uint8Array | null = null, lineKmGz: Uint8Array | null = null;
+// the abbreviation that tells the type ("Wylerfeld (Abzw)"): the map shows the type in words instead
+const SUFFIX = /\s*\((Abzw|Spw|Vzw|Verzw|Ausw|Kr|bif|c bin|Abzw\.)\)/gi;
+/** /api/junctions (GeoJSON: name, kind, operator, line and km) and /api/linekm (the markers per line, for kmAt), gzipped. */
+export function buildInfra() {
+  const lines: Record<string, { n: string; p: number[] }> = {};
+  for (const r of db.query("SELECT line, km, name, lon, lat FROM line_km ORDER BY line, km").all() as any[]) (lines[r.line] ??= { n: r.name, p: [] }).p.push(+r.lon.toFixed(5), +r.lat.toFixed(5), r.km);
+  const idx = kmIndex(lines);
+  const features = (db.query("SELECT * FROM junction").all() as any[]).map((r) => {
+    const at = kmAt(idx, r.lon, r.lat, 150);
+    return { type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { n: r.name.replace(SUFFIX, ""), k: r.kind, o: r.operator, ...(at && { l: at.line, km: at.km }) } };
+  });
+  // nothing loaded yet: no body, so the routes say 503 instead of an empty answer that browsers would keep a day
+  junctionsGz = features.length ? Bun.gzipSync(JSON.stringify({ type: "FeatureCollection", features })) : null;
+  lineKmGz = Object.keys(lines).length ? Bun.gzipSync(JSON.stringify({ lines })) : null;
+  console.log(`[sbbdata] ${features.length} junctions, ${Object.keys(lines).length} lines with km markers`);
+}
+export const junctionsBody = () => junctionsGz;
+export const lineKmBody = () => lineKmGz;
+
 /** Latest year's average daily passengers per station; the register's trainsets keyed like our unit ids (502-206). */
 export function importSbb(pax: any[], stock: any[]) {
   const latest = new Map<string, any>();
@@ -137,20 +177,26 @@ export function importSbb(pax: any[], stock: any[]) {
 export async function loadSbbData(now = Date.now()) {
   const last = (db.query("SELECT t FROM sbb_loaded WHERE name = ?").get(LOADED) as { t: number } | null)?.t ?? 0;
   if (now - last < WEEK) return;
-  const [pax, stock, signs, hours, sections, platforms] = await Promise.all([
+  const today = zurichDate(new Date(now));
+  const [pax, stock, signs, hours, sections, platforms, points, kms, onLine] = await Promise.all([
     exportJson("passagierfrequenz", "uic,jahr_annee_anno,dtv_tjm_tgm,dwv_tmjo_tfm"),
     exportJson("rollmaterial", "fahrzeug_nr_uic,fahrzeug_typ,baudatum_fahrzeug,sitzpl_1_kl_nr_r_total,sitzpl_2_kl_nr_r_total,lange_uber_zug,platze_rollstuhle_pro_zug"),
     exportJson("sektortafel", "bpuic,kundengleisnummer,sektor_vorderseite,sektor_ruckseiter,geopos"),
     exportJson("anzahl-sbb-bahnhofbenutzer-tagesverlauf", "bpuic,uhrzeit,prozentsatz,jahr_annee_anno_year"),
     exportJson("zugzahlen", "von_bpuic,bis_bpuic,geschaeftscode,jahr,anzahl_zuege,gesamtbelastung_bruttotonnen,trassenkilometer,stromverbrauch_auf_abschnitt,bp_von_abschnitt_bezeichnung,bp_bis_abschnitt_bezeichnung,strecke_bezeichnung,verbindung"),
     exportJson("21197_behig-haltekantesegment", "didok,kundengleisnr,perronkante_laenge,konformitaet,perrontyp"),
+    exportJson("dienststellen-gemass-opentransportdataswiss", "number,designationofficial,operatingpointtechnicaltimetabletype,businessorganisationabbreviationde,geopos",
+      `operatingpointtechnicaltimetabletype in ("${KINDS.join('","')}") and validfrom <= "${today}" and validto >= "${today}"`),
+    exportJson("linienkilometrierung", "linienr,km,liniename,geo_point_2d"),
+    exportJson("linie-mit-betriebspunkten", "linie,km,bpuic,bezeichnung_bps,linienname"),
   ]);
-  const n = importSbb(pax, stock), sectors = importSectors(signs), busy = importBusyHours(hours), secs = importSections(sections), edgeCount = importPlatformEdges(platforms);
+  const n = importSbb(pax, stock), sectors = importSectors(signs), busy = importBusyHours(hours), secs = importSections(sections), edgeCount = importPlatformEdges(platforms), infra = importInfra(points, kms, onLine);
   db.query("INSERT OR REPLACE INTO sbb_loaded VALUES (?, ?)").run(LOADED, now);
   useRegisterNames();
   usePlatformEnds();
   usePlatformEdges();
-  console.log(`[sbbdata] passengers for ${n.stations} stations (${busy} through the day), ${n.units} trainsets and locomotives in the register, ${sectors} platform sectors, ${edgeCount} platform edges, ${secs} line sections`);
+  console.log(`[sbbdata] passengers for ${n.stations} stations (${busy} through the day), ${n.units} trainsets and locomotives in the register, ${sectors} platform sectors, ${edgeCount} platform edges, ${secs} line sections, ${infra.junctions} junctions, ${infra.markers} km markers`);
+  buildInfra();
 }
 
 /** Register type names per series ("RABe 533" for 533), for series our own list doesn't name. Call after loading. */

@@ -199,3 +199,42 @@ export function matchTrain(samples, candidates, positionAt, within = 300) {
   }
   return best && best.m < within && second > 1.5 * best.m ? best.i : null;
 }
+
+/**
+ * Line kilometres (SBB's km markers, every 100–300 m along each line) indexed for lookups by position.
+ * lines: { "290": { n: "Bern - Thun", p: [lon, lat, km, ...] in km order } }.
+ */
+export function kmIndex(lines) {
+  const cells = new Map();
+  for (const [line, { p }] of Object.entries(lines))
+    for (let i = 0; i < p.length; i += 3) {
+      const k = `${Math.floor(p[i] / 0.004)}|${Math.floor(p[i + 1] / 0.003)}`; // ~300 m cells
+      (cells.get(k) ?? cells.set(k, []).get(k)).push(line, i);
+    }
+  return { lines, cells };
+}
+/** { line, name, km } at a position: the nearest marker within `max` m, interpolated towards its neighbour on that line. */
+export function kmAt({ lines, cells }, lon, lat, max = 80) {
+  const cx = Math.floor(lon / 0.004), cy = Math.floor(lat / 0.003);
+  let best = null;
+  for (let x = cx - 1; x <= cx + 1; x++) for (let y = cy - 1; y <= cy + 1; y++) {
+    const c = cells.get(`${x}|${y}`) ?? [];
+    for (let j = 0; j < c.length; j += 2) {
+      const p = lines[c[j]].p, i = c[j + 1], d = metres(lon, lat, p[i], p[i + 1]);
+      if (d <= max && (!best || d < best.d)) best = { d, line: c[j], i };
+    }
+  }
+  if (!best) return null;
+  const p = lines[best.line].p, i = best.i;
+  // the position projected onto the marker's segment towards the previous or the next marker, whichever it lies along
+  let km = p[i + 2], off = Infinity;
+  for (const j of [i - 3, i + 3]) {
+    if (j < 0 || j >= p.length) continue;
+    const kx = Math.cos((lat * Math.PI) / 180), ax = (p[j] - p[i]) * kx, ay = p[j + 1] - p[i + 1], bx = (lon - p[i]) * kx, by = lat - p[i + 1];
+    const len2 = ax * ax + ay * ay, t = len2 ? (ax * bx + ay * by) / len2 : 0;
+    if (t < 0 || t > 1) continue;
+    const o = Math.abs(ax * by - ay * bx) / Math.sqrt(len2);
+    if (o < off) { off = o; km = p[i + 2] + t * (p[j + 2] - p[i + 2]); }
+  }
+  return { line: best.line, name: lines[best.line].n, km: Math.round(km * 10) / 10 };
+}

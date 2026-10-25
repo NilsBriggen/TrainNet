@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 
@@ -452,6 +452,7 @@ map.on("load", async () => {
   // ?v: browsers keep tiles a day; bump it when the tiles are rebuilt with other properties
   map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=5`], minzoom: 5, maxzoom: 15 });
   for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
+  map.addSource("junctions", { type: "geojson", data: "/api/junctions?v=1" }); // ATLAS operating points: junctions, crossovers, passing loops
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
   // the opaque neighbour fill hides the bit of swisstopo coverage beyond the border
@@ -516,6 +517,10 @@ map.on("load", async () => {
   map.addLayer({ id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "part"], "ahead"], paint: { "line-color": ["get", "c"], "line-width": routeWidth(2), "line-opacity": 0.45 } });
   map.addLayer({ id: "route-behind", type: "line", source: "route", filter: ["==", ["get", "part"], "behind"], paint: { "line-color": ["get", "c"], "line-width": routeWidth(2.2), "line-opacity": 0.9 } });
 
+  // junctions, crossovers and passing loops: a small ring from z 12.5, the name from z 13 (under the station labels)
+  map.addLayer({ id: "junctions", type: "circle", source: "junctions", minzoom: 12.5, paint: { "circle-radius": 2.6, "circle-color": "#040a18", "circle-stroke-color": "#7f93bd", "circle-stroke-width": 1.2 } });
+  map.addLayer({ id: "junction-labels", type: "symbol", source: "junctions", minzoom: 13, layout: { "text-field": ["get", "n"], "text-font": ["Open Sans Semibold"], "text-size": 10, "text-offset": [0, 0.7], "text-anchor": "top", "text-optional": true },
+    paint: { "text-color": "#7f93bd", "text-halo-color": "#040a18", "text-halo-width": 1.5 } });
   map.addLayer({ id: "stations-minor", type: "circle", source: "stations", minzoom: 9.5, filter: ["<", ["get", "n"], 60], paint: { "circle-color": "#6e86b8", "circle-radius": ["interpolate", ["linear"], ["zoom"], 9.5, 1.2, 13, 3], "circle-opacity": 0.7 } });
   map.addLayer({ id: "stations-mid", type: "circle", source: "stations", filter: ["all", [">=", ["get", "n"], 60], ["==", ["get", "hub"], 0]], paint: { "circle-color": "#93aadb", "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 1.6, 10, 2.8, 13, 4.5], "circle-opacity": ["interpolate", ["linear"], ["zoom"], 7, 0.5, 9, 0.85], "circle-stroke-color": "#040a18", "circle-stroke-width": 1 } });
   map.addLayer({ id: "stations-hub", type: "circle", source: "stations", filter: ["==", ["get", "hub"], 1], paint: { "circle-color": "#040a18", "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 3.2, 10, 5, 13, 7], "circle-stroke-color": "#c7d6ff", "circle-stroke-width": 1.6 } });
@@ -584,17 +589,21 @@ function hitAt(pt) {
   if (a) return { type: "alert", idx: a.properties.id };
   const tn = map.queryRenderedFeatures(box, { layers: ["rail-tunnel"] }).find((f) => f.properties.name);
   if (tn) return { type: "tunnel", idx: tn.properties };
+  const jn = map.queryRenderedFeatures(box, { layers: ["junctions"] })[0];
+  if (jn) return { type: "junction", idx: jn.properties };
   const bu = map.queryRenderedFeatures(box, { layers: ["osm-construction"] })[0];
   if (bu) return { type: "building", idx: bu.properties };
   const ov = map.queryRenderedFeatures(box, { layers: ["traffic", "speed", "speed-osm", "lost"].filter((k) => overlays.has(k.replace("-osm", ""))) })[0];
   return ov ? { type: "overlay", idx: { layer: ov.layer.id.replace("-osm", ""), ...ov.properties } } : null;
 }
-const TIP_ONLY = new Set(["tunnel", "building", "overlay"]); // hover tips only, nothing to open
+const TIP_ONLY = new Set(["tunnel", "building", "junction", "overlay"]);
+const JUNCTION = ["junction", "crossover (track change)", "passing loop"]; // hover tips only, nothing to open
 // re-checked every frame: trains drive away from a still cursor, which fires no mouse events
 function updateTip() {
   const hit = hoverPt && !zen ? hitAt(hoverPt) : null;
   map.getCanvas().style.cursor = hit && !TIP_ONLY.has(hit.type) ? "pointer" : "";
   const html = !hit ? "" : hit.type === "train" ? trainTip(hit.idx) : hit.type === "alert" ? alertTip(hit.idx) : hit.type === "tunnel" ? `<span>${esc(hit.idx.name)}</span><span class="sub">tunnel · ${hit.idx.km} km</span>`
+    : hit.type === "junction" ? `<span>${esc(hit.idx.n)}</span><span class="sub">${JUNCTION[hit.idx.k] ?? "operating point"}${hit.idx.o ? ` · ${esc(hit.idx.o)}` : ""}${hit.idx.l ? ` · line ${esc(hit.idx.l)}, km ${hit.idx.km}` : ""}</span>`
     : hit.type === "building" ? `<span>Track under construction</span>${hit.idx.o ? `<span class="sub">opening ${esc(hit.idx.o)}</span>` : ""}`
     : hit.type === "overlay" ? overlayTip(hit.idx) : stationTip(hit.idx);
   if (!html) { $("tip").hidden = true; tipHtml = ""; return; }
@@ -1026,11 +1035,15 @@ function renderPanel() {
   patchPanel();
 }
 
+// SBB's km markers along each line (~1 MB, so only once a train panel opens): "line 290, km 12.4" for a running train
+let lineKm = null, lineKmLoading = false;
+const loadLineKm = () => { if (lineKmLoading) return; lineKmLoading = true; fetch("/api/linekm").then((r) => r.json()).then((j) => (lineKm = kmIndex(j.lines))).catch(() => (lineKmLoading = false)); };
 /** What moves every second in an open train panel: progress, "next stop", the age of the live data, which stops are behind. */
 function trainNow(i) {
   const sched = day.trips[i][3], n = sched.length / 3, e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t), st = day.stations;
-  const kmh = p && !p.at ? speedAt(i) : 0;
-  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}${kmh ? ` · line speed ${kmh} km/h` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
+  const kmh = p && !p.at ? speedAt(i) : 0, lk = p && !p.at && lineKm ? kmAt(lineKm, ...trainPos(i)) : null;
+  if (!lineKm) loadLineKm();
+  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}${kmh ? ` · line speed ${kmh} km/h` : ""}${lk ? ` · <span title="${esc(lk.name)}">line ${esc(lk.line)}, km ${lk.km.toFixed(1)}</span>` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
   const age = live.time && live.delays[i] ? Math.max(0, Math.round((Date.now() + clockSkew) / 1000 - live.time)) : null;
   return {
     p, cancelled, status: status && ` · ${status}`, prog: !p ? (t < e.stops[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1),

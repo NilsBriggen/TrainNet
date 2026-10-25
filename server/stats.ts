@@ -594,8 +594,35 @@ export function network() {
       busiest: all(`SELECT * FROM section_traffic ORDER BY trains DESC LIMIT 15`).map(row),
       freight: all(`SELECT * FROM section_traffic ORDER BY freight DESC LIMIT 15`).map(row),
       heaviest: all(`SELECT * FROM section_traffic ORDER BY tonnes DESC LIMIT 10`).map(row),
+      lines: lineDelays(),
     };
   });
+}
+
+/**
+ * Delay gained per SBB line (its official number), last 30 days: each section between two consecutive stops goes to the
+ * line both stations sit on, the one where they're closest by km (the direct line, not a detour). Seconds per 10 km
+ * compares long and short lines; the worst section is the one gaining most per km.
+ */
+export function lineDelays() {
+  const at = new Map<string, { line: string; km: number; name: string; lname: string }[]>();
+  for (const r of all(`SELECT line, uic, km, name, line_name FROM line_point`)) (at.get(r.uic) ?? at.set(r.uic, []).get(r.uic)!).push({ line: r.line, km: r.km, name: r.name, lname: r.line_name });
+  const by = new Map<string, any>();
+  for (const [a, b, gain, n] of segments() as [string, string, number, number][]) {
+    let best: any = null;
+    for (const x of at.get(a) ?? []) for (const y of at.get(b) ?? []) {
+      const len = Math.abs(x.km - y.km);
+      if (x.line === y.line && len > 0.3 && (!best || len < best.len)) best = { x, y, len };
+    }
+    if (!best) continue;
+    const L = by.get(best.x.line) ?? by.set(best.x.line, { line: best.x.line, name: best.x.lname, runs: 0, gain: 0, trainKm: 0, worst: null }).get(best.x.line);
+    L.runs += n; L.gain += gain * n; L.trainKm += best.len * n;
+    const [p, q] = best.x.km < best.y.km ? [best.x, best.y] : [best.y, best.x];
+    if (best.len >= 1 && n >= 100 && (!L.worst || gain / best.len > L.worst.perKm)) L.worst = { a: p.name, b: q.name, from: p.km, to: q.km, gain, perKm: gain / best.len };
+  }
+  return [...by.values()].filter((L) => L.runs >= 500).map((L) => ({ line: L.line, name: L.name, runs: L.runs, per10: Math.round((100 * L.gain) / L.trainKm) / 10,
+    worst: L.worst && { a: L.worst.a, b: L.worst.b, from: Math.round(L.worst.from * 10) / 10, to: Math.round(L.worst.to * 10) / 10, gain: L.worst.gain } }))
+    .sort((x, y) => y.per10 - x.per10);
 }
 
 // ---------- records ----------

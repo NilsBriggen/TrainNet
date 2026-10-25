@@ -9,7 +9,7 @@ import { DATA_DIR } from "./gtfs";
 import { db, flushAll, initRecord, maintain, reclassifyAlerts, startDay } from "./record";
 import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
-import { buildSections, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
+import { buildInfra, buildSections, junctionsBody, lineKmBody, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
 import { reopenTiles, tileOf } from "./tiles";
 
@@ -28,6 +28,7 @@ reclassifyAlerts((h, d, cause) => classify(h, d, cause).kind);
 useRegisterNames();
 usePlatformEnds();
 usePlatformEdges();
+buildInfra(); // from what stats.db has; refreshed with the weekly SBB load
 
 const RAIL = `${DATA_DIR}/rail.json`;
 async function loadRail() {
@@ -181,6 +182,8 @@ const server = Bun.serve({
       // shortcut: a day's caching, so after the weekly swap a browser may show its cached old tiles until tomorrow; a build stamp in the tile URL would fix it
       return t ? new Response(t, { headers: { "Content-Type": "application/x-protobuf", "Content-Encoding": "gzip", "Cache-Control": "public, max-age=86400" } }) : new Response(null, { status: 204 });
     },
+    "/api/junctions": () => { const b = junctionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
+    "/api/linekm": () => { const b = lineKmBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
