@@ -449,7 +449,8 @@ map.on("load", async () => {
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
   // the real track network (every OSM track, sidings and yards too) as vector tiles, drawn from z 11 (server/tiles.ts)
-  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}`], minzoom: 10, maxzoom: 15 });
+  // ?v: browsers keep tiles a week; bump it when the tiles are rebuilt with other properties
+  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=2`], minzoom: 10, maxzoom: 15 });
   for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
@@ -481,17 +482,17 @@ map.on("load", async () => {
       "line-opacity": fadeOut(["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6]),
     },
   });
-  // sidings, yards, spurs, crossovers (k 1, 2): the shunting tracks, faint, from z 13
-  osm("osm-service", ["all", ["!=", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#2a4677", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.4, 16, 0.6], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.5, 17, 1.4] }, 13); // a yard of 40 tracks stays a texture, not a blue block
+  // yards and spurs (k 1): the shunting tracks, faint, from z 13. Station sidings and crossovers are drawn like main track
+  osm("osm-service", ["all", ["==", ["get", "k"], 1], ["!=", ["get", "t"], 1]], { "line-color": "#2a4677", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.4, 16, 0.6], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.5, 17, 1.4] }, 13); // a yard of 40 tracks stays a texture, not a blue block
   osm("osm-tunnel", ["==", ["get", "t"], 1], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.5), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 16, 2] });
-  osm("osm-main", ["all", ["==", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.9), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1.1, 14, 1.8, 17, 3] });
+  osm("osm-main", ["all", ["!=", ["get", "k"], 1], ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.85), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 14, 1.5, 17, 2.2] });
   // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
   const vis = (k) => (overlays.has(k) ? "visible" : "none");
   // line speed (OSM maxspeed): blue for slow branch lines up to red for the 250 km/h base tunnels
   const speedColor = ["interpolate", ["linear"], ["get", "v"], 60, "#3b5998", 100, "#5cc8ff", 140, "#2ee6a6", 180, "#ffd23f", 230, "#ff3d5a"];
   map.addLayer({ id: "speed", type: "line", source: "speed", maxzoom: 11.5, layout: { visibility: vis("speed"), "line-cap": "round" }, paint: {
     "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 12, 4.5], "line-opacity": fadeOut(0.9) } });
-  map.addLayer({ id: "speed-osm", type: "line", source: "osm-rail", "source-layer": "rail", minzoom: 10.5, filter: ["all", [">", ["get", "v"], 0], ["==", ["get", "k"], 0]],
+  map.addLayer({ id: "speed-osm", type: "line", source: "osm-rail", "source-layer": "rail", minzoom: 10.5, filter: ["all", [">", ["get", "v"], 0], ["!=", ["get", "k"], 1]],
     layout: { visibility: vis("speed"), "line-cap": "round" }, paint: { "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 11, 2.5, 16, 5], "line-opacity": fadeIn(0.9) } });
   // traffic: every train a day per section (freight too), width by trains, colour by the freight share
   map.addLayer({ id: "traffic", type: "line", source: "traffic", layout: { visibility: vis("traffic"), "line-cap": "round" }, paint: {

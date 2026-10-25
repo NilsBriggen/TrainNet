@@ -52,13 +52,14 @@ const OUT = `${process.env.DATA_DIR ?? "data"}/rail.json`;
 const BBOX = "45.6,5.7,48.0,10.8"; // Switzerland plus ~80 km margin for cross-border legs
 const QUERY = `[out:json][timeout:600];way["railway"~"^(rail|narrow_gauge|light_rail|tram)$"](${BBOX});out geom;`;
 
-/** Every way as a GeoJSON line with what the map styles by: k service (0 main, 1 siding/yard/spur, 2 crossover), g narrow gauge,
+/** Every way as a GeoJSON line with what the map styles by: k 0 track trains use (main, and sidings: OSM tags many platform
+ * tracks service=siding, 41 of Bern's), 1 yard or spur (the shunting tracks, drawn faint), 2 crossover; g narrow gauge,
  * t tunnel, b bridge, v maxspeed. Input for the track tiles (ogr2ogr -f MBTiles). */
 async function writeWays(ways: any[], file: string) {
   const features = ways.filter((w) => w.tags?.railway !== "tram").map((w) => { // city trams aren't railway track to draw
     const t = w.tags ?? {}, tunnel = t.tunnel && t.tunnel !== "no", v = parseInt(t.maxspeed ?? "", 10);
     return { type: "Feature", geometry: { type: "LineString", coordinates: w.geometry.map((p: any) => [+p.lon.toFixed(6), +p.lat.toFixed(6)]) },
-      properties: { k: SVC(t.service), g: t.railway === "narrow_gauge" ? 1 : 0, t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0 } };
+      properties: { k: t.service === "yard" || t.service === "spur" ? 1 : t.service === "crossover" ? 2 : 0, g: t.railway === "narrow_gauge" ? 1 : 0, t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0 } };
   });
   await writeAtomic(file, JSON.stringify({ type: "FeatureCollection", features }));
   console.log(`[rail] ${features.length} ways written to ${file}`);
