@@ -362,7 +362,7 @@ async function trainPage(num, current) {
       : empty(["busy", "error", "offline"].includes(live?.formationStatus ?? "offline") ? "The formation service is busy or didn't answer: reload in a minute." // the map retries, this page doesn't
         : FORMATION_WHY[live.formationStatus]?.(live) ?? (live.formation ? "Its cars are listed, but without vehicle numbers that tell its trainsets." : "No formation for this train."));
     const k = document.querySelector(".kpi-units");
-    if (k && units.length) (k.querySelector(".value").textContent = units.length), (k.querySelector(".note").textContent = [...new Set(units.map((u) => u.type))].join(", "));
+    if (k) (k.querySelector(".value").textContent = units.length || "–"), (k.querySelector(".note").textContent = [...new Set([...units, ...types].map((u) => u.type))].join(", ") || "not listed today");
   }
 }
 
