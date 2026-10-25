@@ -40,7 +40,7 @@ test("a day survives the trip through its cache: indexes rebuilt, nothing lost",
   const trip = { id: "t1", date: "2026-10-24", route: 0, agency: "11", head: "Bern", num: "700", stops: [0, 100, 100, 1, 200, 200], seq: [1, 2], plat: [0, 1], km: [0, 95.3], hints: "NF" };
   const day: Day = {
     date: "2026-10-24", base: 1, version: "2026-10-24_x.zip_f5", stations: [["Zürich HB", 8.5, 47.4, "8503000", 1], ["Bern", 7.4, 46.9, "8507000", 1]],
-    routes: [["IC1", "IC", "11"]], agencies: { "11": "SBB" }, platforms: ["", "7"], trips: [trip], segments: [0, 1], paths: [[8.5, 47.4, 7.4, 46.9]],
+    routes: [["IC1", "IC", "11"]], agencies: { "11": "SBB" }, platforms: ["", "7"], trips: [trip], segments: [0, 0, 1, 1], paths: [[8.5, 47.4, 7.4, 46.9]],
     tripIndex: new Map([["t1|20261024", 0]]), routeIndex: new Map([["r-ic1", 0]]), stationOfStop: () => undefined, track: () => null, json: new Uint8Array([1, 2, 3]),
   };
   const back = dayFromCache(JSON.parse(JSON.stringify(dayToCache(day, ["r-ic1"], [["8503000:0:7", 0], ["8507000", 1]]))), day.json, null);

@@ -11,6 +11,7 @@ import { importRecentDays } from "./history";
 import { crawlFleet } from "./fleet";
 import { buildSections, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
+import { tileOf } from "./tiles";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
 const LIVE_FROM = process.env.LIVE_FROM;
@@ -139,6 +140,13 @@ const server = Bun.serve({
     "/api/stats/segments": (req) => statsJson(req, stats.segments),
     "/api/stats/records": (req) => statsJson(req, stats.records),
     "/api/stats/network": (req) => statsJson(req, stats.network),
+    // the track network's vector tiles (see server/tiles.ts); empty tiles are 204, as MapLibre expects
+    "/tiles/rail/:z/:x/:y": (req) => {
+      const [z, x, y] = [req.params.z, req.params.x, req.params.y].map(Number);
+      if (![z, x, y].every(Number.isInteger) || z < 0 || z > 15 || x < 0 || y < 0 || x >= 1 << z || y >= 1 << z) return notFound();
+      const t = tileOf(`${DATA_DIR}/rail.mbtiles`, z, x, y);
+      return t ? new Response(t, { headers: { "Content-Type": "application/x-protobuf", "Content-Encoding": "gzip", "Cache-Control": "public, max-age=604800" } }) : new Response(null, { status: 204 });
+    },
     "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { astar, makeGraph, route, routeWith, simplify, snap } from "../server/paths";
+import { astar, makeGraph, route, routeWith, simplify, snap, snapEdge } from "../server/paths";
 
 // square-ish graph: 0 -(east)- 1 -(north)- 2, and a direct diagonal 0 - 3 - 2 that is longer via a detour
 const nodes = [8.5, 47.0, 8.51, 47.0, 8.51, 47.01, 8.49, 47.02];
@@ -16,10 +16,10 @@ test("astar takes the shorter way round", () => {
   expect(astar(g, 0, 99 as any)).toBeNull();
 });
 
-test("route returns station-to-station track, null when unsnappable", () => {
-  const p = route(g, [8.5001, 47.0001], [8.5101, 47.0101]);
-  expect(p![0]).toBeCloseTo(8.5001, 4); // starts at the station itself
-  expect(p!.length / 2).toBeGreaterThanOrEqual(3);
+test("route runs on the track, from beside the first station to beside the second; null when unsnappable", () => {
+  const p = route(g, [8.503, 47.0002], [8.5101, 47.0101])!;
+  expect([p[0], p[1]]).toEqual([8.503, 47]); // on the track, not at the station's point 22 m away
+  expect([p.at(-2), p.at(-1)]).toEqual([8.51, 47.01]); // past the end of the track: its end
   expect(route(g, [8.9, 47], [8.5, 47])).toBeNull();
 });
 
@@ -54,4 +54,81 @@ test("line speeds come out as shares of the path, equal neighbours merged, untag
   expect(r.s.map(([, , v]) => v)).toEqual([160, 80]);
   expect(r.s[0][1]).toBeCloseTo(0.5, 2);
   expect(r.s[1][0]).toBeCloseTo(0.75, 2);
+});
+
+// a straight 1.5 km track due east at latitude 47 (nodes only at its ends, like a station track between two switches)
+const E = (lon: number) => [lon, 47];
+const line = (ns: number[][]) => ns.flat();
+
+test("a point beside a long track snaps onto it, not to its far end node", () => {
+  const gg = makeGraph(line([E(8.5), E(8.52)]), [0, 1]);
+  const [s] = snapEdge(gg, 8.51, 47.0002);
+  expect(s).toMatchObject({ lon: 8.51, lat: 47 });
+  expect(s.d).toBeCloseTo(22, 0);
+});
+
+test("two stops on one track: a two-point path along it", () => {
+  const gg = makeGraph(line([E(8.5), E(8.53)]), [0, 1]);
+  expect(routeWith(gg, [8.505, 47.0001], [8.525, 46.9999])!.p).toEqual([8.505, 47, 8.525, 47]);
+});
+
+test("a stop inside a tunnel: the partial end edge keeps the tunnel and its line speed", () => {
+  // open 0-1, tunnel 1-2 (1.5 km at 160); the train stops in the middle of the tunnel edge
+  const gg = makeGraph(line([E(8.48), E(8.5), E(8.52)]), [0, 1, 1, 2], [], [0, 1], [-1, 0], ["T"], [100, 160]);
+  const r = routeWith(gg, [8.485, 47], [8.51, 47])!;
+  expect(r.t).toEqual([[expect.closeTo(0.6, 2), 1, 1, "T"]]);
+  expect(r.s.at(-1)![2]).toBe(160);
+});
+
+test("platform 7 snaps to the track numbered 7, even when the quay is a little nearer track 8", () => {
+  // tracks 7 and 8, 5 m apart (8 to the north), quay 3.5 m north of 7 = 1.5 m from 8
+  const off = 5 / 111_320;
+  const gg = makeGraph([8.5, 47, 8.52, 47, 8.5, 47 + off, 8.52, 47 + off], [0, 1, 2, 3], [], [], [], [], [], [0, 1], ["7", "8"]);
+  expect(snapEdge(gg, 8.51, 47 + 3.5 / 111_320, "7")[0].lat).toBe(47);
+  expect(snapEdge(gg, 8.51, 47 + 3.5 / 111_320, "12")[0].lat).toBeCloseTo(47 + off, 7); // no track 12: the nearest
+});
+
+test("yards: no shortcut through them, but used when they're the only way; a station point lands on the main track", () => {
+  // main line 0-1-2 with a bend north (longer), yard track 0-2 straight (shorter by ~20 %)
+  const nodes = line([E(8.5), [8.51, 47.006], E(8.52)]);
+  const gg = makeGraph(nodes, [0, 1, 1, 2, 0, 2], [0, 0, 1]);
+  const viaMain = routeWith(gg, [8.5, 47], [8.52, 47])!.p;
+  expect(viaMain.some((x) => x === 47.006)).toBe(true);
+  const yardOnly = makeGraph(nodes, [0, 2], [1]);
+  expect(routeWith(yardOnly, [8.5, 47], [8.52, 47])).not.toBeNull();
+  // a station point 10 m from the yard and 30 m from the main track (in another component-free layout): main wins
+  const off = (m: number) => 47 + m / 111_320;
+  const st = makeGraph([8.5, off(-10), 8.52, off(-10), 8.5, off(30), 8.52, off(30)], [0, 1, 2, 3], [1, 0]);
+  expect(snapEdge(st, 8.51, 47)[0].lat).toBeCloseTo(off(30), 7);
+  expect(snapEdge(st, 8.51, 47, "")[0].lat).toBeCloseTo(off(-10), 7); // a known platform: its own track, siding or not
+});
+
+test("double track: a station point nearer the other track doesn't send the route to the next crossover and back", () => {
+  // two parallel tracks 4.5 m apart, joined by a crossover only 3 km east; a train on the south track stops at a
+  // station whose point is 1 m from the north track
+  const n = (m: number) => 47 + m / 111_320, x = (km: number) => 8.5 + km / 76;
+  const nodes = [x(0), 47, x(2), 47, x(0), n(4.5), x(2), n(4.5), x(5), 47, x(5), n(4.5)];
+  const gg = makeGraph(nodes, [0, 1, 2, 3, 1, 4, 3, 5, 4, 5], [0, 0, 0, 0, 2]);
+  const r = routeWith(gg, [x(0.1), 46.99999], [x(1.5), n(5.5)])!;
+  expect(r).not.toBeNull();
+  expect(Math.max(...r.p.filter((_, i) => i % 2 === 0))).toBeLessThan(x(2)); // never past km 2
+});
+
+test("gauges: a metre-gauge train whose platform lies nearer a standard-gauge track still stays on its own", () => {
+  // standard track (south) and metre-gauge track 10 m north, joined far east by dual-gauge track (as OSM does at Domodossola)
+  const n = (m: number) => 47 + m / 111_320, x = (km: number) => 8.5 + km / 76;
+  const nodes = [x(0), 47, x(30), 47, x(-3), n(10), x(30), n(10), x(0), n(10)];
+  const gg = makeGraph(nodes, [0, 1, 2, 4, 4, 3, 1, 3], [], [], [], [], [], [], [], [0, 1, 1, 0]);
+  const r = routeWith(gg, [x(-2), n(10)], [x(0.5), n(2)], { a: "", b: "" })!; // the platform 2 m from the standard track
+  expect(r.p.at(-1)).toBeCloseTo(n(10), 5); // ends on the metre-gauge track (paths keep 5 decimals)
+  expect(Math.max(...r.p.filter((_, i) => i % 2 === 0))).toBeLessThan(x(1)); // not round by the far junction
+});
+
+test("a platform point nearest a freight spur beside the line still puts the train on the main track", () => {
+  // main track and a parallel spur 6 m north, joined only at the ends; both platforms' points lie 2 m from the spur
+  const n = (m: number) => 47 + m / 111_320, x = (km: number) => 8.5 + km / 76;
+  const nodes = [x(0), 47, x(1), 47, x(2), 47, x(0), n(6), x(1), n(6), x(2), n(6)];
+  const gg = makeGraph(nodes, [0, 1, 1, 2, 3, 4, 4, 5, 0, 3, 2, 5], [0, 0, 1, 1, 1, 1]);
+  const r = routeWith(gg, [x(0.2), n(4)], [x(1.8), n(4)], { a: "1", b: "1" })!;
+  expect(r.p[1]).toBe(47); // starts on the main track
 });

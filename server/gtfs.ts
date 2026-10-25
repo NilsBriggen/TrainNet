@@ -2,7 +2,7 @@
 import { accessSync, constants, mkdirSync, readdirSync, renameSync, rmSync, existsSync } from "node:fs";
 import { upstream } from "./upstream";
 import { addDays, serviceBase, timetableYear } from "./time";
-import { dist, route, segmentPaths, type Graph, type Path } from "./paths";
+import { dist, route, segmentPaths, trackNo, type Graph, type Path } from "./paths";
 
 export const DATA_DIR = process.env.DATA_DIR ?? "data";
 mkdirSync(DATA_DIR, { recursive: true });
@@ -35,7 +35,7 @@ export type Day = {
   agencies: Record<string, string>; // agency_id -> name
   platforms: string[]; // shared table, [0] = ""
   trips: Trip[];
-  segments: number[]; // flat [a, b, ...] unique station pairs
+  segments: number[]; // flat [a, pa, b, pb, ...]: unique legs, station + platform index at each end, (a, pa) before (b, pb)
   paths: (Path | null)[]; // track geometry per segment, null = straight
   tripIndex: Map<string, number>; // `${trip_id}|${YYYYMMDD}` -> index
   routeIndex: Map<string, number>;
@@ -126,7 +126,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f6"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f7"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
@@ -222,7 +222,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
   };
 
   console.log(`[gtfs] ${trips.length} rail trips, streaming stop_times…`);
-  const rows = new Map<number, number[][]>();
+  const rows = new Map<number, number[][]>(), quay = new Map<string, [number, number]>(); // "station:platform" -> where that platform is
   await eachRow(zip, "stop_times.txt", (_, line) => {
     const tripId = line.slice(1, line.indexOf('"', 1)); // cheap check before splitting 40M lines
     const inst = wanted.get(tripId);
@@ -236,9 +236,17 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
       if (!r) rows.set(i, (r = []));
       r.push([+seq, st, secs(arr || dep) + s, secs(dep || arr) + s, stops.get(stopId)!.plat]);
     }
+    const sp = stops.get(stopId)!;
+    if (sp.plat && !quay.has(`${st}:${sp.plat}`)) quay.set(`${st}:${sp.plat}`, [+sp.lon, +sp.lat]);
   });
 
-  const kept: Trip[] = [], tripIndex = new Map<string, number>(), seg = new Set<number>();
+  // legs are platform to platform: a train stands at its own platform, and the track there leads to it
+  const kept: Trip[] = [], tripIndex = new Map<string, number>(), legs = new Map<string, number>(), segments: number[] = [];
+  const legOf = (a: number, pa: number, b: number, pb: number) => {
+    if (b < a || (b === a && pb < pa)) [a, pa, b, pb] = [b, pb, a, pa];
+    const k = `${a}:${pa}|${b}:${pb}`;
+    return legs.get(k) ?? (legs.set(k, segments.push(a, pa, b, pb) / 4 - 1), legs.size - 1);
+  };
   trips.forEach((t, i) => {
     const r = rows.get(i)?.sort((a, b) => a[0] - b[0]);
     if (!r || r.length < 2 || r[r.length - 1][2] < 0) return; // yesterday's trips that ended before today
@@ -249,27 +257,28 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     t.plat = r.map((x) => x[4]);
     r.forEach((x, j) => {
       stations[x[1]][4]++;
-      if (j) seg.add(Math.min(x[1], r[j - 1][1]) * 100000 + Math.max(x[1], r[j - 1][1]));
+      if (j) legOf(r[j - 1][1], r[j - 1][4], x[1], x[4]);
     });
     tripIndex.set(`${t.id}|${ymd(t.date)}`, kept.push(t) - 1);
   });
-  const segments = [...seg].flatMap((k) => [Math.floor(k / 100000), k % 100000]);
   const through = throughRunning(days, running, tripIndex);
   await eachRow(zip, "transfers.txt", through.row);
-  const { paths, structs, speeds } = await segmentPaths(graph, segments, stations.map((s) => ({ uic: s[3], lon: s[1], lat: s[2] })), `${DATA_DIR}/paths.json`);
-  const segKm = new Map<number, number>();
-  paths.forEach((p, k) => {
-    const a = segments[k * 2], b = segments[k * 2 + 1], pts = p ?? [stations[a][1], stations[a][2], stations[b][1], stations[b][2]];
+  // each leg end: its platform's point and number when known (the router puts it on that track), else the station's point
+  const end = (st: number, pl: number) => {
+    const q = pl ? quay.get(`${st}:${pl}`) : undefined, s = stations[st];
+    return q ? { uic: `${s[3]}:${platforms[pl]}`, lon: q[0], lat: q[1], platform: trackNo(platforms[pl]) } : { uic: s[3], lon: s[1], lat: s[2] };
+  };
+  const ends = Array.from({ length: segments.length / 2 }, (_, k) => end(segments[k * 2], segments[k * 2 + 1]));
+  const { paths, structs, speeds } = await segmentPaths(graph, ends.map((_, k) => k), ends, `${DATA_DIR}/paths.json`);
+  const legKm = paths.map((p, k) => {
+    const a = segments[k * 4], b = segments[k * 4 + 2], pts = p ?? [stations[a][1], stations[a][2], stations[b][1], stations[b][2]];
     let m = 0;
     for (let i = 2; i < pts.length; i += 2) m += dist(pts[i - 2], pts[i - 1], pts[i], pts[i + 1]);
-    segKm.set(a * 100000 + b, m / 1000);
+    return m / 1000;
   });
   for (const t of kept) {
     t.km = [0];
-    for (let k = 3; k < t.stops.length; k += 3) {
-      const a = t.stops[k - 3], b = t.stops[k];
-      t.km.push(t.km[t.km.length - 1] + (segKm.get(Math.min(a, b) * 100000 + Math.max(a, b)) ?? 0));
-    }
+    for (let k = 3; k < t.stops.length; k += 3) t.km.push(t.km.at(-1)! + legKm[legOf(t.stops[k - 3], t.plat[k / 3 - 1], t.stops[k], t.plat[k / 3])]); // along its own platforms' track
   }
 
   const hintSets = [""], hintIdx = new Map([["", 0]]);

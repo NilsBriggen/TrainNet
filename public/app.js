@@ -23,7 +23,7 @@ const ICON = {
 };
 
 
-let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = [], paths = [], segIndex = new Map();
+let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = [], paths = [], segIndex = new Map(), stationSeg = new Map();
 const nextTrip = new Map(), prevTrip = new Map(); // through-running: the same train continues under another number
 let pax = {}; // station UIC -> [average daily passengers, year] (SBB stations only)
 const paxPromise = fetch("/api/pax").then((r) => r.json()).catch(() => ({}));
@@ -41,14 +41,20 @@ function expected(i) {
   if (!e) expCache.set(i, (e = applyDelays(day.trips[i][3], live.delays[i]?.u)));
   return e;
 }
-const segKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+// a leg: station + platform index at each end, in the server's order ((a, pa) before (b, pb))
+const first = (a, pa, b, pb) => a < b || (a === b && pa <= pb);
+const segKey = (a, pa, b, pb) => (first(a, pa, b, pb) ? `${a}:${pa}|${b}:${pb}` : `${b}:${pb}|${a}:${pa}`);
+const pairKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
 const straight = (a, b) => unpackPath([Math.round(a[1] * 1e5), Math.round(a[2] * 1e5), Math.round((b[1] - a[1]) * 1e5), Math.round((b[2] - a[2]) * 1e5)]);
 /** Track model of a trip: segments in travel order plus metres at each stop. */
 function tripRoute(i) {
   let r = routeCache.get(i);
   if (!r) {
-    const s = day.trips[i][3], route = [];
-    for (let k = 3; k < s.length; k += 3) route.push({ path: paths[segIndex.get(segKey(s[k - 3], s[k]))], reverse: s[k - 3] > s[k] });
+    const s = day.trips[i][3], pl = (k) => day.trips[i][4]?.[k] ?? 0, route = [];
+    for (let k = 3; k < s.length; k += 3) {
+      const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3);
+      route.push({ path: paths[segIndex.get(segKey(a, pa, b, pb))], reverse: !first(a, pa, b, pb) });
+    }
     routeCache.set(i, (r = { route, cum: cumStops(route) }));
   }
   return r;
@@ -74,9 +80,13 @@ function indexDay() {
     for (let p = 0; p < t[3].length / 3; p++) byStation[t[3][p * 3]].push([i, p]);
   });
   segIndex.clear();
+  const runs = new Map(); // trains per leg, for the busiest leg of each station pair
+  day.trips.forEach((t) => { for (let k = 3; k < t[3].length; k += 3) { const key = segKey(t[3][k - 3], t[4]?.[k / 3 - 1] ?? 0, t[3][k], t[4]?.[k / 3] ?? 0); runs.set(key, (runs.get(key) ?? 0) + 1); } });
+  stationSeg = new Map(); // station pair -> [leg, trains on all its legs]: drawn as "the line" between two stations
   paths = day.paths.map((p, k) => {
-    const a = day.segments[k * 2], b = day.segments[k * 2 + 1];
-    segIndex.set(segKey(a, b), k);
+    const [a, pa, b, pb] = day.segments.slice(k * 4, k * 4 + 4), key = segKey(a, pa, b, pb), n = runs.get(key) ?? 0, pk = pairKey(a, b), cur = stationSeg.get(pk);
+    segIndex.set(key, k);
+    if (!cur || n > cur.n) stationSeg.set(pk, { k, n, total: (cur?.total ?? 0) + n }); else cur.total += n;
     const path = p ? unpackPath(p) : straight(day.stations[a], day.stations[b]), total = path.cum[path.cum.length - 1];
     // tunnels and bridges as metres along the stored path (min → max station)
     path.structs = (day.structs?.[k] ?? []).map(([f0, f1, kind, name]) => ({ d0: f0 * total, d1: f1 * total, kind, name }));
@@ -177,13 +187,10 @@ const train = () => sdf(60, 40, (px, py) => {
 const diamond = () => sdf(32, 32, (px, py) => Math.abs(px) + Math.abs(py) - 8);
 
 function setStatic() {
-  const st = day.stations, count = new Map();
-  for (const t of day.trips) for (let p = 3; p < t[3].length; p += 3) {
-    const k = segKey(t[3][p - 3], t[3][p]);
-    count.set(k, (count.get(k) ?? 0) + 1);
-  }
-  map.getSource("rail").setData(fc(paths.flatMap((p, k) => {
-    const n = count.get(segKey(day.segments[k * 2], day.segments[k * 2 + 1])) ?? 0, w = n >= 150 ? 2 : n >= 40 ? 1 : 0;
+  // one line per station pair, its busiest leg: the platform legs of a pair overlap along the line
+  const st = day.stations, lines = [...stationSeg.values()].map(({ k, total }) => [paths[k], total]);
+  map.getSource("rail").setData(fc(lines.flatMap(([p, n]) => {
+    const w = n >= 150 ? 2 : n >= 40 ? 1 : 0;
     if (!p.structs.length) return [line(p.pts, { w, k: 0 })];
     // cut the path at its tunnels and bridges: open track, tunnel, open track …
     const total = p.cum[p.cum.length - 1], one = [{ path: p, reverse: false }], cum = [0, total], out = [];
@@ -196,7 +203,7 @@ function setStatic() {
     if (at < total) out.push(line(slice(one, cum, at, total), { w, k: 0 }));
     return out.filter((f) => f.geometry.coordinates.length > 1);
   })));
-  map.getSource("speed").setData(fc(paths.flatMap((p) => {
+  map.getSource("speed").setData(fc(lines.flatMap(([p]) => {
     const one = [{ path: p, reverse: false }], cum = [0, p.cum[p.cum.length - 1]];
     return p.speeds.map((x) => line(slice(one, cum, x.d0, x.d1), { v: x.v })).filter((f) => f.geometry.coordinates.length > 1);
   })));
@@ -302,7 +309,10 @@ function positionOf(i, t, dt) {
   const target = cum[p.a] + (p.at ? 0 : motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2]) * (cum[p.b] - cum[p.a]));
   let d = shown.get(i);
   if (d === undefined || Math.abs(d - target) > 5000) d = target; // first frame or a big correction
-  d += (target - d) * (1 - Math.exp(-dt / 1500));
+  // corrections roll in gently, at most 25 m/s faster than the timetable, and never backwards: a newly reported
+  // delay just holds the train until its expected position catches up (big corrections, > 5 km, snap above)
+  const gap = target - d;
+  if (gap > 0) d += Math.min(gap * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
   shown.set(i, d);
   return { p, e, q: atDistance(route, cum, d), dist: d };
 }
@@ -424,6 +434,8 @@ map.on("load", async () => {
   map.addSource("neighbours", { type: "geojson", data: "neighbours.geojson" });
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
+  // the real track network (every OSM track, sidings and yards too) as vector tiles, drawn from z 11 (server/tiles.ts)
+  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}`], minzoom: 10, maxzoom: 15 });
   for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
@@ -438,24 +450,35 @@ map.on("load", async () => {
   map.addLayer({ id: "ch-line", type: "line", source: "ch", paint: { "line-color": "#3a6fd8", "line-width": 1.1, "line-opacity": 0.75 } });
 
   const railWidth = ["interpolate", ["linear"], ["zoom"], 7, ["match", ["get", "w"], 2, 1.3, 1, 0.9, 0.5], 12, ["match", ["get", "w"], 2, 2.6, 1, 1.8, 1.2]];
-  map.addLayer({ id: "rail-glow", type: "line", source: "rail", filter: ["all", ["==", ["get", "w"], 2], ["!=", ["get", "k"], 1]], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": 0.22 } });
+  // up to z 11 the lines between stations (one per station pair, widths by trains); then the OSM tracks take over
+  const fadeOut = (v) => ["interpolate", ["linear"], ["zoom"], 10.5, v, 11.5, 0], fadeIn = (v) => ["interpolate", ["linear"], ["zoom"], 10.5, 0, 11.5, v];
+  const osm = (id, filter, paint, minzoom = 10.5) => map.addLayer({ id, type: "line", source: "osm-rail", "source-layer": "rail", minzoom, filter, paint });
+  map.addLayer({ id: "rail-glow", type: "line", source: "rail", maxzoom: 11.5, filter: ["all", ["==", ["get", "w"], 2], ["!=", ["get", "k"], 1]], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": fadeOut(0.22) } });
   // bridges: a faint light casing under the track; tunnels: thin dashes instead of the line
-  map.addLayer({ id: "rail-bridge", type: "line", source: "rail", minzoom: 9, filter: ["==", ["get", "k"], 2], paint: { "line-color": "#8fb0ff", "line-opacity": 0.3, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 3, 13, 6] } });
-  map.addLayer({ id: "rail-tunnel", type: "line", source: "rail", filter: ["==", ["get", "k"], 1], paint: { "line-color": "#4a74c9", "line-opacity": 0.55, "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 12, 1.6] } });
+  map.addLayer({ id: "rail-bridge", type: "line", source: "rail", minzoom: 9, maxzoom: 11.5, filter: ["==", ["get", "k"], 2], paint: { "line-color": "#8fb0ff", "line-opacity": fadeOut(0.3), "line-width": ["interpolate", ["linear"], ["zoom"], 9, 3, 13, 6] } });
+  osm("osm-bridge", ["==", ["get", "b"], 1], { "line-color": "#8fb0ff", "line-opacity": fadeIn(0.22), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 16, 8] });
+  // the path tunnels stay (transparent from z 11.5): they carry the tunnel names for the hover tip
+  map.addLayer({ id: "rail-tunnel", type: "line", source: "rail", filter: ["==", ["get", "k"], 1], paint: { "line-color": "#4a74c9", "line-opacity": fadeOut(0.55), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 12, 1.6] } });
   map.addLayer({
-    id: "rail", type: "line", source: "rail", filter: ["!=", ["get", "k"], 1],
+    id: "rail", type: "line", source: "rail", maxzoom: 11.5, filter: ["!=", ["get", "k"], 1],
     paint: {
       "line-color": ["match", ["get", "w"], 2, "#4a74c9", 1, "#34579d", "#294a82"],
       "line-width": railWidth,
-      "line-opacity": ["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6],
+      "line-opacity": fadeOut(["match", ["get", "w"], 2, 0.95, 1, 0.85, 0.6]),
     },
   });
+  // sidings, yards, spurs, crossovers (k 1, 2): the shunting tracks, faint, from z 13
+  osm("osm-service", ["all", ["!=", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#2d4f8f", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.75], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.6, 17, 1.6] }, 13);
+  osm("osm-tunnel", ["==", ["get", "t"], 1], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.5), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 16, 2] });
+  osm("osm-main", ["all", ["==", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.9), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1.1, 14, 1.8, 17, 3] });
   // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
   const vis = (k) => (overlays.has(k) ? "visible" : "none");
   // line speed (OSM maxspeed): blue for slow branch lines up to red for the 250 km/h base tunnels
-  map.addLayer({ id: "speed", type: "line", source: "speed", layout: { visibility: vis("speed"), "line-cap": "round" }, paint: {
-    "line-color": ["interpolate", ["linear"], ["get", "v"], 60, "#3b5998", 100, "#5cc8ff", 140, "#2ee6a6", 180, "#ffd23f", 230, "#ff3d5a"],
-    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 12, 4.5], "line-opacity": 0.9 } });
+  const speedColor = ["interpolate", ["linear"], ["get", "v"], 60, "#3b5998", 100, "#5cc8ff", 140, "#2ee6a6", 180, "#ffd23f", 230, "#ff3d5a"];
+  map.addLayer({ id: "speed", type: "line", source: "speed", maxzoom: 11.5, layout: { visibility: vis("speed"), "line-cap": "round" }, paint: {
+    "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 12, 4.5], "line-opacity": fadeOut(0.9) } });
+  map.addLayer({ id: "speed-osm", type: "line", source: "osm-rail", "source-layer": "rail", minzoom: 10.5, filter: ["all", [">", ["get", "v"], 0], ["==", ["get", "k"], 0]],
+    layout: { visibility: vis("speed"), "line-cap": "round" }, paint: { "line-color": speedColor, "line-width": ["interpolate", ["linear"], ["zoom"], 11, 2.5, 16, 5], "line-opacity": fadeIn(0.9) } });
   // traffic: every train a day per section (freight too), width by trains, colour by the freight share
   map.addLayer({ id: "traffic", type: "line", source: "traffic", layout: { visibility: vis("traffic"), "line-cap": "round" }, paint: {
     "line-color": ["interpolate", ["linear"], ["get", "f"], 0, "#5cc8ff", 30, "#c792ff", 70, "#ff7a4d"],
@@ -540,8 +563,8 @@ function hitAt(pt) {
   if (a) return { type: "alert", idx: a.properties.id };
   const tn = map.queryRenderedFeatures(box, { layers: ["rail-tunnel"] }).find((f) => f.properties.name);
   if (tn) return { type: "tunnel", idx: tn.properties };
-  const ov = map.queryRenderedFeatures(box, { layers: ["traffic", "speed", "lost"].filter((k) => overlays.has(k)) })[0];
-  return ov ? { type: "overlay", idx: { layer: ov.layer.id, ...ov.properties } } : null;
+  const ov = map.queryRenderedFeatures(box, { layers: ["traffic", "speed", "speed-osm", "lost"].filter((k) => overlays.has(k.replace("-osm", ""))) })[0];
+  return ov ? { type: "overlay", idx: { layer: ov.layer.id.replace("-osm", ""), ...ov.properties } } : null;
 }
 // re-checked every frame: trains drive away from a still cursor, which fires no mouse events
 function updateTip() {
@@ -607,7 +630,7 @@ async function showLost() {
   lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : null)).catch(() => null); // a failure is asked again next time
   const ix = uicIndex(), feats = [];
   for (const [ua, ub, gain, n] of lost ?? []) {
-    const a = ix.get(ua), b = ix.get(ub), k = a === undefined || b === undefined ? undefined : segIndex.get(segKey(a, b));
+    const a = ix.get(ua), b = ix.get(ub), k = a === undefined || b === undefined ? undefined : stationSeg.get(pairKey(a, b))?.k;
     if (k !== undefined && gain >= 20) feats.push(line(paths[k].pts, { g: gain, n }));
   }
   map.getSource("lost").setData(fc(feats));
@@ -626,7 +649,7 @@ function setOverlay(name, on) {
   b.classList.toggle("off", !on);
   b.setAttribute("aria-pressed", String(on));
   try { localStorage.setItem("trainnet.layers", JSON.stringify([...overlays])); } catch {}
-  if (map.getLayer(name)) map.setLayoutProperty(name, "visibility", on ? "visible" : "none");
+  for (const id of name === "speed" ? ["speed", "speed-osm"] : [name]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
   if (on && day) LOADERS[name]();
 }
 for (const b of $("chips").querySelectorAll("[data-layer]")) {
