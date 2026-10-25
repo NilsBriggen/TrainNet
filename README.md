@@ -10,9 +10,9 @@ Everything comes from open data. There is no tracking, no account and no build s
 
 ## On the map
 
-- **Live positions.** Every train runs between its stops along the actual OpenStreetMap track: through station throats and onto its platform, slower over slow bridges, faster on the open line. Positions come from the timetable plus the live forecast (GTFS-RT, every 15 s).
-- **The whole track network** from zoom 11: main lines, station tracks, yards. Tunnels are dashed, bridges are cased, and tracks under construction show their opening year.
-- **Trains.** Each train has a panel with its stops, platforms, live delay, forecast occupancy and coach formation: sectors, the restaurant, the trainset with a photo of its type. Every category is explained ("GPX: GoldenPass Express").
+- **Live positions.** Every train runs between its stops along the actual OpenStreetMap track: through station throats and onto its platform, slower over slow bridges, faster on the open line, and on the left-hand track of a double-track line, as Swiss trains do. Positions come from the timetable plus the live forecast (GTFS-RT, every 15 s).
+- **The whole track network** from zoom 11: main lines, station tracks, yards. Tunnels are dashed, bridges are cased, and tracks under construction show their opening year. Junctions, crossovers and passing loops are named, and lakes have swisstopo's exact shores.
+- **Trains.** Each train has a panel with its stops, platforms, live delay, forecast occupancy and coach formation: sectors, the restaurant, the trainset with a photo of its type. Every category is explained ("GPX: GoldenPass Express"). It also shows where the train is on SBB's line kilometres ("line 290, km 12.4") and the elevation profile of its whole route.
 - **Disruptions.** Operator alerts are drawn on the affected lines. Trains that are probably standing (their expected delay keeps rising) are flagged.
 - **Near me.** Finds the trains around you, and notices when your location is moving along a line, which usually means you're on that train.
 - **Overlays:**
@@ -25,7 +25,7 @@ Everything comes from open data. There is no tracking, no account and no build s
 - **Punctuality** by day, line, station, train and train type. The history comes from the official actual-time data (Ist-Daten), back to 2018.
 - **Calendar and records:** the calendar of good and bad days, records, and the lines that improved or worsened most.
 - **Commute:** how reliable your commute is.
-- **Network and fleet:** busy hours at stations, and every trainset with its runs. Train types get a photo, a description and where they usually run.
+- **Network and fleet:** busy hours at stations, running time against the timetable per line, and every trainset with its runs. Train types get a photo, a description and where they usually run.
 
 ## How it works
 
@@ -39,8 +39,9 @@ Ist-Daten (daily) ────► server/history.ts ──► stats.db (bun:sqli
 - **Server:** [Bun](https://bun.sh) with `bun:sqlite`, no framework. It keeps the day in memory and routes every platform-to-platform leg once on the OSM graph, then caches it.
   - The router is a turn-aware A\*: trains don't reverse at switches, and they avoid yards.
   - Stops snap onto the track that carries their platform number.
+  - On Swiss double track, running with the other track on your left costs a little more, so each direction takes its own track.
 - **Client:** plain ES modules, [MapLibre GL](https://maplibre.org) for the map and [Observable Plot](https://observablehq.com/plot/) for the charts. Train positions are interpolated every frame along the stored paths.
-- **Track data:** the server rebuilds it weekly, from OpenStreetMap via Overpass plus swisstopo's lake shores. The new graph and tiles are swapped in at midnight together with the next day's timetable, so the drawn tracks and the trains' paths always match.
+- **Track data:** the server rebuilds it weekly, from OpenStreetMap via Overpass, swisstopo's lake shores and its 3D railway lines (heights). The new graph and tiles are swapped in at midnight together with the next day's timetable, so the drawn tracks and the trains' paths always match.
 
 ## Running it
 
@@ -72,9 +73,9 @@ The first start downloads the timetable (~290 MB zip) and parses it in about 30 
 | Source | Used for | Licence |
 |---|---|---|
 | [opentransportdata.swiss](https://opentransportdata.swiss): GTFS, GTFS-RT, service alerts, formations, Ist-Daten, occupancy | Timetable, live delays, disruptions, coaches, history | Open data, attribution required |
-| [SBB open data](https://data.sbb.ch) | Passenger counts, rolling stock register, trains per line section, platform sectors and edges | [SBB open data licence](https://data.sbb.ch/page/licence) |
+| [SBB open data](https://data.sbb.ch) | Passenger counts, rolling stock register, trains per line section, platform sectors and edges, junctions (ATLAS service points), line kilometres | [SBB open data licence](https://data.sbb.ch/page/licence) |
 | [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors | Track network, line speeds, tunnels and bridges | ODbL |
-| [swisstopo](https://www.swisstopo.admin.ch) | Hillshade (swissALTI3D), lake shores (swissTLM3D) | Free geodata, © swisstopo |
+| [swisstopo](https://www.swisstopo.admin.ch) | Hillshade (swissALTI3D), lake shores and track heights (swissTLM3D) | Free geodata, © swisstopo |
 | [Natural Earth](https://www.naturalearthdata.com) | Borders, lakes beyond Switzerland | Public domain |
 | [Wikimedia Commons](https://commons.wikimedia.org) | Train type photos; each photo's author and licence is shown with it and listed in `public/types/photos.json` | CC BY / CC BY-SA |
 
