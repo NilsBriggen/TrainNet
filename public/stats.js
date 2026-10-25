@@ -1,5 +1,6 @@
 // Stats pages: hash-routed, data from /api/stats/*, charts with Observable Plot (global `Plot` + `d3` from the CDN).
 import { lineColor, trainKind } from "./colors.js";
+import { FORMATION_WHY } from "./formation.js";
 
 const main = document.getElementById("page");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -356,7 +357,8 @@ async function trainPage(num, current) {
     const box = current() && document.getElementById("trainsets"), units = live?.units ?? [];
     if (!box) return;
     box.innerHTML = units.length ? unitsHtml(ph, units.map((u) => ({ ...u, km: null })))
-      : empty(live?.formationStatus === "unsupported" ? "Its operator isn't covered by the formation service." : "The formation service doesn't list its vehicles today.");
+      : empty(["busy", "error", "offline"].includes(live?.formationStatus ?? "offline") ? "The formation service is busy or didn't answer: reload in a minute." // the map retries, this page doesn't
+        : FORMATION_WHY[live.formationStatus]?.(live) ?? (live.formation ? "Its vehicles aren't numbered in a way we can read as trainsets." : "No formation for this train."));
     const k = document.querySelector(".kpi-units");
     if (k && units.length) (k.querySelector(".value").textContent = units.length), (k.querySelector(".note").textContent = [...new Set(units.map((u) => u.type))].join(", "));
   }

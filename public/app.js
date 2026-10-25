@@ -1,6 +1,7 @@
 import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
+import { FORMATION_WHY } from "./formation.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -1207,16 +1208,6 @@ function lineHtml(name) {
     <h3>Running now</h3><ol class="stops deps">${rows.join("") || `<li class="empty">None running right now</li>`}</ol>`;
 }
 
-const FORMATION_WHY = {
-  none: () => "Not published for this train (or not yet: asked again in a few hours).",
-  past: () => "Only available for today's trains; this run started yesterday.",
-  unsupported: () => "This operator doesn't publish coach formations.",
-  window: () => "Looked up from an hour before departure until two hours after arrival.",
-  busy: (x) => `Lookups are busy right now (shared request quota). Retrying in ${Math.max(5, x.retryAfter ?? 20)} s…`,
-  budget: () => "Today's formation lookups are used up (daily request quota). They reset at midnight.",
-  error: () => "The formation service didn't answer. Trying again in a couple of minutes.",
-  offline: () => "Couldn't reach the server. Trying again in a minute.",
-};
 
 function stationHtml(si) {
   const [name] = day.stations[si], t = now(), arr = selected.tab === "arr";
