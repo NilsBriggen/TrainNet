@@ -146,12 +146,17 @@ export async function buildRail(out = OUT, ways_ = false) {
   const t0 = Date.now();
   console.log("[rail] fetching OSM rail network…");
   const cached = process.env.RAIL_OSM && (await Bun.file(process.env.RAIL_OSM).exists()) ? Bun.file(process.env.RAIL_OSM) : null;
-  const res = cached ? new Response(cached) : await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    headers: { "User-Agent": "TrainNet/0.1 (live Swiss train map)" },
-    body: QUERY,
-    signal: AbortSignal.timeout(15 * 60_000), // the query itself may take 10 min
-  });
+  let res = cached ? new Response(cached) : null;
+  for (let tries = 1; !res; tries++) { // Overpass answers busy (429/502/503/504) now and then: a minute later it usually works
+    const r = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "User-Agent": "TrainNet/0.1 (live Swiss train map)" },
+      body: QUERY,
+      signal: AbortSignal.timeout(15 * 60_000), // the query itself may take 10 min
+    });
+    if (r.ok || tries >= 4 || ![429, 502, 503, 504].includes(r.status)) res = r;
+    else console.log(`[rail] overpass HTTP ${r.status}, trying again in a minute`), await Bun.sleep(60_000);
+  }
   if (!res.ok) throw new Error(`overpass HTTP ${res.status}`);
   const json = await res.json();
   if (json.remark) throw new Error(`overpass: ${json.remark}`); // a timeout mid-query still answers 200, with part of the ways
