@@ -53,17 +53,13 @@ async function rebuildRail() {
   rebuilding = true;
   try {
     mkdirSync(NEXT, { recursive: true });
-    await run(["bun", new URL("../scripts/rail.ts", import.meta.url).pathname, "--ways", "--out", `${NEXT}/rail.json`]);
+    await run(["bun", new URL("../scripts/rail.ts", import.meta.url).pathname, "--tiles", "--out", `${NEXT}/rail.json`]); // rail.mbtiles comes last
     if (Bun.file(`${NEXT}/rail.json`).size < 0.9 * Bun.file(RAIL).size) throw new Error("the new track graph is under 90 % of the current one: kept the current");
-    rmSync(`${NEXT}/building.mbtiles`, { force: true });
-    await run(["ogr2ogr", "-f", "MBTiles", `${NEXT}/building.mbtiles`, `${NEXT}/rail-ways.geojson`, "-nln", "rail", "-dsco", "MINZOOM=10", "-dsco", "MAXZOOM=15"]);
-    renameSync(`${NEXT}/building.mbtiles`, `${NEXT}/rail.mbtiles`); // last: its presence means the build is complete
     console.log("[rail] rebuilt from OSM, swapped in with the next timetable day");
   } catch (e: any) {
     console.error(`[rail] weekly rebuild: ${e.message}; tried again at the next check`);
-    rmSync(`${NEXT}/rail.json`, { force: true });
+    for (const f of ["rail.json", "rail.mbtiles"]) rmSync(`${NEXT}/${f}`, { force: true });
   } finally {
-    rmSync(`${NEXT}/rail-ways.geojson`, { force: true });
     rebuilding = false;
   }
 }

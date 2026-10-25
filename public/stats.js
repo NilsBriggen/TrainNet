@@ -294,6 +294,8 @@ async function trainPage(num, current) {
   const run = t?.runs[0];
   if (!t || (!run && !t.history.length)) { main.innerHTML = `<div class="empty-page">No train ${esc(num)} today and nothing recorded for it.</div>`; return; }
   document.title = `TrainNet — ${run ? run.line : ""} ${num}`;
+  const ph = await photos;
+  if (!current()) return;
   const unitsDate = t.vehicles[0]?.date, unitsToday = t.vehicles.filter((v) => v.date === unitsDate), unitsOld = unitsDate && unitsDate !== todayZH();
   const stops = run?.stops ?? [], cur = run?.at == null ? null : stops[Math.ceil(run.at)];
   const finished = t.history.filter((h) => h.observed && !h.cancelled), ok = finished.filter((h) => h.final_delay < 180).length;
@@ -314,7 +316,7 @@ async function trainPage(num, current) {
   </div>
   <div class="grid">
     ${card("Today's run", "Delay at each stop (live forecast for the stops ahead)", stops.length ? ch("c-run") : empty("Not running today."), 8)}
-    ${card("Trainsets", unitsOld ? `The physical units on ${esc(unitsDate)}: today's aren't recorded yet` : "The physical units running this train", unitsToday.length ? `<div class="units">${unitsToday.map((u) => `<a class="unit-chip" href="#/vehicle/${u.unit}">${esc(u.type)} <b>${esc(u.unit)}</b><small>${n0(u.km)} km</small></a>`).join("")}</div>` : empty("Not recorded: formations are crawled for long-distance trains once a day."), 4)}
+    ${card("Trainsets", unitsOld ? `The physical units on ${esc(unitsDate)}: today's aren't recorded yet` : "The physical units running this train", unitsToday.length ? photoFigure(ph[unitsToday[0].unit.slice(0, 3)], unitsToday[0].type) + `<div class="units">${unitsToday.map((u) => { const p = ph[u.unit.slice(0, 3)]; return `<a class="unit-chip" href="#/vehicle/${u.unit}">${p ? `<img src="${esc(p.src)}" alt="">` : ""}${esc(u.type)} <b>${esc(u.unit)}</b><small>${n0(u.km)} km</small></a>`; }).join("")}</div>` : empty("Not recorded: formations are crawled for long-distance trains once a day."), 4)}
     ${card("Crowding forecast", "2nd class per section: 1 many seats · 2 few seats · 3 standing", t.crowding.length ? ch("c-crowd") : empty("No forecast for this train."), 6)}
     ${card("Every day", "Final delay per recorded day", t.history.length ? ch("c-days") : empty("History starts with the first finished run."), 6)}
     ${card("Where it usually loses time", "Average arrival delay per stop across recorded days", t.profile.length ? ch("c-prof") : empty("Fills in as runs finish."), 12)}
@@ -355,12 +357,14 @@ async function vehiclePage(unit, current) {
   if (!current()) return;
   if (!v?.spec) { main.innerHTML = `<div class="empty-page">No runs recorded for ${esc(unit)} yet. Trainsets are recorded from the daily crawl of long-distance formations.</div>`; return; }
   document.title = `TrainNet — ${v.spec.type} ${unit}`;
+  const ph = (await photos)[v.spec.class];
+  if (!current()) return;
   const km = d3.sum(v.runs, (r) => r.km), now = v.now;
   const reg = v.register, age = reg?.built ? Math.floor((Date.now() - Date.parse(reg.built)) / (365.25 * 86400_000)) : null;
   main.innerHTML = `
   <div class="page-head"><div><h1><a class="type-link" href="#/type/${esc(v.spec.class)}">${esc(v.spec.type)}</a> <span style="color:var(--muted)">${esc(unit)}</span></h1>
     <p class="sub">${reg?.subtype ? `${esc(reg.subtype)} · ` : `Class ${esc(v.spec.class)} · `}${reg?.built ? `built ${esc(reg.built)} (${age} years) · ` : ""}${v.runs.length} trains today</p></div>
-    <div class="actions">${now ? `<a href="/?train=${encodeURIComponent(now.train)}">Where is it now? →</a>` : ""}</div></div>
+    <div class="actions">${now ? `<a href="/?train=${encodeURIComponent(now.train)}">Where is it now? →</a>` : ""}</div>${photoFigure(ph, v.spec.type)}</div>
   ${now ? `<div class="callout">Running now as ${badge(now.line, now.cat)} <b>${esc(now.train)}</b> ${esc(now.from)} → ${esc(now.to)}, ${mins(now.delay)}.</div>` : ""}
   <div class="kpis">
     ${kpi("Length", `${n0(v.spec.length_m)}<small> m</small>`)}
@@ -657,6 +661,8 @@ async function typesPage(current) {
   </a>`).join("")}</div>`;
 }
 
+/** A type's photo with its credit (licence terms: author, licence, source) */
+const photoFigure = (ph, name) => (ph ? `<figure class="type-photo"><img src="${esc(ph.src)}" alt="${esc(name)}" width="480" height="320"><figcaption>Photo: <a href="${esc(ph.page)}" target="_blank" rel="noopener">${esc(ph.author)}</a> · ${ph.licenceUrl ? `<a href="${esc(ph.licenceUrl)}" target="_blank" rel="noopener">${esc(ph.licence)}</a>` : esc(ph.licence)} · Wikimedia Commons</figcaption></figure>` : "");
 /** "Mostly on IR27 (Basel SBB – Luzern) and IR70 …; also IC1, IR15." from the type's usual lines */
 function usualText(usual) {
   const main = usual.filter((u) => u.pct >= 10).slice(0, 3), rest = usual.filter((u) => !main.includes(u)).slice(0, 4);
@@ -674,7 +680,7 @@ async function typePage(cls, current) {
   main.innerHTML = `
   <div class="page-head"><div><h1>${esc(t.name)} <span style="color:var(--muted)">series ${esc(t.cls)}</span></h1>
     <p class="sub">${t.about ? esc(t.about) : ""}${t.usual?.length ? ` ${usualText(t.usual)}` : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div>
-    ${ph ? `<figure class="type-photo"><img src="${esc(ph.src)}" alt="${esc(t.name)}" width="480" height="320"><figcaption>Photo: <a href="${esc(ph.page)}" target="_blank" rel="noopener">${esc(ph.author)}</a> · ${ph.licenceUrl ? `<a href="${esc(ph.licenceUrl)}" target="_blank" rel="noopener">${esc(ph.licence)}</a>` : esc(ph.licence)} · Wikimedia Commons</figcaption></figure>` : ""}</div>
+    ${photoFigure(ph, t.name)}</div>
   <div class="kpis">
     ${kpi("In service today", n0(running.length), `of ${n0(t.units.length)} units known`)}
     ${kpi("Distance today", `${n0(d3.sum(running, (u) => u.kmToday))}<small> km</small>`, running.length ? `${n0(d3.mean(running, (u) => u.kmToday))} km per unit` : "")}

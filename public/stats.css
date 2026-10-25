@@ -116,3 +116,5 @@ main { max-width: 1320px; margin: 0 auto; padding: 28px 24px 40px; }
 .type-photo figcaption { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 .type-photo figcaption a { color: inherit; }
 .page-head:has(.type-photo) { align-items: center; }
+.unit-chip img { width: 36px; height: 24px; object-fit: cover; border-radius: 4px; margin-left: -4px; }
+.card .type-photo { width: 100%; margin: 4px 0 12px; }

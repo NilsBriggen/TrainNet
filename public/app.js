@@ -450,7 +450,7 @@ map.on("load", async () => {
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
   // the real track network (every OSM track, sidings and yards too) as vector tiles, drawn from z 11 (server/tiles.ts)
   // ?v: browsers keep tiles a day; bump it when the tiles are rebuilt with other properties
-  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=4`], minzoom: 10, maxzoom: 15 });
+  map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=5`], minzoom: 5, maxzoom: 15 });
   for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
@@ -460,13 +460,12 @@ map.on("load", async () => {
   map.addLayer({ id: "nb-line", type: "line", source: "neighbours", paint: { "line-color": "#152a52", "line-width": 0.6, "line-opacity": 0.8 } });
   map.addLayer({ id: "ch-glow", type: "line", source: "ch", paint: { "line-color": "#2a66ff", "line-width": 10, "line-blur": 10, "line-opacity": 0.18 } });
   map.addLayer({ id: "ch-fill", type: "fill", source: "ch", paint: { "fill-color": "#08214f", "fill-opacity": 0.7 } });
-  // the coarse lakes hand over to swisstopo's exact shores in the track tiles (k 4) from z 10; lakes beyond their perimeter stay
-  const coarse = ["interpolate", ["linear"], ["zoom"], 9.9, 1, 10.4, ["case", ["in", ["get", "name"], ["literal", ["Lago di Como", "Lago di Garda", "Lac d' Annecy", "Lago d' Iseo", "Lac du Bourget"]]], 1, 0]];
-  const fine = ["interpolate", ["linear"], ["zoom"], 9.9, 0, 10.4, 1];
-  map.addLayer({ id: "lakes", type: "fill", source: "lakes", paint: { "fill-color": "#02060f", "fill-opacity": coarse } });
-  map.addLayer({ id: "lakes-line", type: "line", source: "lakes", paint: { "line-color": "#17305e", "line-width": 0.6, "line-opacity": coarse } });
-  map.addLayer({ id: "osm-lakes", type: "fill", source: "osm-rail", "source-layer": "rail", filter: ["==", ["get", "k"], 4], paint: { "fill-color": "#02060f", "fill-opacity": fine } });
-  map.addLayer({ id: "osm-lakes-line", type: "line", source: "osm-rail", "source-layer": "rail", filter: ["==", ["get", "k"], 4], paint: { "line-color": "#17305e", "line-width": 0.6, "line-opacity": fine } });
+  // swisstopo's exact shores at every zoom (the tiles' lakes layer); lakes.geojson only for the few beyond its perimeter
+  const beyond = ["in", ["get", "name"], ["literal", ["Lago di Como", "Lago di Garda", "Lac d' Annecy", "Lago d' Iseo", "Lac du Bourget"]]];
+  for (const [id, source, extra] of [["lakes", "lakes", { filter: beyond }], ["tlm-lakes", "osm-rail", { "source-layer": "lakes" }]]) {
+    map.addLayer({ id, type: "fill", source, ...extra, paint: { "fill-color": "#02060f" } });
+    map.addLayer({ id: `${id}-line`, type: "line", source, ...extra, paint: { "line-color": "#17305e", "line-width": 0.6 } });
+  }
   map.addLayer({ id: "ch-line", type: "line", source: "ch", paint: { "line-color": "#3a6fd8", "line-width": 1.1, "line-opacity": 0.75 } });
 
   const railWidth = ["interpolate", ["linear"], ["zoom"], 7, ["match", ["get", "w"], 2, 1.3, 1, 0.9, 0.5], 12, ["match", ["get", "w"], 2, 2.6, 1, 1.8, 1.2]];
@@ -476,7 +475,7 @@ map.on("load", async () => {
   map.addLayer({ id: "rail-glow", type: "line", source: "rail", maxzoom: 11.5, filter: ["all", ["==", ["get", "w"], 2], ["!=", ["get", "k"], 1]], paint: { "line-color": "#2b56b0", "line-width": 4, "line-blur": 3, "line-opacity": fadeOut(0.22) } });
   // bridges: a faint light casing under the track; tunnels: thin dashes instead of the line
   map.addLayer({ id: "rail-bridge", type: "line", source: "rail", minzoom: 9, maxzoom: 11.5, filter: ["==", ["get", "k"], 2], paint: { "line-color": "#8fb0ff", "line-opacity": fadeOut(0.3), "line-width": ["interpolate", ["linear"], ["zoom"], 9, 3, 13, 6] } });
-  const built = ["in", ["get", "k"], ["literal", [0, 1, 2]]]; // k 3: under construction, drawn on its own; 4: lakes
+  const built = ["!=", ["get", "k"], 3]; // k 3: under construction, drawn on its own
   osm("osm-bridge", ["all", built, ["==", ["get", "b"], 1]], { "line-color": "#8fb0ff", "line-opacity": fadeIn(0.22), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 16, 8] });
   // the path tunnels stay (transparent from z 11.5): they carry the tunnel names for the hover tip
   map.addLayer({ id: "rail-tunnel", type: "line", source: "rail", filter: ["==", ["get", "k"], 1], paint: { "line-color": "#4a74c9", "line-opacity": fadeOut(0.55), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 12, 1.6] } });

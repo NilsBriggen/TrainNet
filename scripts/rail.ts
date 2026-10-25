@@ -7,9 +7,9 @@
 // ref: per edge index into refs (railway:track_ref, its number: "7" for "7a"), -1 = none: puts a train on its platform's track.
 // gauge: per edge 0 standard, 1 narrow (metre gauge): a route stays on one, even where OSM joins the networks (dual-gauge track).
 // Street tracks (railway=tram) are in, costly like sidings: Appenzeller Bahnen trains run through St. Gallen on them.
-// With --ways it also writes rail-ways.geojson next to it, the source of the map's track tiles:
-//   ogr2ogr -f MBTiles data/rail.mbtiles data/rail-ways.geojson -dsco MINZOOM=10 -dsco MAXZOOM=15
-import { mkdirSync } from "node:fs";
+// With --tiles it also builds the map's tiles next to it (rail.mbtiles: layer "rail" from z 10, "lakes" from z 5; needs GDAL),
+// with --ways only their track source, rail-ways.geojson.
+import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { dist, trackNo, writeAtomic } from "../server/paths";
 
 const SVC = (service?: string) => (!service ? 0 : service === "crossover" ? 2 : 1);
@@ -61,18 +61,30 @@ export function wayProps(t: any) {
   return { k: building ? 3 : t.service === "yard" || t.service === "spur" ? 1 : t.service === "crossover" ? 2 : 0, g: t.railway === "narrow_gauge" || t.construction === "narrow_gauge" ? 1 : 0,
     t: tunnel ? 1 : 0, b: !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0, v: v > 0 && v <= 300 ? v : 0, ...(building && { o: /^\d{4}/.test(t.opening_date ?? "") ? t.opening_date : "" }) };
 }
-// The lakes for the tiles (k 4): swissTLM3D's lake polygons over 0.2 km², border lakes whole, both halves of its west/east
+// The lakes for the tiles: swissTLM3D's lake polygons over 0.2 km², border lakes whole, both halves of its west/east
 // split joined, simplified to 3 m (© swisstopo). The shore a lakeside line runs along, unlike the coarse lakes.geojson.
 //   ogr2ogr -f GPKG -append -nln w -dim XY -dialect SQLite -sql "SELECT geometry FROM swissTLM3D_TLM_BODENBEDECKUNG_WEST WHERE OBJEKTART = 'Stehende Gewaesser' AND ST_Area(geometry) > 200000" lakes.gpkg /vsizip//vsicurl/<swisstlm3d shp.zip>/TLM_BB/swissTLM3D_TLM_BODENBEDECKUNG_WEST.shp   (and _OST)
-//   ogr2ogr -f GeoJSON -s_srs EPSG:2056 -t_srs EPSG:4326 -lco COORDINATE_PRECISION=5 -explodecollections -dialect SQLite -sql "SELECT ST_Simplify(ST_Union(ST_Buffer(GEOMETRY, 0.01)), 3) AS geometry FROM w" scripts/lakes.geojson lakes.gpkg
+//   ogr2ogr -f GeoJSON -s_srs EPSG:2056 -t_srs EPSG:4326 -lco COORDINATE_PRECISION=5 -explodecollections -dialect SQLite -nln lakes -sql "SELECT ST_Simplify(ST_Union(ST_Buffer(GEOMETRY, 0.01)), 3) AS geometry FROM w" scripts/lakes.geojson lakes.gpkg
 const LAKES = new URL("lakes.geojson", import.meta.url).pathname;
-/** Every way as a GeoJSON line, and the lakes: the input for the track tiles (ogr2ogr -f MBTiles). City trams aren't railway track to draw. */
+/** Every way as a GeoJSON line: the input for the track tiles. City trams aren't railway track to draw. */
 async function writeWays(ways: any[], file: string) {
   const features: any[] = ways.filter((w) => w.tags?.railway !== "tram").map((w) => ({ type: "Feature", properties: wayProps(w.tags ?? {}),
     geometry: { type: "LineString", coordinates: w.geometry.map((p: any) => [+p.lon.toFixed(6), +p.lat.toFixed(6)]) } }));
-  for (const f of (await Bun.file(LAKES).json()).features) features.push({ type: "Feature", properties: { k: 4 }, geometry: f.geometry });
   await writeAtomic(file, JSON.stringify({ type: "FeatureCollection", features }));
   console.log(`[rail] ${features.length} ways written to ${file}`);
+}
+
+/** rail.mbtiles in `dir` from its rail-ways.geojson and the lakes: one ogr2ogr run over a VRT of both, each its own layer. */
+export async function buildTiles(dir: string) {
+  const vrt = `${dir}/tiles.vrt`, part = `${dir}/building.mbtiles`;
+  await Bun.write(vrt, `<OGRVRTDataSource><OGRVRTLayer name="rail"><SrcDataSource>${dir}/rail-ways.geojson</SrcDataSource><SrcLayer>rail-ways</SrcLayer></OGRVRTLayer>`
+    + `<OGRVRTLayer name="lakes"><SrcDataSource>${LAKES}</SrcDataSource><SrcLayer>lakes</SrcLayer></OGRVRTLayer></OGRVRTDataSource>`);
+  rmSync(part, { force: true });
+  const p = Bun.spawn(["ogr2ogr", "-f", "MBTiles", part, vrt, "-dsco", "MINZOOM=5", "-dsco", "MAXZOOM=15", "-dsco", `CONF={"rail":{"minzoom":10}}`], { stdout: "inherit", stderr: "inherit" });
+  if ((await p.exited) !== 0) throw new Error(`ogr2ogr exited with ${p.exitCode}`);
+  renameSync(part, `${dir}/rail.mbtiles`); // last: its presence means the build is complete
+  for (const f of [vrt, `${dir}/rail-ways.geojson`]) rmSync(f, { force: true });
+  console.log(`[rail] tiles written to ${dir}/rail.mbtiles`);
 }
 
 export async function buildRail(out = OUT, ways_ = false) {
@@ -147,5 +159,9 @@ export async function buildRail(out = OUT, ways_ = false) {
   console.log(`[rail] ${ways.length} ways → ${outNodes.length / 2} nodes, ${outEdges.length / 2} edges, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
 
-// bun scripts/rail.ts [--ways] [--out file]   (the server's weekly rebuild writes rail.json.new, then swaps it in)
-if (import.meta.main) await buildRail(process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : OUT, process.argv.includes("--ways"));
+// bun scripts/rail.ts [--ways | --tiles] [--out file]   (the server's weekly rebuild writes data/next/, then swaps it in)
+if (import.meta.main) {
+  const out = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : OUT, tiles = process.argv.includes("--tiles");
+  await buildRail(out, tiles || process.argv.includes("--ways"));
+  if (tiles) await buildTiles(out.slice(0, out.lastIndexOf("/")));
+}
