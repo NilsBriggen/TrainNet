@@ -12,7 +12,7 @@ import { zurichDate } from "./time";
 
 const API = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets";
 const WEEK = 7 * 86400_000;
-const LOADED = "v4"; // bump when a dataset is added, so the next start loads all of them
+const LOADED = "v5"; // bump when a dataset is added, so the next start loads all of them
 
 const exportJson = async (ds: string, select: string, where = "") => {
   const res = await fetch(`${API}/${ds}/exports/json?select=${encodeURIComponent(select)}${where ? `&where=${encodeURIComponent(where)}` : ""}`, { signal: AbortSignal.timeout(120_000) });
@@ -125,7 +125,7 @@ export function importInfra(points: any[], kms: any[], onLine: any[]) {
     const k = db.query("INSERT INTO line_km VALUES (?, ?, ?, ?, ?)");
     for (const r of kms) if (r.geo_point_2d && r.linienr != null) k.run(String(r.linienr), r.km, r.liniename ?? "", r.geo_point_2d.lon, r.geo_point_2d.lat);
     const p = db.query("INSERT INTO line_point VALUES (?, ?, ?, ?, ?)");
-    for (const r of onLine) if (r.bpuic && r.linie != null) p.run(String(r.linie), String(r.bpuic), r.km, r.bezeichnung_bps ?? "", r.linienname ?? "");
+    for (const r of onLine) if (r.bpuic && r.linie != null) p.run(String(r.linie), String(r.bpuic), r.km, r.bezeichnung_offiziell ?? r.bezeichnung_bps ?? "", r.linienname ?? ""); // the official name has its accents
   })();
   return { junctions: points.length, markers: kms.length };
 }
@@ -188,7 +188,7 @@ export async function loadSbbData(now = Date.now()) {
     exportJson("dienststellen-gemass-opentransportdataswiss", "number,designationofficial,operatingpointtechnicaltimetabletype,businessorganisationabbreviationde,geopos",
       `operatingpointtechnicaltimetabletype in ("${KINDS.join('","')}") and validfrom <= "${today}" and validto >= "${today}"`),
     exportJson("linienkilometrierung", "linienr,km,liniename,geo_point_2d"),
-    exportJson("linie-mit-betriebspunkten", "linie,km,bpuic,bezeichnung_bps,linienname"),
+    exportJson("linie-mit-betriebspunkten", "linie,km,bpuic,bezeichnung_bps,bezeichnung_offiziell,linienname"),
   ]);
   const n = importSbb(pax, stock), sectors = importSectors(signs), busy = importBusyHours(hours), secs = importSections(sections), edgeCount = importPlatformEdges(platforms), infra = importInfra(points, kms, onLine);
   db.query("INSERT OR REPLACE INTO sbb_loaded VALUES (?, ?)").run(LOADED, now);
