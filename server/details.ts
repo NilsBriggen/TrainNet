@@ -155,12 +155,15 @@ async function fetchFormation(evu: string, num: string, date: string, background
   return parseFormation(await res.json(), evu);
 }
 
+// the cache holds parsed formations: a parser that reads more (vehicle numbers in parts, RhB's numbering) starts it over
+const PARSED = 2;
+export const formationKey = (evu: string, num: string, date: string) => `${evu}:${num}:${date}:${PARSED}`;
 const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
 export function formationFor(trip: Trip, { fetch = true, background = false, allow = () => true } = {}): Promise<FormationResult> {
   const evu = EVU[trip.agency];
   if (!evu || !trip.num) return Promise.resolve({ status: "unsupported", f: null });
-  const key = `${evu}:${trip.num}:${trip.date}`;
+  const key = formationKey(evu, trip.num, trip.date);
   const row = db.query("SELECT status, t, json FROM formation_cache WHERE key = ?").get(key) as { status: FormationStatus; t: number; json: string | null } | null;
   if (row && !(Date.now() - row.t > (RETRY[row.status] ?? Infinity))) return Promise.resolve({ status: row.status, f: row.json ? JSON.parse(row.json) : null });
   if (trip.date < zurichDate(new Date())) return Promise.resolve({ status: "past", f: null }); // "dates older than today will not return results"

@@ -1,6 +1,6 @@
 // Nightly crawl: the formation of every long-distance train today -> which physical trainset ran which train (vehicle_run).
 import { db } from "./record";
-import { EVU, formationFor, type Unit } from "./details";
+import { EVU, formationFor, formationKey, type Unit } from "./details";
 import type { Day, Trip } from "./gtfs";
 
 const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX|IR|RE|PE)$/;
@@ -37,7 +37,7 @@ async function crawl(d: Day, prev: number) {
   const recorded = new Set((db.query("SELECT DISTINCT train_no FROM vehicle_run WHERE date = ?").all(d.date) as { train_no: string }[]).map((r) => r.train_no));
   const todo = new Map<string, Trip>();
   for (const t of d.trips) {
-    const k = `${EVU[t.agency]}:${t.num}:${t.date}`;
+    const k = formationKey(EVU[t.agency], t.num, t.date);
     if (t.date === d.date && EVU[t.agency] && LONG.test(d.routes[t.route][1]) && !none.has(k) && !handled.has(k) && !recorded.has(t.num) && !todo.has(k)) todo.set(k, t);
   }
   const ins = db.query("INSERT OR REPLACE INTO vehicle_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
