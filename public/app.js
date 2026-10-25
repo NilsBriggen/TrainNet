@@ -946,7 +946,7 @@ function elevationHtml(i) {
   const m = (v) => Math.round(v).toLocaleString("de-CH");
   return `<h3>Elevation <small>↑ ${m(up)} m · ↓ ${m(down)} m · ${m(lo)}–${m(hi)} m</small></h3>
     <svg class="elev" viewBox="0 0 ${EW} ${EH}" role="img" aria-label="Elevation along the route, from ${m(lo)} to ${m(hi)} m" data-lo="${lo}" data-span="${span}" data-km="${kmMax}">
-      <path class="area" d="${area}"/><path class="line" d="${line}"/><g class="ticks">${ticks}</g><circle data-live="elev" r="3.5" cx="-10" cy="-10"/></svg>`;
+      <path class="area" d="${area}"/><path class="line" d="${line}"/><g class="ticks">${ticks}</g><circle data-live="elev" r="3.5" style="display:none"/></svg>`;
 }
 
 function open(type, idx, fly = false, push = true) {
@@ -1094,8 +1094,8 @@ function patchPanel() {
   if (dot && pr) {
     const km = x.p ? pr.stops[x.p.a] + (pr.stops[x.p.b] - pr.stops[x.p.a]) * (x.p.at ? 0 : x.p.f) : null, svg = dot.ownerSVGElement;
     const near = km == null ? null : pr.pts.reduce((b, p) => (p && (!b || Math.abs(p[0] - km) < Math.abs(b[0] - km)) ? p : b), null);
-    dot.setAttribute("cx", near ? ((km / +svg.dataset.km) * EW).toFixed(1) : -10);
-    dot.setAttribute("cy", near ? (EH - 6 - ((near[1] - +svg.dataset.lo) / +svg.dataset.span) * (EH - 14)).toFixed(1) : -10);
+    dot.style.display = near ? "" : "none"; // not running: no dot
+    if (near) dot.setAttribute("cx", ((km / +svg.dataset.km) * EW).toFixed(1)), dot.setAttribute("cy", (EH - 6 - ((near[1] - +svg.dataset.lo) / +svg.dataset.span) * (EH - 14)).toFixed(1));
   }
   if (!stem) return;
   stem.style.setProperty("--p", x.prog.toFixed(4));

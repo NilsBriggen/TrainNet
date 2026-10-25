@@ -201,7 +201,9 @@ export async function loadSbbData(now = Date.now()) {
 
 /** Register type names per series ("RABe 533" for 533), for series our own list doesn't name. Call after loading. */
 export function useRegisterNames() {
-  const rows = db.query("SELECT cls, subtype, count(*) n FROM rolling_stock WHERE subtype IS NOT NULL GROUP BY cls, subtype ORDER BY n").all() as { cls: string; subtype: string }[];
+  // a series with one or two vehicles in the register is a museum piece or a stray (series 002 is one historic steam
+  // engine, "C 5/6"), not what the RhB coaches numbered like it are: those keep "Class 002"
+  const rows = db.query("SELECT cls, subtype, count(*) n FROM rolling_stock WHERE subtype IS NOT NULL GROUP BY cls, subtype HAVING n >= 3 ORDER BY n").all() as { cls: string; subtype: string }[];
   // the most common subtype wins; trailing variant words ("IR200", "Evo41") are dropped: "RABe 502 IR200" -> "RABe 502"
   setRegisterNames(new Map(rows.map((r) => [r.cls, r.subtype.split(" ").slice(0, 2).join(" ")])));
 }
