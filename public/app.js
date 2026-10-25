@@ -27,7 +27,7 @@ let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = 
 const nextTrip = new Map(), prevTrip = new Map(); // through-running: the same train continues under another number
 let pax = {}; // station UIC -> [average daily passengers, year] (SBB stations only)
 const paxPromise = fetch("/api/pax").then((r) => r.json()).catch(() => ({}));
-const expCache = new Map(), routeCache = new Map(), shown = new Map(); // trip -> expected times / track model / eased distance
+const expCache = new Map(), routeCache = new Map(), shown = new Map(), shownTarget = new Map(); // trip -> expected times / track model / eased distance
 let selected = null; // { type: "train" | "station" | "alert" | "issues", idx, tab? }
 let incidentTrains = new Map(), rippleAlerts = []; // trip -> its sudden alert; where sudden things happened
 let follow = false, zen = false, lastFocus = null;
@@ -93,7 +93,7 @@ function indexDay() {
     path.speeds = (day.speeds?.[k] ?? []).map(([f0, f1, v]) => ({ d0: f0 * total, d1: f1 * total, v }));
     return path;
   });
-  for (const m of [expCache, routeCache, shown, details, fetching, nextTrip, prevTrip]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, shownTarget, details, fetching, nextTrip, prevTrip]) m.clear(); // trip indexes changed
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
@@ -308,11 +308,14 @@ function positionOf(i, t, dt) {
   const { route, cum } = tripRoute(i);
   const target = cum[p.a] + (p.at ? 0 : motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2]) * (cum[p.b] - cum[p.a]));
   let d = shown.get(i);
+  const last = shownTarget.get(i) ?? target;
+  shownTarget.set(i, target);
   if (d === undefined || Math.abs(d - target) > 5000) d = target; // first frame or a big correction
-  // corrections roll in gently, at most 25 m/s faster than the timetable, and never backwards: a newly reported
-  // delay just holds the train until its expected position catches up (big corrections, > 5 km, snap above)
-  const gap = target - d;
-  if (gap > 0) d += Math.min(gap * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
+  else if (d < target) { // ahead of its expected position (a new delay), it just waits there: never rolls back
+    // its own motion since the last frame, plus a gentle catch-up of at most 25 m/s when it's behind
+    d = Math.min(target, d + Math.max(0, target - last));
+    d += Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
+  }
   shown.set(i, d);
   return { p, e, q: atDistance(route, cum, d), dist: d };
 }
@@ -468,7 +471,7 @@ map.on("load", async () => {
     },
   });
   // sidings, yards, spurs, crossovers (k 1, 2): the shunting tracks, faint, from z 13
-  osm("osm-service", ["all", ["!=", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#2d4f8f", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.75], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.6, 17, 1.6] }, 13);
+  osm("osm-service", ["all", ["!=", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#2a4677", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 13.8, 0.4, 16, 0.6], "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.5, 17, 1.4] }, 13); // a yard of 40 tracks stays a texture, not a blue block
   osm("osm-tunnel", ["==", ["get", "t"], 1], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.5), "line-dasharray": [1.5, 1.5], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1, 16, 2] });
   osm("osm-main", ["all", ["==", ["get", "k"], 0], ["!=", ["get", "t"], 1]], { "line-color": "#4a74c9", "line-opacity": fadeIn(0.9), "line-width": ["interpolate", ["linear"], ["zoom"], 11, 1.1, 14, 1.8, 17, 3] });
   // where trains lose time (30 days of recorded runs): yellow from 20 s a run, red from 2 min
