@@ -126,7 +126,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f7"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f8"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };

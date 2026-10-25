@@ -1,5 +1,6 @@
 // Read-only report on the routed track paths (data/paths.json, written by the server): legs drawn as straight lines and why,
-// and paths that run a large share on sidings, yards or spurs (a platform track mapped as a siding, or a real detour).
+// paths that run a large share on sidings, yards or spurs (a platform track mapped as a siding, or a real detour), and
+// legs that turn back mid-way at a switch, which a train can't do: where OSM lacks the real connection.
 //   bun scripts/railcheck.ts [data dir]
 const dir = process.argv[2] ?? process.env.DATA_DIR ?? "data";
 const cache = await Bun.file(`${dir}/paths.json`).json(), day = await Bun.file(`${dir}/day.json`).json().catch(() => null);
@@ -17,3 +18,5 @@ for (const [k, why] of fails.filter(([k]) => inCH(k))) (byWhy.get(why.replace(/[
 for (const [why, ks] of byWhy) console.log(`\n${ks.length}× ${why}\n  ${ks.slice(0, 40).join("\n  ")}`);
 const yards = segs.filter(([, v]) => v && v[3] > 0.1).sort((a, b) => b[1]![3] - a[1]![3]);
 console.log(`\n${yards.length} paths with over 10 % on sidings/yards/spurs:\n  ${yards.slice(0, 40).map(([k, v]) => `${Math.round(v![3] * 100)} %  ${label(k)}`).join("\n  ")}`);
+const backs = segs.filter(([k, v]) => v && v[4] > 0 && inCH(k));
+console.log(`\n${backs.length} legs that turn back mid-way (OSM lacks the real connection, or a switch is kinked):\n  ${backs.slice(0, 60).map(([k]) => label(k)).join("\n  ")}`);

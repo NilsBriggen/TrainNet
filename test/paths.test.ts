@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { astar, makeGraph, route, routeWith, simplify, snap, snapEdge } from "../server/paths";
+import { astar, makeGraph, route, routeTry, routeWith, simplify, snap, snapEdge } from "../server/paths";
 
-// square-ish graph: 0 -(east)- 1 -(north)- 2, and a direct diagonal 0 - 3 - 2 that is longer via a detour
-const nodes = [8.5, 47.0, 8.51, 47.0, 8.51, 47.01, 8.49, 47.02];
+// 0 -(east)- 1 -(curving north-east)- 2, and a longer way round 0 - 3 - 2 (bends no sharper than real track at a node)
+const nodes = [8.5, 47.0, 8.51, 47.0, 8.52, 47.004, 8.51, 47.006];
 const edges = [0, 1, 1, 2, 0, 3, 3, 2];
 const g = makeGraph(nodes, edges);
 
@@ -11,15 +11,15 @@ test("snap finds nearest node within range, -1 beyond", () => {
   expect(snap(g, 8.6, 47.0)).toBe(-1);
 });
 
-test("astar takes the shorter way round", () => {
+test("astar takes the shorter way round", () => { // plain A*, no turn rules
   expect(astar(g, 0, 2)).toEqual([0, 1, 2]);
   expect(astar(g, 0, 99 as any)).toBeNull();
 });
 
 test("route runs on the track, from beside the first station to beside the second; null when unsnappable", () => {
-  const p = route(g, [8.503, 47.0002], [8.5101, 47.0101])!;
+  const p = route(g, [8.503, 47.0002], [8.5201, 47.0041])!;
   expect([p[0], p[1]]).toEqual([8.503, 47]); // on the track, not at the station's point 22 m away
-  expect([p.at(-2), p.at(-1)]).toEqual([8.51, 47.01]); // past the end of the track: its end
+  expect([p.at(-2), p.at(-1)]).toEqual([8.52, 47.004]); // past the end of the track: its end
   expect(route(g, [8.9, 47], [8.5, 47])).toBeNull();
 });
 
@@ -89,11 +89,11 @@ test("platform 7 snaps to the track numbered 7, even when the quay is a little n
 });
 
 test("yards: no shortcut through them, but used when they're the only way; a station point lands on the main track", () => {
-  // main line 0-1-2 with a bend north (longer), yard track 0-2 straight (shorter by ~20 %)
-  const nodes = line([E(8.5), [8.51, 47.006], E(8.52)]);
+  // main line 0-1-2 with a bend north (longer), yard track 0-2 straight (shorter)
+  const nodes = line([E(8.5), [8.51, 47.002], E(8.52)]);
   const gg = makeGraph(nodes, [0, 1, 1, 2, 0, 2], [0, 0, 1]);
   const viaMain = routeWith(gg, [8.5, 47], [8.52, 47])!.p;
-  expect(viaMain.some((x) => x === 47.006)).toBe(true);
+  expect(viaMain.some((x) => x === 47.002)).toBe(true);
   const yardOnly = makeGraph(nodes, [0, 2], [1]);
   expect(routeWith(yardOnly, [8.5, 47], [8.52, 47])).not.toBeNull();
   // a station point 10 m from the yard and 30 m from the main track (in another component-free layout): main wins
@@ -131,4 +131,31 @@ test("a platform point nearest a freight spur beside the line still puts the tra
   const gg = makeGraph(nodes, [0, 1, 1, 2, 3, 4, 4, 5, 0, 3, 2, 5], [0, 0, 1, 1, 1, 1]);
   const r = routeWith(gg, [x(0.2), n(4)], [x(1.8), n(4)], { a: "1", b: "1" })!;
   expect(r.p[1]).toBe(47); // starts on the main track
+});
+
+test("a stop beside the middle of a long straight (nodes only 10 km apart) still snaps onto it", () => {
+  const gg = makeGraph([8.4, 47, 8.53, 47], [0, 1]); // ~10 km due east, one edge
+  const [s] = snapEdge(gg, 8.465, 47.0001);
+  expect(s).toMatchObject({ lon: 8.465, lat: 47 });
+  expect(s.d).toBeCloseTo(11, 0);
+});
+
+test("no turning back at a switch: a proper way in wins even when longer; with no other way it turns back, and says so", () => {
+  // switch S: trunk west, two branches east (north-east, south-east). From one branch to the other through S is a turn back.
+  const x = (m: number) => 8.5 + m / 76_000, y = (m: number) => 47 + m / 111_320;
+  const nodes = [x(0), y(0), x(-1000), y(0), x(1000), y(50), x(1000), y(-50)];
+  const only = routeTry(makeGraph(nodes, [0, 1, 0, 2, 0, 3]), [x(800), y(40)], [x(800), y(-40)], { a: "", b: "" }) as any;
+  expect(only.back).toBe(1); // nothing else in the data: it turns back (railcheck lists it) rather than vanish into a detour
+  // a return loop joins the two branch ends further east (a semicircle, 22.5° a node): longer, still cheaper than turning back
+  const loop = [...nodes], edges = [0, 1, 0, 2, 0, 3];
+  let prev = 2;
+  for (let k = 0; k <= 8; k++) {
+    const th = Math.PI / 2 - (k * Math.PI) / 8, id = loop.push(x(2000 + 50 * Math.cos(th)), y(50 * Math.sin(th))) / 2 - 1;
+    edges.push(prev, id);
+    prev = id;
+  }
+  edges.push(prev, 3);
+  const r = routeTry(makeGraph(loop, edges), [x(800), y(40)], [x(800), y(-40)], { a: "", b: "" }) as any;
+  expect(r.back).toBe(0);
+  expect(Math.max(...r.p.filter((_: number, i: number) => i % 2 === 0))).toBeCloseTo(x(2050), 4);
 });

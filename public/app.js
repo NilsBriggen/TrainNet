@@ -309,8 +309,11 @@ function alongRoute(i, e, p) {
   const { route, cum } = tripRoute(i);
   return cum[p.a] + (p.at ? 0 : distanceAt(route[p.a].tt, motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2])));
 }
+const ARRIVED = 60; // s a train stays at its last stop: seen to arrive, and a drawn position that lagged behind gets there
 function positionOf(i, t, dt) {
-  const e = expected(i), p = locate(e.stops, t);
+  const e = expected(i), end = e.stops.length / 3 - 1, arr = e.stops[end * 3 + 1];
+  let p = locate(e.stops, t), done = false;
+  if (!p && t > arr && t - arr < ARRIVED) (p = { a: end, b: end, f: 0, at: true }), (done = true);
   if (!p) return null;
   const { route, cum } = tripRoute(i);
   const target = alongRoute(i, e, p);
@@ -325,7 +328,7 @@ function positionOf(i, t, dt) {
     d += Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
   }
   shown.set(i, d);
-  return { p, e, q: atDistance(route, cum, d), dist: d };
+  return { p, e, q: atDistance(route, cum, d), dist: d, done };
 }
 
 const CHIP_DELAYS = () => !hidden.has("delays");
@@ -341,11 +344,11 @@ function trainFeatures(dt, ts, withTrails) {
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
     const r = positionOf(i, t, dt);
     if (!r) continue;
-    const { p, e, q, dist } = r;
+    const { p, e, q, dist, done } = r;
     const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && (selected.type === "line" ? selected.routes.has(day.trips[i][0]) : selected.idx === i);
     const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
-    if (!cancelled) { running++; perCat[style.cat] = (perCat[style.cat] ?? 0) + 1; }
-    if (!cancelled && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
+    if (!cancelled && !done) { running++; perCat[style.cat] = (perCat[style.cat] ?? 0) + 1; } // arrived ones aren't running
+    if (!cancelled && !done && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
     const o = (cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1) * (!sel && inTunnel(i, dist) ? 0.45 : 1), showDelay = CHIP_DELAYS() && !cancelled; // underground: dimmed
     if (flagged) alarms.push(point([q.lon, q.lat], {}));
     feats.push(point([q.lon, q.lat], {
