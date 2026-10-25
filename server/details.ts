@@ -46,8 +46,7 @@ export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: st
   "486": { name: "Re 486", wiki: "Bombardier_TRAXX", about: "Bombardier TRAXX multi-system locomotive, mostly freight." },
   "560": { name: "NPZ / Domino", wiki: "SBB_RBDe_560", about: "Regional multiple unit from the 1980s, many rebuilt as 'Domino' with a low-floor middle car." },
   // foreign units on Swiss trains (German ICEs to Basel and Zürich, DB locomotives on the Stuttgart line, TGV Lyria)
-  "812": { name: "ICE 4", wiki: "ICE_4", about: "The middle cars of Deutsche Bahn's ICE 4 trainsets." },
-  "116": { name: "ÖBB Taurus", wiki: "Siemens_ES64U2", about: "Siemens Taurus locomotive of the Austrian railways (Rh 1116), hauling the Railjet trains to Vienna." },
+  "A116": { name: "ÖBB Taurus", wiki: "Siemens_ES64U2", about: "Siemens Taurus locomotive of the Austrian railways (Rh 1116), hauling the Railjet trains to Vienna." },
   // Rhaetian Railway (RhB): its own numbering, see rhbUnitOf
   "ABe416": { name: "Capricorn", wiki: "RhB_ABe_4/16_3111–3166", about: "Stadler's four-car metre-gauge multiple unit of the Rhaetian Railway, on RegioExpress and S-Bahn services around Chur and Landquart." },
   "ABe416A": { name: "Allegra ABe 4/16", wiki: "RhB_ABe_8/12", about: "Two-car version of the Allegra, for the Chur–Arosa line." },
@@ -55,10 +54,10 @@ export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: st
   "Ge443": { name: "Ge 4/4 III", wiki: "RhB_Ge_4/4_III", about: "The Rhaetian Railway's standard electric locomotive since the 1990s, often in advertising liveries; it hauls the Glacier Express and the Albula line trains." },
   "Ge442": { name: "Ge 4/4 II", wiki: "RhB_Ge_4/4_II", about: "Rhaetian Railway electric locomotive from the 1970s and 80s, for passenger and freight trains." },
   "Ge662": { name: "Ge 6/6 II", wiki: "RhB_Ge_6/6_II", about: "The Rhaetian Railway's heavy six-axle locomotive, mostly for freight." },
-  "412": { name: "ICE 4", wiki: "ICE_4", about: "Deutsche Bahn's newest ICE, on services from Germany into Switzerland." },
-  "406": { name: "ICE 3", wiki: "ICE_3", about: "Deutsche Bahn's multi-system high-speed train." },
-  "147": { name: "DB 147", wiki: "DB_Class_147", about: "Deutsche Bahn TRAXX locomotive, hauling the Stuttgart–Zürich intercity." },
-  "310": { name: "TGV Euroduplex", wiki: "TGV_2N2", about: "SNCF's double-deck TGV, run by TGV Lyria between Paris and Geneva, Lausanne, Basel and Zürich." },
+  "D412": { name: "ICE 4", wiki: "ICE_4", about: "Deutsche Bahn's newest ICE, on services from Germany into Switzerland." },
+  "D406": { name: "ICE 3", wiki: "ICE_3", about: "Deutsche Bahn's multi-system high-speed train." },
+  "D147": { name: "DB 147", wiki: "DB_Class_147", about: "Deutsche Bahn TRAXX locomotive, hauling the Stuttgart–Zürich intercity." },
+  "F310": { name: "TGV Euroduplex", wiki: "TGV_2N2", about: "SNCF's double-deck TGV, run by TGV Lyria between Paris and Geneva, Lausanne, Basel and Zürich. Each set has a power car at either end, the units listed here." },
 };
 export const wikiOf = (cls: string) => (TYPE_INFO[cls]?.wiki ? WIKI + TYPE_INFO[cls].wiki : null);
 let registerNames = new Map<string, string>(); // series -> type name from the rolling stock register, for series not listed above
@@ -82,12 +81,20 @@ export function rhbUnitOf(evn: string): { id: string; cls: string; type: string 
   return null;
 }
 
+// Foreign vehicles (country code after the type digits: 80 Germany, 81 Austria, 87 France) count as units only where we
+// know the series as a trainset or locomotive: the same three digits mean something else in each country (a TGV's coaches,
+// 93 87 3 147 …, aren't Deutsche Bahn's class 147 locomotive)
+const FOREIGN: Record<string, string> = { "80:147": "D147", "80:412": "D412", "80:812": "D412", "80:406": "D406", "87:310": "F310", "81:116": "A116" };
+// sets that number every car, its position first: the set is the last two digits (ICE 4 412 061 … 812 061 … 412 861 is
+// set 61, SBB's ETR 610 cars 610 104 … 704 are set 04)
+const BY_SET = new Set(["D412", "D406", "610"]);
 /** Trainset or locomotive behind an EVN, e.g. "94 85 2 502 229-9" -> 502-229. Plain coaches (50/61/73 …) aren't units. */
 export function unitOf(evn: string): { id: string; cls: string; type: string } | null {
   const d = evn.replace(/\D/g, "");
   if (d.length < 11 || d[0] !== "9") return null;
-  const cls = d.slice(5, 8);
-  return { id: `${cls}-${d.slice(8, 11)}`, cls, type: typeName(cls) };
+  const cc = d.slice(2, 4), series = d.slice(5, 8), cls = cc === "85" ? series : FOREIGN[`${cc}:${series}`];
+  if (!cls) return null;
+  return { id: `${cls}-${BY_SET.has(cls) ? d.slice(9, 11) : d.slice(8, 11)}`, cls, type: typeName(cls) };
 }
 
 export type Coach = {
@@ -156,7 +163,7 @@ async function fetchFormation(evu: string, num: string, date: string, background
 }
 
 // the cache holds parsed formations: a parser that reads more (vehicle numbers in parts, RhB's numbering) starts it over
-const PARSED = 2;
+const PARSED = 3; // 2: numbers in parts, RhB; 3: country codes, sets numbered car by car
 export const formationKey = (evu: string, num: string, date: string) => `${evu}:${num}:${date}:${PARSED}`;
 const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */

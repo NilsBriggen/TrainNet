@@ -91,3 +91,14 @@ test("vehicle numbers in parts (TPF) and RhB's own numbering: locomotives and un
   expect(rhbUnitOf("808500006420")).toMatchObject({ id: "Ge443-642", cls: "Ge443" });
   expect(rhbUnitOf("918500578045")).toBeNull(); // an Albula coach
 });
+
+test("the country decides a series: a TGV's coaches aren't DB 147s; ICE 4 and ETR 610 cars group into their set", async () => {
+  const { unitOf } = await import("../server/details");
+  expect(unitOf("93 87 0 310 040-5")?.id).toBe("F310-040"); // TGV Euroduplex power car
+  expect(unitOf("93 87 3 147 208-1")).toBeNull(); // its coach
+  expect(unitOf("91 80 6 147 572-1")?.id).toBe("D147-572"); // DB's 147
+  expect(unitOf("93 80 2 412 861-0")?.id).toBe("D412-61");
+  expect(unitOf("93 80 5 812 061-3")?.id).toBe("D412-61"); // a middle car of the same ICE 4
+  expect(unitOf("93 85 5 610 104-4")?.id).toBe("610-04");
+  expect(unitOf("93 85 1 501 231-9")?.id).toBe("501-231"); // Swiss: unchanged
+});

@@ -16,8 +16,12 @@ const catOfRow = (cat: string, agency: string) =>
 // recorded with, which may be "Class 147" from before the series was listed
 const clsOf = (unit: string) => unit.slice(0, unit.lastIndexOf("-"));
 const named = <T extends { unit: string }>(r: T) => ({ ...r, type: typeName(clsOf(r.unit)) });
-// RhB coaches (91 85 0 0xx …) were read as units until RhB's numbering was understood (2026-10-25); they age out of vehicle_run
-const misread = (cls: string) => /^0\d\d$/.test(cls);
+// recorded before the parser knew RhB's numbering, the country in a vehicle number and sets numbered car by car
+// (2026-10-25): RhB coaches (0xx), foreign series without their country (147 also caught a TGV's coaches), ETR 610 cars
+// one by one. Left out everywhere; they age out of vehicle_run.
+const STALE_CLS = /^(0\d\d|147|412|812|406|310|116)$/;
+const stale = (unit: string) => STALE_CLS.test(clsOf(unit)) || /^610-\d{3}$/.test(unit);
+const FRESH = `unit NOT GLOB '0[0-9][0-9]-*' AND substr(unit, 1, 4) NOT IN ('147-', '412-', '812-', '406-', '310-', '116-') AND unit NOT GLOB '610-[0-9][0-9][0-9]'`;
 export const category = (d: Day, route: number) => catOfRow(d.routes[route][1], d.routes[route][2]);
 
 const zfmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Zurich", hour: "numeric", hourCycle: "h23", weekday: "short" });
@@ -333,7 +337,7 @@ export function train(d: Day, num: string) {
       older: all(`SELECT date, line, trips, punctual, observed, cancelled, avg_delay FROM agg_train_day WHERE train_no = ? AND date NOT IN (SELECT date FROM trip_day WHERE train_no = ?1) ORDER BY date`, num),
       profile: all(`SELECT idx, uic, count(arr_delay) n, avg(arr_delay) arr, avg(dep_delay) dep, sum(arr_delay >= 180) late FROM stop_obs WHERE train_no = ? GROUP BY idx, uic ORDER BY idx`, num)
         .map((r) => ({ ...r, name: station(d, r.uic)?.name ?? r.uic })),
-      vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num).filter((r) => !misread(clsOf(r.unit))).map(named),
+      vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num).filter((r) => !stale(r.unit)).map(named),
       since: since(all(`SELECT month, sum(punctual) ok, sum(observed) n FROM hist_train_month WHERE train_no = ? GROUP BY month ORDER BY month`, num)),
     };
   });
@@ -371,7 +375,7 @@ export function vehicle(d: Day, unit: string) {
 export function fleet(d: Day) {
   return cached(`fleet:${d.version}`, 60, () => {
     const t = Date.now() / 1000, keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((x, i) => [x.id, keys[i]]));
-    const runs = all(`SELECT * FROM vehicle_run WHERE date = ?`, d.date).filter((r) => !misread(r.class)).map(named);
+    const runs = all(`SELECT * FROM vehicle_run WHERE date = ?`, d.date).filter((r) => !stale(r.unit)).map(named);
     const units = new Map<string, { unit: string; type: string; runs: number; km: number }>();
     const trains = new Map<string, { train: string; line: string; length: number; seats: number; units: string[] }>();
     const mix = new Map<string, Map<string, number>>();
@@ -390,7 +394,7 @@ export function fleet(d: Day) {
     for (const u of units.values()) { const x = byType.get(u.type) ?? { type: u.type, cls: u.unit.split("-")[0], units: 0, km: 0 }; x.units++; x.km += u.km; byType.set(u.type, x); }
     // build year of every unit in service today that SBB's register lists
     const built = all(`SELECT DISTINCT v.unit, v.type, r.built FROM vehicle_run v JOIN rolling_stock r ON r.unit = v.unit WHERE v.date = ? AND r.built IS NOT NULL`, d.date)
-      .map((r) => ({ unit: r.unit, type: typeName(clsOf(r.unit)), year: +r.built.slice(0, 4), built: r.built }));
+      .filter((r) => !stale(r.unit)).map((r) => ({ unit: r.unit, type: typeName(clsOf(r.unit)), year: +r.built.slice(0, 4), built: r.built }));
     const tr = [...trains.values()];
     return {
       crawled: runs.length, units: units.size,
@@ -433,16 +437,16 @@ export function types(d: Day) {
     const get = (cls: string) => by.get(cls) ?? by.set(cls, { cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null, registered: 0, seen: 0, today: 0, kmToday: 0, kmTotal: 0, lines: new Map(), built: null, seats: null, length: null }).get(cls);
     for (const r of all(`SELECT cls, count(*) n, min(built) first, max(built) last, avg(seats1 + seats2) seats, avg(length_m) len FROM rolling_stock GROUP BY cls`))
       Object.assign(get(r.cls), { registered: r.n, built: r.first ? [r.first.slice(0, 4), r.last.slice(0, 4)] : null, seats: r.seats && Math.round(r.seats), length: r.len && Math.round(r.len) });
-    for (const r of all(`SELECT class cls, count(DISTINCT unit) n, sum(km) km FROM agg_vehicle_day GROUP BY class`)) Object.assign(get(r.cls), { seen: r.n, kmTotal: r.km });
-    for (const r of all(`SELECT class cls, unit, trip, km FROM vehicle_run WHERE date = ?`, d.date)) {
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n, sum(km) km FROM agg_vehicle_day WHERE ${FRESH} GROUP BY class`)) Object.assign(get(r.cls), { seen: r.n, kmTotal: r.km });
+    for (const r of all(`SELECT class cls, unit, trip, km FROM vehicle_run WHERE date = ? AND ${FRESH}`, d.date)) {
       const x = get(r.cls), line = lineByTrip.get(r.trip);
       x.kmToday += r.km;
       if (line) x.lines.set(line, (x.lines.get(line) ?? 0) + 1);
     }
-    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE date = ? GROUP BY class`, d.date)) get(r.cls).today = r.n;
-    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run GROUP BY class`)) get(r.cls).seen = Math.max(get(r.cls).seen, r.n);
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE date = ? AND ${FRESH} GROUP BY class`, d.date)) get(r.cls).today = r.n;
+    for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE ${FRESH} GROUP BY class`)) get(r.cls).seen = Math.max(get(r.cls).seen, r.n);
     const punct = seriesPunctuality();
-    return [...by.values()].filter((x) => (x.seen || x.today || TYPE_INFO[x.cls]) && !misread(x.cls))
+    return [...by.values()].filter((x) => (x.seen || x.today || TYPE_INFO[x.cls]) && !STALE_CLS.test(x.cls))
       .map((x) => ({ ...x, punctuality: punct.get(x.cls) ?? null, kmTotal: Math.round(x.kmTotal + x.kmToday), kmToday: Math.round(x.kmToday), lines: [...x.lines].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l]) => l) }))
       .sort((a, b) => b.today - a.today || b.seen - a.seen || b.registered - a.registered);
   });
@@ -450,15 +454,15 @@ export function types(d: Day) {
 
 /** One series: its units (register + what we saw), the lines it runs, distance, build years. */
 export function trainType(d: Day, cls: string) {
-  if (!/^\w{2,10}$/.test(cls) || misread(cls)) return null;
+  if (!/^\w{2,10}$/.test(cls) || STALE_CLS.test(cls)) return null;
   return cached(`type:${d.version}:${cls}`, 120, () => {
     const keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((t, i) => [t.id, keys[i]]));
     const units = new Map<string, any>();
     const get = (unit: string) => units.get(unit) ?? units.set(unit, { unit, subtype: null, built: null, seats: null, runsToday: 0, kmToday: 0, kmTotal: 0, days: 0, last: null }).get(unit);
     for (const r of all(`SELECT unit, subtype, built, seats1, seats2 FROM rolling_stock WHERE cls = ?`, cls)) Object.assign(get(r.unit), { subtype: r.subtype, built: r.built, seats: (r.seats1 ?? 0) + (r.seats2 ?? 0) || null });
-    for (const r of all(`SELECT unit, count(*) days, sum(km) km, max(date) last FROM agg_vehicle_day WHERE class = ? GROUP BY unit`, cls)) Object.assign(get(r.unit), { kmTotal: r.km, days: r.days, last: r.last });
+    for (const r of all(`SELECT unit, count(*) days, sum(km) km, max(date) last FROM agg_vehicle_day WHERE class = ? AND ${FRESH} GROUP BY unit`, cls)) Object.assign(get(r.unit), { kmTotal: r.km, days: r.days, last: r.last });
     const lines = new Map<string, number>();
-    for (const r of all(`SELECT unit, trip, km FROM vehicle_run WHERE class = ? AND date = ?`, cls, d.date)) {
+    for (const r of all(`SELECT unit, trip, km FROM vehicle_run WHERE class = ? AND date = ? AND ${FRESH}`, cls, d.date)) {
       const u = get(r.unit);
       u.runsToday++; u.kmToday += r.km; u.last = d.date;
       const l = lineByTrip.get(r.trip);
@@ -468,7 +472,7 @@ export function trainType(d: Day, cls: string) {
     // where it usually runs: its lines over the last 30 days, each with the end stations it runs between most
     const usual = new Map<string, { line: string; n: number; ends: Map<string, number> }>();
     for (const r of all(`SELECT t.line, t.origin, t.dest, count(*) n FROM vehicle_run v JOIN trip_day t ON t.date = v.date AND t.trip = v.trip
-        WHERE v.class = ? AND v.date >= ? GROUP BY t.line, t.origin, t.dest`, cls, addDays(d.date, -30))) {
+        WHERE v.class = ? AND v.date >= ? AND ${FRESH.replaceAll("unit", "v.unit")} GROUP BY t.line, t.origin, t.dest`, cls, addDays(d.date, -30))) {
       const u = usual.get(r.line) ?? usual.set(r.line, { line: r.line, n: 0, ends: new Map() }).get(r.line)!, k = [r.origin, r.dest].sort().join(" – ");
       u.n += r.n; u.ends.set(k, (u.ends.get(k) ?? 0) + r.n);
     }
@@ -572,7 +576,7 @@ export function search(d: Day, q: string) {
   if (!q) return [];
   const out: { kind: string; key: string; label: string; sub: string }[] = [];
   if (/^\d{3}-?\d{0,3}$/.test(q)) for (const r of all(`SELECT unit, type, count(*) n FROM vehicle_run WHERE unit LIKE ? GROUP BY unit ORDER BY unit LIMIT 5`, `${q.replace(/^(\d{3})(\d)/, "$1-$2")}%`))
-    out.push({ kind: "vehicle", key: r.unit, label: `${typeName(clsOf(r.unit))} ${r.unit}`, sub: `${r.n} runs recorded` });
+    if (!stale(r.unit)) out.push({ kind: "vehicle", key: r.unit, label: `${typeName(clsOf(r.unit))} ${r.unit}`, sub: `${r.n} runs recorded` });
   if (/^\d+$/.test(q)) {
     const seen = new Set<string>();
     for (const t of d.trips) if (t.date === d.date && t.num.startsWith(q) && !seen.has(t.num) && seen.size < 6) {

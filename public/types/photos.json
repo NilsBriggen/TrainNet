@@ -1,39 +1,4 @@
 {
- "116": {
-  "src": "/types/116.jpg",
-  "author": "Sebastian Terfloth User:Sese_Ingolstadt",
-  "licence": "CC BY-SA 2.5",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/2.5",
-  "page": "https://commons.wikimedia.org/wiki/File:1116_275_Gaimersheim.jpg"
- },
- "147": {
-  "src": "/types/147.jpg",
-  "author": "Falk2",
-  "licence": "CC BY-SA 4.0",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-  "page": "https://commons.wikimedia.org/wiki/File:J38_369_Bf_Leipzig_Hbf,_147_575.jpg"
- },
- "310": {
-  "src": "/types/310.jpg",
-  "author": "Smiley.toerist",
-  "licence": "CC BY-SA 3.0",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
-  "page": "https://commons.wikimedia.org/wiki/File:Duplex_in_Karlsruhe_III.JPG"
- },
- "406": {
-  "src": "/types/406.jpg",
-  "author": "Sebastian Terfloth User:Sese_Ingolstadt",
-  "licence": "CC BY-SA 3.0",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
-  "page": "https://commons.wikimedia.org/wiki/File:ICE_3_Oberhaider-Wald-Tunnel.jpg"
- },
- "412": {
-  "src": "/types/412.jpg",
-  "author": "DeffiSK",
-  "licence": "CC BY-SA 4.0",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-  "page": "https://commons.wikimedia.org/wiki/File:ICE_4_Berlin_S%C3%BCdkreuz_(20171004_144102).jpg"
- },
  "420": {
   "src": "/types/420.jpg",
   "author": "Cacetudo",
@@ -85,7 +50,7 @@
  },
  "486": {
   "src": "/types/486.jpg",
-  "author": "Stéphane Gottraux, CH-2350 Saignelégier, Switzerland",
+  "author": "St\u00e9phane Gottraux, CH-2350 Saignel\u00e9gier, Switzerland",
   "licence": "CC BY-SA 3.0",
   "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
   "page": "https://commons.wikimedia.org/wiki/File:BLS_Re486_Frick.JPG"
@@ -216,13 +181,6 @@
   "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
   "page": "https://commons.wikimedia.org/wiki/File:ETR_610_006_Domodossola_30-10-2010_EC50.jpg"
  },
- "812": {
-  "src": "/types/812.jpg",
-  "author": "DeffiSK",
-  "licence": "CC BY-SA 4.0",
-  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-  "page": "https://commons.wikimedia.org/wiki/File:ICE_4_Berlin_S%C3%BCdkreuz_(20171004_144102).jpg"
- },
  "ABe416": {
   "src": "/types/ABe416.jpg",
   "author": "Heitersberg",
@@ -264,5 +222,40 @@
   "licence": "CC BY-SA 3.0",
   "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
   "page": "https://commons.wikimedia.org/wiki/File:RhB_Ge_702.JPG"
+ },
+ "D147": {
+  "src": "/types/D147.jpg",
+  "author": "Falk2",
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:J38_369_Bf_Leipzig_Hbf,_147_575.jpg"
+ },
+ "D412": {
+  "src": "/types/D412.jpg",
+  "author": "DeffiSK",
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:ICE_4_Berlin_S%C3%BCdkreuz_(20171004_144102).jpg"
+ },
+ "D406": {
+  "src": "/types/D406.jpg",
+  "author": "Sebastian Terfloth User:Sese_Ingolstadt",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+  "page": "https://commons.wikimedia.org/wiki/File:ICE_3_Oberhaider-Wald-Tunnel.jpg"
+ },
+ "F310": {
+  "src": "/types/F310.jpg",
+  "author": "Smiley.toerist",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+  "page": "https://commons.wikimedia.org/wiki/File:Duplex_in_Karlsruhe_III.JPG"
+ },
+ "A116": {
+  "src": "/types/A116.jpg",
+  "author": "Sebastian Terfloth User:Sese_Ingolstadt",
+  "licence": "CC BY-SA 2.5",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/2.5",
+  "page": "https://commons.wikimedia.org/wiki/File:1116_275_Gaimersheim.jpg"
  }
 }

@@ -11,8 +11,8 @@ const TYPES: Record<string, string> = {
   "522": "File:FFS RABe 522 205 Basel SBB 180611.jpg", "523": "SBB RABe 523", "524": "SBB RABe 524", "525": "BLS RABe 525", "526": "SOB RABe 526",
   "527": "File:TransN Flirt RABe 527 331 - Le Locle (28569273191).jpg", "535": "BLS RABe 535", "460": "SBB Re 460", "465": "BLS Re 465", "474": "SBB Re 474",
   "475": "File:BLS Re 475 402.jpg", "420": "SBB Re 4/4 II", "450": "SBB Re 450", "485": "BLS Re 485", "486": "BLS Re 486",
-  "560": "File:SBB RBDe 560 Domino bei Sierre.jpg", "412": "ICE 4", "406": "ICE 3", "147": "DB Class 147", "310": "TGV 2N2",
-  "812": "ICE 4", "116": "ÖBB 1116", "ABe416": "RhB ABe 4/16 3111–3166", "ABe416A": "RhB ABe 8/12", "ABe812": "RhB ABe 8/12",
+  "560": "File:SBB RBDe 560 Domino bei Sierre.jpg", "D412": "ICE 4", "D406": "ICE 3", "D147": "DB Class 147", "F310": "TGV 2N2",
+  "A116": "ÖBB 1116", "ABe416": "RhB ABe 4/16 3111–3166", "ABe416A": "RhB ABe 8/12", "ABe812": "RhB ABe 8/12",
   "Ge443": "RhB Ge 4/4 III", "Ge442": "File:E-Lok RhB 4-4 II Nr. 616 \"Filisur\".jpg", "Ge662": "RhB Ge 6/6 II",
 };
 const DIR = new URL("../public/types/", import.meta.url).pathname, OUT = `${DIR}photos.json`;
