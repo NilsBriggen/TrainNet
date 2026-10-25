@@ -459,11 +459,20 @@ export function trainType(d: Day, cls: string) {
       if (l) lines.set(l, (lines.get(l) ?? 0) + 1);
     }
     if (!units.size) return null;
+    // where it usually runs: its lines over the last 30 days, each with the end stations it runs between most
+    const usual = new Map<string, { line: string; n: number; ends: Map<string, number> }>();
+    for (const r of all(`SELECT t.line, t.origin, t.dest, count(*) n FROM vehicle_run v JOIN trip_day t ON t.date = v.date AND t.trip = v.trip
+        WHERE v.class = ? AND v.date >= ? GROUP BY t.line, t.origin, t.dest`, cls, addDays(d.date, -30))) {
+      const u = usual.get(r.line) ?? usual.set(r.line, { line: r.line, n: 0, ends: new Map() }).get(r.line)!, k = [r.origin, r.dest].sort().join(" – ");
+      u.n += r.n; u.ends.set(k, (u.ends.get(k) ?? 0) + r.n);
+    }
+    const runs = [...usual.values()].reduce((a, u) => a + u.n, 0);
     const list = [...units.values()].map((u) => ({ ...u, kmToday: Math.round(u.kmToday), kmTotal: Math.round(u.kmTotal + u.kmToday) }));
     return {
       cls, name: typeName(cls), wiki: wikiOf(cls), about: TYPE_INFO[cls]?.about ?? null, punctuality: seriesPunctuality().get(cls) ?? null,
       units: list.sort((a, b) => b.kmToday - a.kmToday || b.kmTotal - a.kmTotal || a.unit.localeCompare(b.unit)),
       lines: [...lines].sort((a, b) => b[1] - a[1]).map(([line, n]) => ({ line, n })),
+      usual: [...usual.values()].sort((a, b) => b.n - a.n).slice(0, 8).map((u) => ({ line: u.line, n: u.n, pct: Math.round((100 * u.n) / runs), ends: [...u.ends].sort((a, b) => b[1] - a[1])[0][0] })),
       years: list.filter((u) => u.built).map((u) => +u.built.slice(0, 4)),
     };
   });

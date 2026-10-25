@@ -657,6 +657,13 @@ async function typesPage(current) {
   </a>`).join("")}</div>`;
 }
 
+/** "Mostly on IR27 (Basel SBB – Luzern) and IR70 …; also IC1, IR15." from the type's usual lines */
+function usualText(usual) {
+  const main = usual.filter((u) => u.pct >= 10).slice(0, 3), rest = usual.filter((u) => !main.includes(u)).slice(0, 4);
+  if (!main.length) return `Runs on ${usual.slice(0, 5).map((u) => lineLabel(u.line)).join(", ")}.`;
+  const names = main.map((u) => `${lineLabel(u.line)} (${u.ends})`);
+  return `Mostly on ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]}${rest.length ? `; also ${rest.map((u) => lineLabel(u.line)).join(", ")}` : ""} (last 30 days).`;
+}
 async function typePage(cls, current) {
   const t = await api(`type/${cls}`, true);
   if (!current()) return;
@@ -666,7 +673,7 @@ async function typePage(cls, current) {
   if (!current()) return;
   main.innerHTML = `
   <div class="page-head"><div><h1>${esc(t.name)} <span style="color:var(--muted)">series ${esc(t.cls)}</span></h1>
-    <p class="sub">${t.about ? esc(t.about) : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div>
+    <p class="sub">${t.about ? esc(t.about) : ""}${t.usual?.length ? ` ${usualText(t.usual)}` : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div>
     ${ph ? `<figure class="type-photo"><img src="${esc(ph.src)}" alt="${esc(t.name)}" width="480" height="320"><figcaption>Photo: <a href="${esc(ph.page)}" target="_blank" rel="noopener">${esc(ph.author)}</a> · ${ph.licenceUrl ? `<a href="${esc(ph.licenceUrl)}" target="_blank" rel="noopener">${esc(ph.licence)}</a>` : esc(ph.licence)} · Wikimedia Commons</figcaption></figure>` : ""}</div>
   <div class="kpis">
     ${kpi("In service today", n0(running.length), `of ${n0(t.units.length)} units known`)}
@@ -676,6 +683,8 @@ async function typePage(cls, current) {
     ${kpi("Built", t.years.length ? `${d3.min(t.years)}${d3.max(t.years) !== d3.min(t.years) ? `<small>–${d3.max(t.years)}</small>` : ""}` : "–", t.years.length ? `average age ${n0(year - d3.mean(t.years))} years` : "not in SBB's register")}
   </div>
   <div class="grid">
+    ${t.usual?.length ? card("Where it runs", "Its lines over the last 30 days, share of its train runs, between the stations it serves most", table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Mostly", f: (r) => `<span class="muted">${esc(r.ends)}</span>` }, { h: "Share", num: 1, f: (r) => `${r.pct} %` }],
+      t.usual.map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))), 8) : ""}
     ${card("Lines today", "Train runs per line", t.lines.length ? table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Runs", num: 1, f: (r) => r.n }], t.lines.slice(0, 12).map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))) : empty("Not seen running today."), 4)}
     ${card("Build years", "Units in SBB's rolling stock register", t.years.length ? ch("c-years") : empty("This series isn't in SBB's register."), 8)}
     ${card("Units", "Today first, then by distance recorded", table([
