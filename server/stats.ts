@@ -12,6 +12,12 @@ const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX)$/;
 /** Same categories as the map's chips. */
 const catOfRow = (cat: string, agency: string) =>
   LONG.test(cat) ? "Long distance" : cat === "IR" ? "InterRegio" : cat === "RE" ? "RegioExpress" : cat === "S" || cat === "SN" ? "S-Bahn" : cat === "PE" ? "Panorama" : agency === "11" ? "Regional" : "Private";
+// A unit's series ("502" of 502-213, "ABe416" of ABe416-3145) and today's name for it: rows store the name they were
+// recorded with, which may be "Class 147" from before the series was listed
+const clsOf = (unit: string) => unit.slice(0, unit.lastIndexOf("-"));
+const named = <T extends { unit: string }>(r: T) => ({ ...r, type: typeName(clsOf(r.unit)) });
+// RhB coaches (91 85 0 0xx …) were read as units until RhB's numbering was understood (2026-10-25); they age out of vehicle_run
+const misread = (cls: string) => /^0\d\d$/.test(cls);
 export const category = (d: Day, route: number) => catOfRow(d.routes[route][1], d.routes[route][2]);
 
 const zfmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Zurich", hour: "numeric", hourCycle: "h23", weekday: "short" });
@@ -313,7 +319,7 @@ export function train(d: Day, num: string) {
     // yesterday's run counts while it's still running after midnight; the one running now first
     const runs = nowState(d, (t) => t.num === num).filter((x) => x.trip.date === d.date || x.p).sort((a, b) => +!!b.p - +!!a.p).map(({ trip, e, p, c, x }) => ({
       line: lineOf(d, trip.route), cat: category(d, trip.route), operator: d.agencies[trip.agency] ?? trip.agency, cancelled: c, stuckSince: x,
-      running: !!p, at: p ? (p.at ? p.a : p.a + p.f) : null,
+      idx: d.trips.indexOf(trip), running: !!p, // idx (with v below): /api/train/:idx, the live formation when no trainset is recorded at: p ? (p.at ? p.a : p.a + p.f) : null,
       stops: Array.from({ length: trip.stops.length / 3 }, (_, k) => ({
         name: d.stations[trip.stops[k * 3]][0], uic: d.stations[trip.stops[k * 3]][3], km: Math.round(trip.km[k] * 10) / 10,
         arr: d.base / 1000 + trip.stops[k * 3 + 1], dep: d.base / 1000 + trip.stops[k * 3 + 2],
@@ -322,12 +328,12 @@ export function train(d: Day, num: string) {
     }));
     const occ = [...occupancyAll()].find(([k]) => k.endsWith(`:${num}`))?.[1]?.sec ?? [];
     return {
-      num, runs, crowding: occ,
+      num, v: d.version, runs, crowding: occ,
       history: all(`SELECT date, line, final_delay, max_delay, cancelled, observed, stuck_min FROM trip_day WHERE train_no = ? ORDER BY date`, num),
       older: all(`SELECT date, line, trips, punctual, observed, cancelled, avg_delay FROM agg_train_day WHERE train_no = ? AND date NOT IN (SELECT date FROM trip_day WHERE train_no = ?1) ORDER BY date`, num),
       profile: all(`SELECT idx, uic, count(arr_delay) n, avg(arr_delay) arr, avg(dep_delay) dep, sum(arr_delay >= 180) late FROM stop_obs WHERE train_no = ? GROUP BY idx, uic ORDER BY idx`, num)
         .map((r) => ({ ...r, name: station(d, r.uic)?.name ?? r.uic })),
-      vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num),
+      vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num).filter((r) => !misread(clsOf(r.unit))).map(named),
       since: since(all(`SELECT month, sum(punctual) ok, sum(observed) n FROM hist_train_month WHERE train_no = ? GROUP BY month ORDER BY month`, num)),
     };
   });
@@ -350,7 +356,7 @@ export function vehicle(d: Day, unit: string) {
         state: s?.c ? "cancelled" : t < r.dep ? "planned" : t > r.arr + (delay ?? 0) ? "done" : "running",
       };
     });
-    const spec = one(`SELECT class, type, length_m, seats1, seats2, has_wr FROM vehicle_run WHERE unit = ? ORDER BY date DESC LIMIT 1`, unit);
+    const row = one(`SELECT class, type, length_m, seats1, seats2, has_wr FROM vehicle_run WHERE unit = ? ORDER BY date DESC LIMIT 1`, unit), spec = row && { ...row, type: typeName(row.class) };
     return {
       unit, spec, runs, now: runs.find((r) => r.state === "running") ?? null,
       register: one(`SELECT subtype, built, seats1, seats2, length_m, wheelchair FROM rolling_stock WHERE unit = ?`, unit), // SBB's register, if listed
@@ -365,7 +371,7 @@ export function vehicle(d: Day, unit: string) {
 export function fleet(d: Day) {
   return cached(`fleet:${d.version}`, 60, () => {
     const t = Date.now() / 1000, keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((x, i) => [x.id, keys[i]]));
-    const runs = all(`SELECT * FROM vehicle_run WHERE date = ?`, d.date);
+    const runs = all(`SELECT * FROM vehicle_run WHERE date = ?`, d.date).filter((r) => !misread(r.class)).map(named);
     const units = new Map<string, { unit: string; type: string; runs: number; km: number }>();
     const trains = new Map<string, { train: string; line: string; length: number; seats: number; units: string[] }>();
     const mix = new Map<string, Map<string, number>>();
@@ -384,7 +390,7 @@ export function fleet(d: Day) {
     for (const u of units.values()) { const x = byType.get(u.type) ?? { type: u.type, cls: u.unit.split("-")[0], units: 0, km: 0 }; x.units++; x.km += u.km; byType.set(u.type, x); }
     // build year of every unit in service today that SBB's register lists
     const built = all(`SELECT DISTINCT v.unit, v.type, r.built FROM vehicle_run v JOIN rolling_stock r ON r.unit = v.unit WHERE v.date = ? AND r.built IS NOT NULL`, d.date)
-      .map((r) => ({ unit: r.unit, type: r.type, year: +r.built.slice(0, 4), built: r.built }));
+      .map((r) => ({ unit: r.unit, type: typeName(clsOf(r.unit)), year: +r.built.slice(0, 4), built: r.built }));
     const tr = [...trains.values()];
     return {
       crawled: runs.length, units: units.size,
@@ -436,7 +442,7 @@ export function types(d: Day) {
     for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run WHERE date = ? GROUP BY class`, d.date)) get(r.cls).today = r.n;
     for (const r of all(`SELECT class cls, count(DISTINCT unit) n FROM vehicle_run GROUP BY class`)) get(r.cls).seen = Math.max(get(r.cls).seen, r.n);
     const punct = seriesPunctuality();
-    return [...by.values()].filter((x) => x.seen || x.today || TYPE_INFO[x.cls])
+    return [...by.values()].filter((x) => (x.seen || x.today || TYPE_INFO[x.cls]) && !misread(x.cls))
       .map((x) => ({ ...x, punctuality: punct.get(x.cls) ?? null, kmTotal: Math.round(x.kmTotal + x.kmToday), kmToday: Math.round(x.kmToday), lines: [...x.lines].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l]) => l) }))
       .sort((a, b) => b.today - a.today || b.seen - a.seen || b.registered - a.registered);
   });
@@ -444,7 +450,7 @@ export function types(d: Day) {
 
 /** One series: its units (register + what we saw), the lines it runs, distance, build years. */
 export function trainType(d: Day, cls: string) {
-  if (!/^\d{3}$/.test(cls)) return null;
+  if (!/^\w{2,10}$/.test(cls) || misread(cls)) return null;
   return cached(`type:${d.version}:${cls}`, 120, () => {
     const keys = lineKeysOf(d), lineByTrip = new Map(d.trips.map((t, i) => [t.id, keys[i]]));
     const units = new Map<string, any>();
@@ -566,7 +572,7 @@ export function search(d: Day, q: string) {
   if (!q) return [];
   const out: { kind: string; key: string; label: string; sub: string }[] = [];
   if (/^\d{3}-?\d{0,3}$/.test(q)) for (const r of all(`SELECT unit, type, count(*) n FROM vehicle_run WHERE unit LIKE ? GROUP BY unit ORDER BY unit LIMIT 5`, `${q.replace(/^(\d{3})(\d)/, "$1-$2")}%`))
-    out.push({ kind: "vehicle", key: r.unit, label: `${r.type} ${r.unit}`, sub: `${r.n} runs recorded` });
+    out.push({ kind: "vehicle", key: r.unit, label: `${typeName(clsOf(r.unit))} ${r.unit}`, sub: `${r.n} runs recorded` });
   if (/^\d+$/.test(q)) {
     const seen = new Set<string>();
     for (const t of d.trips) if (t.date === d.date && t.num.startsWith(q) && !seen.has(t.num) && seen.size < 6) {

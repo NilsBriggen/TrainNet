@@ -82,3 +82,12 @@ test("a visitor over their lookup share hears 'busy' without an upstream call; c
   expect((await details(trip("707", 11, 13), base, () => false)).formationStatus).toBe("ok");
   expect(calls).toBe(1);
 });
+
+test("vehicle numbers in parts (TPF) and RhB's own numbering: locomotives and units by number, coaches not units", async () => {
+  const { evnOf, unitOf, rhbUnitOf } = await import("../server/details");
+  expect(unitOf(evnOf({ evn: null, buildTypeCode: "94", countryCode: "85", vehicleNumber: "2527195", checkNumber: "3" }))?.id).toBe("527-195");
+  expect(rhbUnitOf("808500310459")?.id).toBe("ABe416-3145"); // Capricorn car, whole evn padded with zeros
+  expect(rhbUnitOf(evnOf({ buildTypeCode: "80", countryCode: "85", vehicleNumber: "35106", checkNumber: "5" }))?.id).toBe("ABe812-3506");
+  expect(rhbUnitOf("808500006420")).toMatchObject({ id: "Ge443-642", cls: "Ge443" });
+  expect(rhbUnitOf("918500578045")).toBeNull(); // an Albula coach
+});

@@ -1,4 +1,11 @@
 {
+ "116": {
+  "src": "/types/116.jpg",
+  "author": "Sebastian Terfloth User:Sese_Ingolstadt",
+  "licence": "CC BY-SA 2.5",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/2.5",
+  "page": "https://commons.wikimedia.org/wiki/File:1116_275_Gaimersheim.jpg"
+ },
  "147": {
   "src": "/types/147.jpg",
   "author": "Falk2",
@@ -208,5 +215,54 @@
   "licence": "CC BY-SA 3.0",
   "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
   "page": "https://commons.wikimedia.org/wiki/File:ETR_610_006_Domodossola_30-10-2010_EC50.jpg"
+ },
+ "812": {
+  "src": "/types/812.jpg",
+  "author": "DeffiSK",
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:ICE_4_Berlin_S%C3%BCdkreuz_(20171004_144102).jpg"
+ },
+ "ABe416": {
+  "src": "/types/ABe416.jpg",
+  "author": "Heitersberg",
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:RhB_ABe_4_16_3111.jpg"
+ },
+ "ABe416A": {
+  "src": "/types/ABe416A.jpg",
+  "author": "Kabelleger / David Gubler (http://www.bahnbilder.ch)",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+  "page": "https://commons.wikimedia.org/wiki/File:RhB_ABe_8-12_Allegra_in_Pontresina.jpg"
+ },
+ "ABe812": {
+  "src": "/types/ABe812.jpg",
+  "author": "Kabelleger / David Gubler (http://www.bahnbilder.ch)",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+  "page": "https://commons.wikimedia.org/wiki/File:RhB_ABe_8-12_Allegra_in_Pontresina.jpg"
+ },
+ "Ge443": {
+  "src": "/types/Ge443.jpg",
+  "author": "GoodRJ",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "http://creativecommons.org/licenses/by-sa/3.0/",
+  "page": "https://commons.wikimedia.org/wiki/File:CH_RhB_Ge44III_642.JPG"
+ },
+ "Ge442": {
+  "src": "/types/Ge442.jpg",
+  "author": "JoachimKohler-HB",
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+  "page": "https://commons.wikimedia.org/wiki/File:E-Lok_RhB_4-4_II_Nr._616_%22Filisur%22.jpg"
+ },
+ "Ge662": {
+  "src": "/types/Ge662.jpg",
+  "author": "Spoorjan",
+  "licence": "CC BY-SA 3.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+  "page": "https://commons.wikimedia.org/wiki/File:RhB_Ge_702.JPG"
  }
 }

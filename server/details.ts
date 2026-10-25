@@ -34,7 +34,7 @@ export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: st
   "524": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRT for TILO, the Ticino S-Bahn that also runs into Lombardy." },
   "525": { name: "NINA", about: "Low-floor regional train of BLS." },
   "526": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRTs of the Südostbahn, among them the 'Traverso' trains of the Voralpen-Express and the Treno Gottardo." },
-  "527": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRT of transN, the regional railway around Neuchâtel and La Chaux-de-Fonds." },
+  "527": { name: "FLIRT", wiki: "Stadler_FLIRT", about: "Stadler FLIRTs of regional railways: TPF around Fribourg and transN around Neuchâtel and La Chaux-de-Fonds." },
   "535": { name: "Lötschberger", about: "BLS regional train for the Lötschberg mountain line." },
   "460": { name: "Re 460", wiki: "SBB_Re_460", about: "SBB's standard electric locomotive since the 1990s, up to 230 km/h. It hauls the intercity coaches and IC2000 double-deck trains." },
   "465": { name: "Re 465", wiki: "BLS_Re_465", about: "BLS locomotive, the stronger sister of the Re 460, built for the Lötschberg gradients." },
@@ -46,6 +46,15 @@ export const TYPE_INFO: Record<string, { name: string; wiki?: string; about?: st
   "486": { name: "Re 486", wiki: "Bombardier_TRAXX", about: "Bombardier TRAXX multi-system locomotive, mostly freight." },
   "560": { name: "NPZ / Domino", wiki: "SBB_RBDe_560", about: "Regional multiple unit from the 1980s, many rebuilt as 'Domino' with a low-floor middle car." },
   // foreign units on Swiss trains (German ICEs to Basel and Zürich, DB locomotives on the Stuttgart line, TGV Lyria)
+  "812": { name: "ICE 4", wiki: "ICE_4", about: "The middle cars of Deutsche Bahn's ICE 4 trainsets." },
+  "116": { name: "ÖBB Taurus", wiki: "Siemens_ES64U2", about: "Siemens Taurus locomotive of the Austrian railways (Rh 1116), hauling the Railjet trains to Vienna." },
+  // Rhaetian Railway (RhB): its own numbering, see rhbUnitOf
+  "ABe416": { name: "Capricorn", wiki: "RhB_ABe_4/16_3111–3166", about: "Stadler's four-car metre-gauge multiple unit of the Rhaetian Railway, on RegioExpress and S-Bahn services around Chur and Landquart." },
+  "ABe416A": { name: "Allegra ABe 4/16", wiki: "RhB_ABe_8/12", about: "Two-car version of the Allegra, for the Chur–Arosa line." },
+  "ABe812": { name: "Allegra", wiki: "RhB_ABe_8/12", about: "Stadler's three-car multi-voltage unit of the Rhaetian Railway, built for the Bernina line's steep gradients and its DC power; it also pulls the Bernina Express." },
+  "Ge443": { name: "Ge 4/4 III", wiki: "RhB_Ge_4/4_III", about: "The Rhaetian Railway's standard electric locomotive since the 1990s, often in advertising liveries; it hauls the Glacier Express and the Albula line trains." },
+  "Ge442": { name: "Ge 4/4 II", wiki: "RhB_Ge_4/4_II", about: "Rhaetian Railway electric locomotive from the 1970s and 80s, for passenger and freight trains." },
+  "Ge662": { name: "Ge 6/6 II", wiki: "RhB_Ge_6/6_II", about: "The Rhaetian Railway's heavy six-axle locomotive, mostly for freight." },
   "412": { name: "ICE 4", wiki: "ICE_4", about: "Deutsche Bahn's newest ICE, on services from Germany into Switzerland." },
   "406": { name: "ICE 3", wiki: "ICE_3", about: "Deutsche Bahn's multi-system high-speed train." },
   "147": { name: "DB 147", wiki: "DB_Class_147", about: "Deutsche Bahn TRAXX locomotive, hauling the Stuttgart–Zürich intercity." },
@@ -55,6 +64,23 @@ export const wikiOf = (cls: string) => (TYPE_INFO[cls]?.wiki ? WIKI + TYPE_INFO[
 let registerNames = new Map<string, string>(); // series -> type name from the rolling stock register, for series not listed above
 export const setRegisterNames = (m: Map<string, string>) => (registerNames = m);
 export const typeName = (cls: string) => TYPE_INFO[cls]?.name ?? registerNames.get(cls) ?? `Class ${cls}`;
+
+/** The vehicle number as one string: the API gives it whole (evn) or, for some operators (TPF, RhB), only in parts. */
+export const evnOf = (i: any): string => i?.evn ?? (i?.buildTypeCode && i?.countryCode && i?.vehicleNumber ? `${i.buildTypeCode}${i.countryCode}${i.vehicleNumber}${i.checkNumber ?? ""}` : "");
+
+// RhB numbers its fleet its own way: 80 85 642 is the Ge 4/4 III 642; a multiple unit's cars are 80 85 TTTUU, car type
+// TTT and unit UU (31045, 31645, 31745, 31845: Capricorn 3145; 35006, 35106, 35606: Allegra 3506); 91 85 … are coaches
+const RHB_LOCOS: [number, number, string][] = [[611, 633, "Ge442"], [641, 652, "Ge443"], [701, 707, "Ge662"]];
+export function rhbUnitOf(evn: string): { id: string; cls: string; type: string } | null {
+  const d = evn.replace(/\D/g, "");
+  if (!d.startsWith("8085")) return null;
+  const num = +d.slice(4, -1), n = String(num); // without the check digit; the whole evn pads the number with zeros (80 85 0031045 9)
+  const unit = (cls: string, no: number) => ({ id: `${cls}-${no}`, cls, type: typeName(cls) });
+  for (const [lo, hi, cls] of RHB_LOCOS) if (num >= lo && num <= hi) return unit(cls, num);
+  if (/^31\d{3}$/.test(n)) { const no = 3100 + +n.slice(3); return unit(no <= 3105 ? "ABe416A" : "ABe416", no); } // Allegra ABe 4/16 3101–3105, Capricorn from 3111
+  if (/^35\d{3}$/.test(n)) return unit("ABe812", 3500 + +n.slice(3));
+  return null;
+}
 
 /** Trainset or locomotive behind an EVN, e.g. "94 85 2 502 229-9" -> 502-229. Plain coaches (50/61/73 …) aren't units. */
 export function unitOf(evn: string): { id: string; cls: string; type: string } | null {
@@ -91,7 +117,7 @@ const STATUS: Record<string, string> = {
 };
 
 /** Parse a v2 formations_full response (v1 was switched off; the vehicle part kept its shape). */
-export function parseFormation(j: any): Formation | null {
+export function parseFormation(j: any, evu = ""): Formation | null {
   const vehicles: any[] = j.formations?.[0]?.formationVehicles ?? [];
   if (!vehicles.length) return null;
   const atStops: any[] = j.formationsAtScheduledStops ?? [];
@@ -102,7 +128,7 @@ export function parseFormation(j: any): Formation | null {
   const goals = (atStops[0]?.formationShort?.vehicleGoals ?? []).map((g: any) => [g.fromVehicleAtPosition, g.toVehicleAtPosition, String(g.destinationStopPoint?.uic ?? "")] as [number, number, string]);
   const units = new Map<string, Unit>();
   const coaches = vehicles.sort((a, b) => a.position - b.position).map((v): Coach => {
-    const p = v.vehicleProperties ?? {}, u = unitOf(v.vehicleIdentifier?.evn ?? "");
+    const p = v.vehicleProperties ?? {}, evn = evnOf(v.vehicleIdentifier), u = evu === "RhB" ? rhbUnitOf(evn) : unitOf(evn);
     const wr = p.numberRestaurantSpace > 0 || /^WR/.test(v.vehicleIdentifier?.typeCodeName ?? "");
     if (u) {
       const x = units.get(u.id) ?? { ...u, cars: 0, length: 0, seats1: 0, seats2: 0, wr: false, from: String(p.fromStop?.uic ?? ""), to: String(p.toStop?.uic ?? "") };
@@ -126,7 +152,7 @@ async function fetchFormation(evu: string, num: string, date: string, background
   const res = await upstream("FORMATION_SERVICE",
     `https://api.opentransportdata.swiss/formation/v2/formations_full?evu=${evu}&operationDate=${date}&trainNumber=${encodeURIComponent(num)}`,
     background ? { background } : { maxWait: 8000 }); // a visitor waits a few seconds at most, then hears why
-  return parseFormation(await res.json());
+  return parseFormation(await res.json(), evu);
 }
 
 const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later

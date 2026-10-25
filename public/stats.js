@@ -98,7 +98,7 @@ let timers = [], nav = 0;
 const routes = [
   [/^#?\/?$/, "overview", overview], [/^#\/fleet$/, "fleet", fleetPage], [/^#\/incidents$/, "incidents", incidentsPage],
   [/^#\/train\/(.+)$/, "", trainPage], [/^#\/vehicle\/(.+)$/, "fleet", vehiclePage], [/^#\/station\/(.+)$/, "", stationPage], [/^#\/line\/(.+)$/, "", linePage],
-  [/^#\/types$/, "types", typesPage], [/^#\/type\/(\d{3})$/, "types", typePage], [/^#\/history$/, "history", historyPage],
+  [/^#\/types$/, "types", typesPage], [/^#\/type\/(\w{2,10})$/, "types", typePage], [/^#\/history$/, "history", historyPage],
   [/^#\/records$/, "records", recordsPage], [/^#\/network$/, "network", networkPage], [/^#\/commute(?:\/(\d{7})\/(\d{7}))?$/, "commute", commutePage],
 ];
 async function route(keepScroll = false) {
@@ -308,7 +308,7 @@ async function trainPage(num, current) {
   <div class="kpis">
     ${kpi("Now", run?.running ? mins(cur?.delay) : "–", run?.running ? `at ${esc(cur?.name)}` : "")}
     ${kpi("Distance", run ? `${n0(stops.at(-1).km)}<small> km</small>` : "–", run ? `${stops.length} stops` : "")}
-    ${kpi("Trainsets", unitsToday.length || "–", unitsToday.length ? esc([...new Set(unitsToday.map((u) => u.type))].join(", ")) + (unitsOld ? ` · as on ${esc(unitsDate)}` : "") : "long-distance trains only")}
+    ${kpi("Trainsets", unitsToday.length || "–", unitsToday.length ? esc([...new Set(unitsToday.map((u) => u.type))].join(", ")) + (unitsOld ? ` · as on ${esc(unitsDate)}` : "") : run ? "asking…" : "not recorded", "kpi-units")}
     ${kpi("Days recorded", t.history.length + t.older.length)}
     ${kpi("Punctual", finished.length ? pctv(Math.round((1000 * ok) / finished.length) / 10) : "–", finished.length ? `${ok} of ${finished.length} recorded runs` : "no finished run recorded yet")}
     ${kpi("Average final delay", finished.length ? mins(d3.mean(finished, (h) => h.final_delay)) : "–", finished.length ? `worst ${mins(d3.max(finished, (h) => h.max_delay))} on the way` : "")}
@@ -316,7 +316,8 @@ async function trainPage(num, current) {
   </div>
   <div class="grid">
     ${card("Today's run", "Delay at each stop (live forecast for the stops ahead)", stops.length ? ch("c-run") : empty("Not running today."), 8)}
-    ${card("Trainsets", unitsOld ? `The physical units on ${esc(unitsDate)}: today's aren't recorded yet` : "The physical units running this train", unitsToday.length ? photoFigure(ph[unitsToday[0].unit.slice(0, 3)], unitsToday[0].type) + `<div class="units">${unitsToday.map((u) => { const p = ph[u.unit.slice(0, 3)]; return `<a class="unit-chip" href="#/vehicle/${u.unit}">${p ? `<img src="${esc(p.src)}" alt="">` : ""}${esc(u.type)} <b>${esc(u.unit)}</b><small>${n0(u.km)} km</small></a>`; }).join("")}</div>` : empty("Not recorded: formations are crawled for long-distance trains once a day."), 4)}
+    ${card("Trainsets", unitsOld ? `The physical units on ${esc(unitsDate)}: today's aren't recorded yet` : "The physical units running this train", `<div id="trainsets">${unitsToday.length ? unitsHtml(ph, unitsToday.map((u) => ({ id: u.unit, cls: clsOf(u.unit), type: u.type, km: u.km })))
+      : run ? `<p class="muted">Asking the formation service…</p>` : empty("Not recorded: formations are crawled for long-distance trains once a day.")}</div>`, 4)}
     ${card("Crowding forecast", "2nd class per section: 1 many seats · 2 few seats · 3 standing", t.crowding.length ? ch("c-crowd") : empty("No forecast for this train."), 6)}
     ${card("Every day", "Final delay per recorded day", t.history.length ? ch("c-days") : empty("History starts with the first finished run."), 6)}
     ${card("Where it usually loses time", "Average arrival delay per stop across recorded days", t.profile.length ? ch("c-prof") : empty("Fills in as runs finish."), 12)}
@@ -349,6 +350,16 @@ async function trainPage(num, current) {
     Plot.areaY(t.profile, { x: (p) => `${p.idx}·${p.name}`, y: (p) => (p.arr ?? 0) / 60, fill: "#ffb547", fillOpacity: 0.2 }),
     Plot.lineY(t.profile, { x: (p) => `${p.idx}·${p.name}`, y: (p) => (p.arr ?? 0) / 60, stroke: "#ffb547", tip: true, title: (p) => `${p.name}: ${mins(p.arr)} on average over ${p.n} runs` }),
   ] });
+  // regional trains aren't crawled: ask the formation service now, as the map's panel does (its answer is kept for the day)
+  if (!unitsToday.length && run?.idx >= 0) {
+    const live = await fetch(`/api/train/${run.idx}?v=${encodeURIComponent(t.v)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const box = current() && document.getElementById("trainsets"), units = live?.units ?? [];
+    if (!box) return;
+    box.innerHTML = units.length ? unitsHtml(ph, units.map((u) => ({ ...u, km: null })))
+      : empty(live?.formationStatus === "unsupported" ? "Its operator isn't covered by the formation service." : "The formation service doesn't list its vehicles today.");
+    const k = document.querySelector(".kpi-units");
+    if (k && units.length) (k.querySelector(".value").textContent = units.length), (k.querySelector(".note").textContent = [...new Set(units.map((u) => u.type))].join(", "));
+  }
 }
 
 // ---------- vehicle ----------
@@ -665,6 +676,14 @@ async function typesPage(current) {
   </a>`).join("")}</div>`;
 }
 
+const clsOf = (unit) => unit.slice(0, unit.lastIndexOf("-")); // "502" of 502-213, "ABe416" of ABe416-3145
+/** The first unit's photo and type, then a chip per unit: recorded ones (with km) open their own page, live ones their type's */
+const unitsHtml = (ph, units) => {
+  const types = [...new Map(units.map((u) => [u.cls, u])).values()];
+  return photoFigure(ph[units[0].cls], units[0].type)
+    + `<p class="sub">${types.map((u) => `<a class="inline" href="#/type/${encodeURIComponent(u.cls)}">About the ${esc(u.type)} →</a>`).join(" · ")}</p>`
+    + `<div class="units">${units.map((u) => { const p = ph[u.cls]; return `<a class="unit-chip" href="${u.km != null ? `#/vehicle/${encodeURIComponent(u.id)}` : `#/type/${encodeURIComponent(u.cls)}`}">${p ? `<img src="${esc(p.src)}" alt="">` : ""}${esc(u.type)} <b>${esc(u.id)}</b>${u.km != null ? `<small>${n0(u.km)} km</small>` : ""}</a>`; }).join("")}</div>`;
+};
 /** A type's photo with its credit (licence terms: author, licence, source) */
 const photoFigure = (ph, name) => (ph ? `<figure class="type-photo"><img src="${esc(ph.src)}" alt="${esc(name)}" width="480" height="320"><figcaption>Photo: <a href="${esc(ph.page)}" target="_blank" rel="noopener">${esc(ph.author)}</a> · ${ph.licenceUrl ? `<a href="${esc(ph.licenceUrl)}" target="_blank" rel="noopener">${esc(ph.licence)}</a>` : esc(ph.licence)} · Wikimedia Commons</figcaption></figure>` : "");
 /** "Mostly on IR27 (Basel SBB – Luzern) and IR70 …; also IC1, IR15." from the type's usual lines */

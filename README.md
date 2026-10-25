@@ -57,7 +57,7 @@ bun test
 
 The first start downloads the timetable (~290 MB zip) and parses it in about 30 s. Later starts on the same day read it back in about a second.
 
-**Production:** `compose.yml` runs the container behind a Traefik reverse proxy, and `scripts/deploy.sh` ships a checkout and waits until it serves again. Data lives in `./data`: the track graph, route cache and `stats.db`.
+**Production:** `compose.yml` runs the container behind a Traefik reverse proxy, and `scripts/deploy.sh` ships a checkout and waits until it serves again. It reads the server from `TRAINNET_HOST` (and `TRAINNET_SSH_KEY`), set in the environment or in an untracked `.env.deploy`. Data lives in `./data`: the track graph, route cache and `stats.db`.
 
 ## Layout
 
