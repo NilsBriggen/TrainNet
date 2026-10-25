@@ -1,5 +1,5 @@
 import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
-import { routeStyle } from "./colors.js";
+import { routeStyle, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 
 const $ = (id) => document.getElementById(id);
@@ -613,7 +613,7 @@ function stationTip(si) {
 function trainTip(i) {
   const [route, head, num] = day.trips[i];
   const ex = expected(i), p = locate(ex.stops, now()), d = p ? ex.delay[p.b] : 0, pl = p ? platform(i, p.b) : "", issue = trainIssue(i);
-  return `${badge(route)} <span>${esc(num)}</span><span class="sub">→ ${esc(head)}</span>${pl ? `<span class="sub">Pl. ${esc(pl)}</span>` : ""}`
+  return `${badge(route)} <span>${esc(num)}</span>${kindOf(route)[0] ? `<span class="sub">${esc(kindOf(route)[0])}</span>` : ""}<span class="sub">→ ${esc(head)}</span>${pl ? `<span class="sub">Pl. ${esc(pl)}</span>` : ""}`
     + (live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : delayText(d)) + (issue ? `<span class="very-late">${esc(issue)}</span>` : standing(i) ? `<span class="standing">probably standing</span>` : "");
 }
 function alertTip(id) {
@@ -975,7 +975,12 @@ const alertsHtml = (list) => {
   const liveOnes = list.filter((a) => a.sev > 1), planned = list.filter((a) => a.sev === 1);
   return liveOnes.map(alertHtml).join("") + (planned.length ? `<details class="planned"><summary>${planned.length} planned / notices</summary>${planned.map(alertHtml).join("")}</details>` : "");
 };
-const badge = (route) => `<span class="badge" style="background:${styles[route].c}">${esc(day.routes[route][0] || day.routes[route][1])}</span>`;
+let photos = {}; // a photo per train type (scripts/typephotos.ts), for the formation's unit chips
+fetch("/types/photos.json").then((r) => r.json()).then((j) => (photos = j)).catch(() => {});
+const kindOf = (route) => trainKind(day.routes[route][0], day.routes[route][1]);
+const badge = (route) => { const [k, about] = kindOf(route); return `<span class="badge" style="background:${styles[route].c}"${k ? ` title="${esc(k + (about ? `: ${about}` : ""))}"` : ""}>${esc(day.routes[route][0] || day.routes[route][1])}</span>`; };
+/** "GoldenPass Express · panorama train Montreux – Interlaken …" under a train's or line's title */
+const kindLine = (route) => { const [k, about] = kindOf(route); return k ? `<div class="sub kind"><b>${esc(k)}</b>${about ? ` · ${esc(about)}` : ""}</div>` : ""; };
 const LEVEL = ["", "low", "medium", "high"];
 const meter = (o, cls) => (o ? `<span class="meter o${o}" title="${cls} class: ${LEVEL[o]} occupancy"><i></i><i></i><i></i></span>` : "");
 /** Forecast occupancy, 1st and 2nd class, as two small bar meters. */
@@ -1091,7 +1096,7 @@ function trainHtml(i) {
     const first = st[sched[0]][3], lastUic = st[sched[(n - 1) * 3]][3];
     const partial = units.filter((u) => (u.from && u.from !== first) || (u.to && u.to !== lastUic));
     formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3>${dir}<div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}${front ? `, front on the ${front}` : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
-      + (units.length ? `<div class="unit-row">${units.map((u) => `<span class="unit"><a href="/stats#/type/${encodeURIComponent(u.cls)}" title="About this type">${esc(u.type)}</a><a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history"><b>${esc(u.id)}</b></a></span>`).join("")}</div>` : "")
+      + (units.length ? `<div class="unit-row">${units.map((u) => `<span class="unit"><a href="/stats#/type/${encodeURIComponent(u.cls)}" title="About this type${photos[u.cls] ? ` (photo: ${esc(photos[u.cls].author)}, ${esc(photos[u.cls].licence)})` : ""}">${photos[u.cls] ? `<img class="unit-photo" src="${esc(photos[u.cls].src)}" alt="" loading="lazy">` : ""}${esc(u.type)}</a><a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history"><b>${esc(u.id)}</b></a></span>`).join("")}</div>` : "")
       + (partial.length ? `<div class="sub">${partial.map((u) => `${esc(u.type)} ${esc(u.id)} only ${esc(nameOf(u.from || first))} → ${esc(nameOf(u.to || lastUic))}`).join(" · ")}</div>` : "");
   }
   const hintCodes = (day.hints?.[day.trips[i][5]] ?? "").split(" ").filter((c) => HINTS[c]);
@@ -1106,7 +1111,7 @@ function trainHtml(i) {
       <span>${hhmm(pl)}</span><span class="exp">${ex - pl >= 60 ? delayText(ex - pl) : ""}</span>
       <span class="name">${esc(s[0])}${dwell >= 180 ? ` <small>dep. ${hhmm(sched[k * 3 + 2])}</small>` : ""}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span>${meters(occ?.[s[3]])}${selected.conn === k ? `<div class="conn">${connectionsHtml(i, k)}</div>` : ""}</li>`;
   }).join("");
-  return `<h2>${badge(route)} <span>${esc(num)}</span> ${chip}</h2>
+  return `<h2>${badge(route)} <span>${esc(num)}</span> ${chip}</h2>${kindLine(route)}
     <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}<span data-live="status"></span><span class="age" data-live="age"></span></div>
     <div class="progress"><i></i></div>
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
@@ -1138,7 +1143,8 @@ function connectionsHtml(i, k) {
 
 function lineHtml(name) {
   const trips = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) ? [i] : [])), rows = runningRows(trips);
-  return `<h2>${badge(day.trips[trips[0]]?.[0] ?? [...selected.routes][0])} <span>Line</span></h2>
+  const r0 = day.trips[trips[0]]?.[0] ?? [...selected.routes][0];
+  return `<h2>${badge(r0)} <span>Line</span></h2>${kindLine(r0)}
     <div class="sub">${rows.length} running now · ${trips.length} trains today · <a class="inline" href="/stats#/line/${encodeURIComponent(name)}">Stats ↗</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.r.some((r) => selected.routes.has(r))))}
     <h3>Running now</h3><ol class="stops deps">${rows.join("") || `<li class="empty">None running right now</li>`}</ol>`;

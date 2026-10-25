@@ -1,5 +1,5 @@
 // Stats pages: hash-routed, data from /api/stats/*, charts with Observable Plot (global `Plot` + `d3` from the CDN).
-import { lineColor } from "./colors.js";
+import { lineColor, trainKind } from "./colors.js";
 
 const main = document.getElementById("page");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -49,7 +49,12 @@ const delayColor = (sec) => (sec >= 600 ? "#ff4d4d" : sec >= 180 ? "#ffd23f" : "
 // lines are keys like "S1|8500010" (name + busiest station); shown by name, with the station where another line shares it
 let LINES = {};
 const lineLabel = (key) => LINES[key] ?? String(key ?? "").replace(/\|[^|]*$/, "");
-const badge = (line) => `<span class="badge" style="background:${lineColor(lineLabel(line).split(" ")[0])}">${esc(lineLabel(line))}</span>`; // same colour as on the map
+// the category from the label when the page doesn't know it: "IC5" -> IC
+const kindOf = (line) => { const n = lineLabel(line).split(" ")[0]; return trainKind(n, n.match(/^[A-Z]+/)?.[0] ?? ""); };
+const badge = (line) => { const [k, about] = kindOf(line); return `<span class="badge" style="background:${lineColor(lineLabel(line).split(" ")[0])}"${k ? ` title="${esc(k + (about ? `: ${about}` : ""))}"` : ""}>${esc(lineLabel(line))}</span>`; }; // same colour as on the map
+// a photo per train type (scripts/typephotos.ts: Wikimedia Commons, credited under the picture)
+const photos = fetch("/types/photos.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+const kindText = (line) => { const [k, about] = kindOf(line); return k ? `<b>${esc(k)}</b>${about ? ` · ${esc(about)}` : ""}` : ""; };
 const kpi = (label, value, note = "", cls = "") => `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
 const card = (title, hint, body, w = 6) => `<section class="card w${w}"><h2>${title}</h2>${hint ? `<p class="hint">${hint}</p>` : ""}${body}</section>`;
 const ch = (id) => `<div class="chart" id="${id}"></div>`;
@@ -295,7 +300,7 @@ async function trainPage(num, current) {
   const status = !run ? "not running today" : run.cancelled ? "cancelled" : run.running ? `running · ${mins(cur?.delay)} at ${esc(cur?.name)}` : run.stops.at(-1).arr * 1000 < Date.now() ? `arrived ${mins(stops.at(-1).delay)}` : `departs ${time(stops[0].dep)}`;
   main.innerHTML = `
   <div class="page-head"><div><h1>${run ? badge(run.line, run.cat) : ""} ${esc(num)}</h1>
-    <p class="sub">${run ? `${esc(run.operator)} · ${esc(stops[0].name)} → ${esc(stops.at(-1).name)} · ${status}` : "not running today"}</p></div>
+    ${run && kindText(run.line) ? `<p class="sub">${kindText(run.line)}</p>` : ""}<p class="sub">${run ? `${esc(run.operator)} · ${esc(stops[0].name)} → ${esc(stops.at(-1).name)} · ${status}` : "not running today"}</p></div>
     <div class="actions">${run ? `<a href="/?train=${encodeURIComponent(num)}">Show on map →</a>` : ""}</div></div>
   ${run?.stuckSince ? `<div class="callout quiet">Probably standing: its expected delay at the next stop has been rising since ${time(run.stuckSince)}. An inference from the forecasts, not a report.</div>` : ""}
   <div class="kpis">
@@ -657,10 +662,12 @@ async function typePage(cls, current) {
   if (!current()) return;
   if (!t) { main.innerHTML = `<div class="empty-page">Nothing known about series ${esc(cls)} yet.</div>`; return; }
   document.title = `TrainNet — ${t.name}`;
-  const running = t.units.filter((u) => u.runsToday), year = new Date().getFullYear();
+  const running = t.units.filter((u) => u.runsToday), year = new Date().getFullYear(), ph = (await photos)[t.cls];
+  if (!current()) return;
   main.innerHTML = `
   <div class="page-head"><div><h1>${esc(t.name)} <span style="color:var(--muted)">series ${esc(t.cls)}</span></h1>
-    <p class="sub">${t.about ? esc(t.about) : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div></div>
+    <p class="sub">${t.about ? esc(t.about) : ""}${t.wiki ? ` <a class="inline" href="${esc(t.wiki)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ""}</p></div>
+    ${ph ? `<figure class="type-photo"><img src="${esc(ph.src)}" alt="${esc(t.name)}" width="480" height="320"><figcaption>Photo: <a href="${esc(ph.page)}" target="_blank" rel="noopener">${esc(ph.author)}</a> · ${ph.licenceUrl ? `<a href="${esc(ph.licenceUrl)}" target="_blank" rel="noopener">${esc(ph.licence)}</a>` : esc(ph.licence)} · Wikimedia Commons</figcaption></figure>` : ""}</div>
   <div class="kpis">
     ${kpi("In service today", n0(running.length), `of ${n0(t.units.length)} units known`)}
     ${kpi("Distance today", `${n0(d3.sum(running, (u) => u.kmToday))}<small> km</small>`, running.length ? `${n0(d3.mean(running, (u) => u.kmToday))} km per unit` : "")}
@@ -724,7 +731,7 @@ async function linePage(name, current) {
   document.title = `TrainNet — ${lineLabel(l.line)}`;
   const done = l.today.filter((t) => t.observed && !t.cancelled), ok = done.filter((t) => t.final_delay < 180).length;
   main.innerHTML = `
-  <div class="page-head"><div><h1>${badge(l.line)} <span class="sub" style="font-size:16px">${esc(l.operator)}</span></h1><p class="sub">${l.trips ? `${n0(l.trips)} trains today · ${n0(l.km)} train-km` : "Not running today: its history"}</p></div></div>
+  <div class="page-head"><div><h1>${badge(l.line)} <span class="sub" style="font-size:16px">${esc(l.operator)}</span></h1>${kindText(l.line) ? `<p class="sub">${kindText(l.line)}</p>` : ""}<p class="sub">${l.trips ? `${n0(l.trips)} trains today · ${n0(l.km)} train-km` : "Not running today: its history"}</p></div></div>
   <div class="kpis">
     ${kpi("Trains today", n0(l.trips))}
     ${kpi("Finished", n0(l.today.length), `${l.today.filter((t) => t.cancelled).length} cancelled`)}
