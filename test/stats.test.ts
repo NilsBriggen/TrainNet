@@ -26,6 +26,7 @@ test("every stats function answers on a small database", async () => {
   db.exec(`INSERT INTO vehicle_run VALUES ('2026-10-23', '502-206', '502', 'FV-Dosto', '700', 't1', 0, '8500001', '8500003', 0, 0, 100, 200, 100, 400, 0)`);
   aggregate("2026-10-23");
   await importDay(db, new Blob([csv]).stream());
+  db.exec(`INSERT INTO station_hour VALUES ('8500001', 0, NULL, 2025), ('8500001', 7, 7.5, 2025)`); // SBB leaves some hours empty
   const key = stats.lineLabels(day) && db.query("SELECT line FROM trip_day WHERE trip = 't1'").get() as { line: string };
   const out = {
     overview: stats.overview(day), fleet: stats.fleet(day), incidents: stats.incidents(day), search: stats.search(day, "a"),
@@ -36,6 +37,7 @@ test("every stats function answers on a small database", async () => {
   };
   for (const [k, v] of Object.entries(out)) expect([k, v]).not.toEqual([k, null]);
   expect(out.lineByName!.line).toBe(key.line);
+  expect(out.station!.busy).toEqual([{ hour: 7, pct: 7.5, year: 2025 }]);
   expect(out.commute).toMatchObject({ runs: 1, pct: 100, median: 120 });
   expect(out.type!.punctuality).toBeNull(); // one run: below the minimum
   expect(stats.commute(day, "8500001", "8500001")).toBeNull();

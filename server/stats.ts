@@ -513,7 +513,7 @@ export function stationStats(d: Day, uic: string) {
     const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ? AND skipped = 0`, uic);
     return {
       ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
-      busy: all(`SELECT hour, pct, year FROM station_hour WHERE uic = ? ORDER BY hour`, uic), // SBB's count of station users through the day
+      busy: all(`SELECT hour, pct, year FROM station_hour WHERE uic = ? AND pct IS NOT NULL ORDER BY hour`, uic), // SBB's count of station users through the day; some hours it left empty
       edges: all(`SELECT track, length_m, height_cm, type FROM platform_edge WHERE uic = ? ORDER BY CAST(track AS INTEGER), track`, uic),
       perHour: perHour.map((n, hour) => ({ hour, today: n, typical: same.length ? Math.round(typical[hour] * 10) / 10 : null })), typicalDays: same.length,
       first: one(`SELECT min(date) d FROM stop_obs WHERE uic = ?`, uic).d,
