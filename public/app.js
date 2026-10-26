@@ -336,7 +336,7 @@ const CHIP_DELAYS = () => !hidden.has("delays");
 let lastStatus = 0;
 function trainFeatures(dt, ts, withTrails) {
   const t = now(), feats = [], trails = [], alarms = [], z = map.getZoom();
-  const L = Math.min(15000, Math.max(400, (48 * 107160) / 2 ** z)); // ~48 px of track behind each train
+  const L = Math.min(4000, Math.max(100, (12 * 107160) / 2 ** z)); // ~12 px of track behind each train: longer ones overlap where lines bundle
   const blinkOn = CALM || ts % 1000 < 550;
   let running = 0, observed = 0, late = 0;
   const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 10.5, perCat = {};
