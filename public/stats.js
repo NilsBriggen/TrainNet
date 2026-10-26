@@ -6,6 +6,7 @@ const main = document.getElementById("page");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const fmt = new Intl.NumberFormat("de-CH");
 const n0 = (x) => (x == null ? "–" : fmt.format(Math.round(x)));
+const f1 = (x) => (x == null ? "–" : x.toFixed(1)); // one decimal; data fields can come back null
 const ZH = "Europe/Zurich"; // Swiss trains: Swiss time, wherever the viewer is
 const time = (sec) => new Date(sec * 1000).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: ZH });
 const hm = (d) => d.toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: ZH }); // Plot time axes
@@ -228,7 +229,7 @@ async function overview(current) {
     Plot.barY(L.delayHist, { x: "bucket", y: "n", fill: (d, i) => ["#3ddc97", "#3ddc97", "#ffd23f", "#ffb547", "#ff7a4d", "#ff4d4d", "#ff4d4d"][i], tip: true }), Plot.ruleY([0]),
   ] });
   draw("c-punct", { x: tx, y: { grid: true, label: "%", domain: [Math.min(80, d3.min(S, (d) => d.pct) ?? 80), 100] }, marks: [
-    Plot.lineY(S, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6 }), Plot.tip(S, Plot.pointerX({ x: "date", y: "pct", title: (d) => `${time(d.t)}: ${d.pct?.toFixed(1)} % on time` })),
+    Plot.lineY(S, { x: "date", y: "pct", stroke: "#3ddc97", strokeWidth: 1.6 }), Plot.tip(S, Plot.pointerX({ x: "date", y: "pct", title: (d) => `${time(d.t)}: ${f1(d.pct)} % on time` })),
   ] });
   draw("c-cat", { marginLeft: 100, x: { grid: true, label: null }, y: { label: null }, marks: [Plot.barX(L.byCat, { y: "cat", x: "n", fill: (d) => CAT[d.cat], sort: { y: "-x" }, tip: true })] });
   draw("c-cat-today", { marginLeft: 100, x: { domain: [0, 100], grid: true, label: "%" }, y: { label: null }, marks: [Plot.barX(T.byCat.filter((d) => d.pct != null), { y: "cat", x: "pct", fill: (d) => CAT[d.cat], sort: { y: "-x" }, tip: true })] });
@@ -267,7 +268,7 @@ async function hotspotMap(id, rows) {
     marks: [
       Plot.geo(outline, { fill: "#0b1a3d", stroke: "#3a6fd8", strokeOpacity: 0.7 }),
       Plot.link(lines, { x1: (d) => d.a.lon, y1: (d) => d.a.lat, x2: (d) => d.b.lon, y2: (d) => d.b.lat, stroke: "gainMin", strokeWidth: 3.5, strokeLinecap: "round" }),
-      Plot.tip(lines, Plot.pointer({ x: (d) => (d.a.lon + d.b.lon) / 2, y: (d) => (d.a.lat + d.b.lat) / 2, title: (d) => `${d.a.name} → ${d.b.name}\n+${d.gainMin.toFixed(1)} min on average · ${d.n} trains` })),
+      Plot.tip(lines, Plot.pointer({ x: (d) => (d.a.lon + d.b.lon) / 2, y: (d) => (d.a.lat + d.b.lat) / 2, title: (d) => `${d.a.name} → ${d.b.name}\n+${f1(d.gainMin)} min on average · ${d.n} trains` })),
     ],
   }));
   if (!rows.length) el.insertAdjacentHTML("beforeend", empty("Fills in as trains finish."));
@@ -533,7 +534,7 @@ async function historyPage(current) {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const monthSpan = (p) => p.split("–").map((m) => MONTHS[+m - 1]).join("–");
-const signed = (x) => `<span style="color:${x > 0 ? "#3ddc97" : x < 0 ? "#ff7a4d" : "inherit"}">${x > 0 ? "+" : ""}${x.toFixed(1)}</span>`;
+const signed = (x) => `<span style="color:${x > 0 ? "#3ddc97" : x < 0 ? "#ff7a4d" : "inherit"}">${x > 0 ? "+" : ""}${f1(x)}</span>`;
 function moverTable(m, name, href) {
   const t = (rows) => table([{ h: "", f: name }, { h: "Before", num: 1, f: (r) => pctv(r.before) }, { h: "Now", num: 1, f: (r) => pctv(r.now) }, { h: "pts", num: 1, f: (r) => signed(r.delta) }],
     rows.map((r) => ({ ...r, _href: href(r) })), "Not enough runs to compare.");
@@ -760,8 +761,8 @@ async function stationPage(uic, current) {
     Plot.barY(s.perHour, { x: "hour", y: "today", fill: "#2b56b0", tip: true }), ...(s.typicalDays ? [Plot.lineY(s.perHour, { x: "hour", y: "typical", stroke: "#5cc8ff", curve: "step" })] : []),
   ] });
   if (s.busy.length) draw("c-busy", { x: { label: "hour", type: "band", domain: d3.range(24) }, y: { grid: true, label: "% of the day" }, marks: [
-    Plot.barY(s.busy, { x: "hour", y: "pct", fill: "#ffb547", fillOpacity: 0.85, tip: true, title: (h) => `${h.hour}:00–${h.hour + 1}:00\n${h.pct.toFixed(1)} % of the day's users` })] });
-  if (s.platforms.length) draw("c-plat", { height: Math.max(120, 18 * s.platforms.length + 30), marginLeft: 50, x: { grid: true, label: null }, y: { label: null }, marks: [Plot.barX(s.platforms, { y: "p", x: "n", fill: "#5cc8ff", sort: { y: "-x" }, tip: true })] });
+    Plot.barY(s.busy, { x: "hour", y: "pct", fill: "#ffb547", fillOpacity: 0.85, tip: true, title: (h) => `${h.hour}:00–${h.hour + 1}:00\n${f1(h.pct)} % of the day's users` })] });
+  if (s.platforms.length) draw("c-plat", { height: Math.max(120, 18 * s.platforms.length + 30), marginLeft: 50, x: { grid: true, label: null }, y: { type: "band", label: null }, marks: [Plot.barX(s.platforms, { y: "p", x: "n", fill: "#5cc8ff", sort: { y: "-x" }, tip: true })] });
   if (s.daily.length) draw("c-days", { x: { type: "band", label: null, tickFormat: (d) => d.slice(5) }, y: { grid: true, label: "%", domain: [Math.min(70, d3.min(s.daily, (d) => d.pct) ?? 70), 100] }, marks: [Plot.barY(s.daily, { x: "date", y: "pct", fill: "#3ddc97", tip: true, title: (d) => `${d.date}: ${d.pct} % on time\n${n0(d.dep_obs)} departures recorded · average ${mins(d.avg_dep_delay)}` })] });
 }
 
