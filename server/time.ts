@@ -18,6 +18,9 @@ export function serviceBase(date: string): number {
   return noonUtc - offset - 12 * 3600_000;
 }
 
+/** A "delay" outside this is a broken forecast (e.g. dated a day off: 2019-11-04 averaged −27 h), not a delay: unobserved. */
+export const sane = (d: number) => d >= -1800 && d <= 6 * 3600;
+
 /** Swiss timetable year: a new one starts the Sunday after the 2nd Saturday of December. */
 export function timetableYear(date: string): number {
   const y = Number(date.slice(0, 4));

@@ -34,11 +34,12 @@ async function crawl(d: Day, prev: number) {
   const none = keys("none", Date.now() - 4 * 3600_000), cached = keys("ok"); // an old "none" may have been "not yet"
   // formations an earlier pass already went through: recorded, or without identifiable units (RhB coaches): nothing left to do
   const since = keys("ok", prev), handled = new Set([...cached].filter((k) => !since.has(k)));
-  const recorded = new Set((db.query("SELECT DISTINCT train_no FROM vehicle_run WHERE date = ?").all(d.date) as { train_no: string }[]).map((r) => r.train_no));
+  const agencyOf = new Map(d.trips.map((t) => [t.id, t.agency])); // the same number can run for two operators
+  const recorded = new Set((db.query("SELECT DISTINCT train_no, trip FROM vehicle_run WHERE date = ?").all(d.date) as { train_no: string; trip: string }[]).map((r) => `${EVU[agencyOf.get(r.trip) ?? ""]}:${r.train_no}`));
   const todo = new Map<string, Trip>();
   for (const t of d.trips) {
     const k = formationKey(EVU[t.agency], t.num, t.date);
-    if (t.date === d.date && EVU[t.agency] && LONG.test(d.routes[t.route][1]) && !none.has(k) && !handled.has(k) && !recorded.has(t.num) && !todo.has(k)) todo.set(k, t);
+    if (t.date === d.date && EVU[t.agency] && LONG.test(d.routes[t.route][1]) && !none.has(k) && !handled.has(k) && !recorded.has(`${EVU[t.agency]}:${t.num}`) && !todo.has(k)) todo.set(k, t);
   }
   const ins = db.query("INSERT OR REPLACE INTO vehicle_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const uic = (st: number) => d.stations[st][3], base = d.base / 1000;

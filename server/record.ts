@@ -63,6 +63,7 @@ export let db: Database;
 type State = { u?: (number | null)[][]; c?: 1; stuck: number };
 let dayOf: Day | undefined;
 const state = new Map<number, State>(); // trip index of the current day -> what realtime told us
+let lastFeed = 0; // feed timestamp of the previous recordTrips: standing minutes are the time between feeds
 const flushed = new Set<string>(); // `${trip id}|${service date}` already in trip_day
 let lastFlush = 0;
 
@@ -98,6 +99,7 @@ const key = (id: string, date: string) => `${id}|${date}`;
 export function startDay(d: Day, nowSec = Date.now() / 1000) {
   if (dayOf && dayOf !== d) flush(dayOf, nowSec, 0);
   dayOf = d;
+  lastFeed = 0;
   state.clear();
   flushed.clear();
   migrateLineKeys(d);
@@ -109,11 +111,13 @@ export function startDay(d: Day, nowSec = Date.now() / 1000) {
 /** Every trip-update poll: merge realtime state, store the network sample, flush finished trips every 5 min. */
 export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number | null)[][]; x?: number }>, feedTime: number, sample: [number, number, number, number, number]) {
   if (dayOf !== d) startDay(d, feedTime);
+  const step = lastFeed ? Math.min(feedTime - lastFeed, 120) / 60 : 0.5; // minutes since the previous feed (~30 s); a pause of ours isn't standing time
+  lastFeed = feedTime;
   for (const [i, v] of Object.entries(delays)) {
     const st = state.get(+i) ?? { stuck: 0 };
     if (v.u) st.u = v.u;
-    if (v.c) st.c = 1;
-    if (v.x) st.stuck += 0.25; // minutes: one poll every 15 s
+    st.c = v.c ? 1 : 0; // a cancelled train can be reinstated
+    if (v.x) st.stuck += step;
     state.set(+i, st);
   }
   db.query("INSERT OR REPLACE INTO net_sample VALUES (?, ?, ?, ?, ?, ?)").run(feedTime, ...sample);
@@ -159,14 +163,14 @@ export function flush(d: Day, nowSec: number, grace: number) {
   if (done.length) console.log(`[record] stored ${done.length} finished trips`);
 }
 
-type Alert = { id: string; h: string; d: string; sev: number; sudden?: 1; kind: string; cause: string; why: string; from: number; s: number[]; r: number[] };
+type Alert = { id: string; h: string; d: string; sev: number; sudden?: 1; kind: string; cause: string; why: string; from: number; s: number[]; all?: number[]; r: number[] };
 export function recordAlerts(d: Day, alerts: Alert[], nowSec = Date.now() / 1000) {
   const up = db.query(`INSERT INTO alert_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-    last_seen = excluded.last_seen, sev_max = max(sev_max, excluded.sev_max), sudden = max(sudden, excluded.sudden),
+    last_seen = excluded.last_seen, since = coalesce(excluded.since, since), sev_max = max(sev_max, excluded.sev_max), sudden = max(sudden, excluded.sudden),
     kind = excluded.kind, h = excluded.h, d = excluded.d, why = excluded.why, stations = excluded.stations, lines = excluded.lines`);
   db.transaction(() => {
     for (const a of alerts) up.run(a.id, nowSec, nowSec, a.from || null, a.sev, a.sudden ? 1 : 0, a.kind, a.cause, a.why, a.h, a.d,
-      JSON.stringify(a.s.map((i) => d.stations[i][3])), JSON.stringify(a.r.map((r) => lineOf(d, r))));
+      JSON.stringify((a.all ?? a.s).map((i) => d.stations[i][3])), JSON.stringify(a.r.map((r) => lineOf(d, r))));
   })();
 }
 
@@ -239,21 +243,22 @@ export function maintain(now = new Date()) {
   db.query("DELETE FROM alert_log WHERE last_seen < ?").run(now.getTime() / 1000 - 365 * 86400);
 }
 
+// average delays count early trains as 0, like SBB's figures and the official history
 const P = `observed = 1 AND cancelled = 0 AND final_delay < ${LATE}`;
 export function aggregate(date: string) {
   db.transaction(() => {
     const finals = (db.query("SELECT final_delay f FROM trip_day WHERE date = ? AND observed = 1 AND cancelled = 0 ORDER BY final_delay").all(date) as { f: number }[]).map((r) => r.f);
     const p90 = finals.length ? finals[Math.floor(finals.length * 0.9)] : null;
     db.query(`INSERT OR REPLACE INTO agg_net_day SELECT date, count(*), sum(observed), sum(${P}), sum(cancelled), sum(km * (1 - cancelled)),
-      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), $p90,
+      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN max(final_delay, 0) END), $p90,
       (SELECT count(*) FROM stop_obs WHERE date = $date AND arr_delay IS NOT NULL AND skipped = 0),
       (SELECT count(*) FROM stop_obs WHERE date = $date AND arr_delay < ${LATE} AND skipped = 0)
       FROM trip_day WHERE date = $date`).run({ $date: date, $p90: p90 });
     db.query(`INSERT OR REPLACE INTO agg_train_day SELECT date, train_no, line, cat, agency, count(*), sum(observed), sum(${P}), sum(cancelled),
-      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), max(max_delay), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY train_no, line`).run(date);
+      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN max(final_delay, 0) END), max(max_delay), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY train_no, line`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_line_day SELECT date, line, cat, count(*), sum(observed), sum(${P}), sum(cancelled),
-      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN final_delay END), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY line`).run(date);
-    db.query(`INSERT OR REPLACE INTO agg_station_day SELECT date, uic, count(sched_dep), count(dep_delay), sum(dep_delay < ${LATE}), avg(dep_delay)
+      avg(CASE WHEN observed = 1 AND cancelled = 0 THEN max(final_delay, 0) END), sum(km * (1 - cancelled)) FROM trip_day WHERE date = ? GROUP BY line`).run(date);
+    db.query(`INSERT OR REPLACE INTO agg_station_day SELECT date, uic, count(sched_dep), count(dep_delay), sum(dep_delay < ${LATE}), avg(max(dep_delay, 0))
       FROM stop_obs WHERE date = ? AND sched_dep IS NOT NULL AND skipped = 0 GROUP BY uic`).run(date);
     db.query(`INSERT OR REPLACE INTO agg_vehicle_day SELECT date, unit, class, type, count(*), sum(km) FROM vehicle_run WHERE date = ? GROUP BY unit`).run(date);
     // delay gained between consecutive stops (arrival at b minus departure at a), per section and direction: the map's "where time is lost"

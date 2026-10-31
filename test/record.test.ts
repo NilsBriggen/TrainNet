@@ -61,6 +61,20 @@ test("alerts are upserted: first_seen stays, last_seen and severity move", () =>
   }]);
 });
 
+test("standing minutes follow the feed clock: feeds 30 s apart add half a minute each, from the first", () => {
+  recordTrips(day, { 0: { u: [[1, 240, 240, 0]], x: 1 } }, at("1000"), [2, 0, 0, 1, 2]);
+  recordTrips(day, { 0: { u: [[1, 240, 240, 0]], x: 1 } }, at("1000") + 30, [2, 0, 0, 1, 2]);
+  flush(day, at("1200"), 0);
+  expect(db.query("SELECT stuck_min FROM trip_day WHERE trip = 't1'").get()).toEqual({ stuck_min: 1 });
+});
+
+test("a cancelled train that comes back in the feed is stored as run, not cancelled", () => {
+  recordTrips(day, { 0: { c: 1 } }, at("1000"), [2, 0, 1, 0, 2]);
+  recordTrips(day, { 0: { u: [[1, 60, 60, 0]] } }, at("1005"), [2, 0, 0, 0, 2]);
+  flush(day, at("1200"), 0);
+  expect(db.query("SELECT cancelled, observed FROM trip_day WHERE trip = 't1'").get()).toEqual({ cancelled: 0, observed: 1 });
+});
+
 test("a cancelled trip writes no per-stop rows (they would read as on time)", () => {
   recordTrips(day, { 1: { c: 1 } }, at("1000"), [1, 0, 1, 0, 0]);
   flush(day, at("1200"), 0);

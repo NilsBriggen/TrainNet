@@ -2,6 +2,7 @@
 // vendored from gtfs-realtime-bindings 1.1.1 (Apache-2.0): the package drags ~50 build-time packages into production
 import GtfsRealtimeBindings from "./gtfs-realtime.js";
 import { upstream } from "./upstream";
+import { sane } from "./time";
 import { db, recordAlerts, recordTrips } from "./record";
 import type { Day } from "./gtfs";
 
@@ -13,7 +14,7 @@ const SUDDEN = 3600; // an incident blinks for its first hour
 let delays: Record<number, { c?: 1; u?: (number | null)[][]; x?: number }> = {};
 export type Alert = {
   id: string; h: string; d: string; u?: string; sev: 1 | 2 | 3; kind: string; why: string; cause: string; sudden?: 1; train?: 1;
-  from: number; to: number; s: number[]; r: number[]; t: number[]; seg?: number[][];
+  from: number; to: number; s: number[]; r: number[]; t: number[]; seg?: number[][]; all?: number[]; // all: every named station when s is cut to a span's ends
 };
 let alerts: Alert[] = [];
 // one sample per trip-update poll, 2 h: [feedTime, running, late ≥3 min, cancelled, stuck, running with realtime]
@@ -159,8 +160,10 @@ async function pollTrips(day: () => Day | undefined) {
       const pos = trip.seq.indexOf(s.stopSequence ?? -1);
       if (pos < 0) return [];
       // protobufjs puts proto2 defaults (0) on the prototype, so check for set fields explicitly
-      const delay = (ev: any, sched: number) =>
-        !ev ? null : Object.hasOwn(ev, "delay") ? ev.delay : Object.hasOwn(ev, "time") ? Number(ev.time) - (d.base / 1000 + sched) : null;
+      const delay = (ev: any, sched: number) => {
+        const raw = !ev ? null : Object.hasOwn(ev, "delay") ? ev.delay : Object.hasOwn(ev, "time") ? Number(ev.time) - (d.base / 1000 + sched) : null;
+        return raw !== null && sane(raw) ? raw : null; // a forecast dated a day off is no delay, on the map or in the record
+      };
       const skip = s.scheduleRelationship === TripUpdate.StopTimeUpdate.ScheduleRelationship.SKIPPED ? 1 : 0;
       return [[pos, delay(s.arrival, trip.stops[pos * 3 + 1]), delay(s.departure, trip.stops[pos * 3 + 2]), skip]];
     });
@@ -257,6 +260,7 @@ async function pollAlerts(day: () => Day | undefined) {
     if (place.pair) {
       const seg = d.track(...place.pair);
       if (seg) a.seg = [seg];
+      a.all = a.s; // the station pages still match stations inside the span
       a.s = place.pair; // the span's ends, not every stop of the affected trips
     } else if (place.at !== undefined) a.s = [place.at]; // a point alert: drawn as one marker
     markSudden(a, now);

@@ -100,7 +100,7 @@ function live(d: Day) {
 function today(d: Day) {
   const date = d.date, base = d.base / 1000;
   const tot = one(`SELECT count(*) trips, sum(observed) observed, sum(observed AND NOT cancelled AND final_delay < 180) punctual,
-    sum(cancelled) cancelled, round(sum(km * (1 - cancelled))) km, avg(CASE WHEN observed AND NOT cancelled THEN final_delay END) avg_delay FROM trip_day WHERE date = ?`, date);
+    sum(cancelled) cancelled, round(sum(km * (1 - cancelled))) km, avg(CASE WHEN observed AND NOT cancelled THEN max(final_delay, 0) END) avg_delay FROM trip_day WHERE date = ?`, date);
   const P = `sum(observed AND NOT cancelled) obs, sum(observed AND NOT cancelled AND final_delay < 180) ok`;
   const cats = new Map<string, { cat: string; obs: number; ok: number }>();
   for (const r of all(`SELECT cat, agency, ${P} FROM trip_day WHERE date = ? GROUP BY cat, agency`, date)) {
@@ -109,14 +109,14 @@ function today(d: Day) {
     cats.set(c, x);
   }
   const hours = new Map<number, { obs: number; ok: number }>();
-  for (const r of all(`SELECT (arr - ?) / 3600 h, ${P} FROM trip_day WHERE date = ? GROUP BY h`, base, date)) {
-    const h = Math.floor(r.h) % 24, x = hours.get(h) ?? { obs: 0, ok: 0 };
+  for (const r of all(`SELECT arr / 3600 h, ${P} FROM trip_day WHERE date = ? GROUP BY h`, date)) {
+    const h = zurich(Math.floor(r.h) * 3600).hour, x = hours.get(h) ?? { obs: 0, ok: 0 }; // wall-clock hour, right on DST days too
     x.obs += r.obs; x.ok += r.ok;
     hours.set(h, x);
   }
   const hot = all(`SELECT a.uic ua, b.uic ub, count(*) n, avg(b.arr_delay - a.dep_delay) gain FROM stop_obs a
     JOIN stop_obs b ON b.date = a.date AND b.trip = a.trip AND b.idx = a.idx + 1
-    WHERE a.date = ? AND a.dep_delay IS NOT NULL AND b.arr_delay IS NOT NULL GROUP BY ua, ub HAVING n >= 5 ORDER BY gain DESC LIMIT 60`, date);
+    WHERE a.date = ? AND a.dep_delay IS NOT NULL AND b.arr_delay IS NOT NULL AND a.skipped = 0 AND b.skipped = 0 GROUP BY ua, ub HAVING n >= 5 ORDER BY gain DESC LIMIT 60`, date);
   return {
     ...tot, punctualPct: pct(tot.punctual, tot.observed - (tot.cancelled ?? 0)),
     byCat: [...cats.values()].map((x) => ({ ...x, pct: pct(x.ok, x.obs) })).sort((a, b) => b.obs - a.obs),
@@ -126,7 +126,7 @@ function today(d: Day) {
       .map((r) => ({ line: r.line, trips: r.trips, pct: pct(r.ok, r.obs) })),
     byHour: [...hours].sort((a, b) => a[0] - b[0]).map(([hour, x]) => ({ hour, pct: pct(x.ok, x.obs), n: x.obs })),
     worst: all(`SELECT train_no, line, origin, dest, final_delay, arr FROM trip_day WHERE date = ? AND observed AND NOT cancelled ORDER BY final_delay DESC LIMIT 12`, date),
-    stationsLate: all(`SELECT uic, count(dep_delay) n, avg(dep_delay) avg FROM stop_obs WHERE date = ? AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY uic HAVING n >= 30 ORDER BY avg DESC LIMIT 12`, date)
+    stationsLate: all(`SELECT uic, count(dep_delay) n, avg(max(dep_delay, 0)) avg FROM stop_obs WHERE date = ? AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY uic HAVING n >= 30 ORDER BY avg DESC LIMIT 12`, date)
       .map((r) => ({ ...station(d, r.uic), n: r.n, avg: r.avg })),
     hotspots: hot.map((r) => ({ a: station(d, r.ua), b: station(d, r.ub), n: r.n, gain: r.gain })).filter((r) => r.a && r.b),
     cancelledByLine: all(`SELECT line, sum(cancelled) n FROM trip_day WHERE date = ? GROUP BY line HAVING n > 0 ORDER BY n DESC LIMIT 12`, date),
@@ -207,7 +207,7 @@ function history() {
   return cached("history", 1800, () => { // the heatmap scans 30 days of stop_obs
     const cutoff = addDays(zurichDate(new Date()), -30);
     const heat = new Map<string, { dow: number; hour: number; n: number; sum: number; late: number }>();
-    for (const r of all(`SELECT sched_dep / 3600 h, count(*) n, sum(dep_delay) s, sum(dep_delay >= 180) late FROM stop_obs
+    for (const r of all(`SELECT sched_dep / 3600 h, count(*) n, sum(max(dep_delay, 0)) s, sum(dep_delay >= 180) late FROM stop_obs
       WHERE date >= ? AND sched_dep IS NOT NULL AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY h`, cutoff)) {
       const { hour, dow } = zurich(Math.floor(r.h) * 3600), k = `${dow}:${hour}`, x = heat.get(k) ?? { dow, hour, n: 0, sum: 0, late: 0 };
       x.n += r.n; x.sum += r.s; x.late += r.late;
@@ -309,6 +309,8 @@ function movers(months: { month: string; days: number }[]) {
     stations: compare(`SELECT uic k, max(name) name, sum(dep_ok) ok, sum(dep_obs) n FROM hist_station_month WHERE month IN ($M) GROUP BY uic`, (_, x) => x.name),
   };
 }
+/** Alerts name lines by bare name, and "S1" runs around Bern and Basel: keep those naming one of this line's stations, or none. */
+const onLine = (rows: any[], uics: Set<string>) => rows.filter((r) => { const st: string[] = JSON.parse(r.stations); return !st.length || st.some((u) => uics.has(u)); }).slice(0, 30).map(({ stations, ...r }) => r);
 const d3group = <T>(rows: T[], key: (r: T) => string) => { const m = new Map<string, T[]>(); for (const r of rows) (m.get(key(r)) ?? m.set(key(r), []).get(key(r))!).push(r); return m; };
 /** Monthly punctuality of one train number / line / station's departures since 2018, and the whole span's share. */
 const since = (rows: any[]) => {
@@ -330,12 +332,12 @@ export function train(d: Day, num: string) {
         delay: e.delay[k], skipped: e.skipped[k], platform: d.platforms[trip.plat[k]] || null,
       })),
     }));
-    const occ = [...occupancyAll()].find(([k]) => k.endsWith(`:${num}`))?.[1]?.sec ?? [];
+    const occ = occupancyAll().get(`${d.trips.find((t) => t.num === num)?.agency}:${num}`)?.sec ?? []; // the operator's train, not any operator's
     return {
       num, v: d.version, runs, crowding: occ,
       history: all(`SELECT date, line, final_delay, max_delay, cancelled, observed, stuck_min FROM trip_day WHERE train_no = ? ORDER BY date`, num),
       older: all(`SELECT date, line, trips, punctual, observed, cancelled, avg_delay FROM agg_train_day WHERE train_no = ? AND date NOT IN (SELECT date FROM trip_day WHERE train_no = ?1) ORDER BY date`, num),
-      profile: all(`SELECT idx, uic, count(arr_delay) n, avg(arr_delay) arr, avg(dep_delay) dep, sum(arr_delay >= 180) late FROM stop_obs WHERE train_no = ? GROUP BY idx, uic ORDER BY idx`, num)
+      profile: all(`SELECT idx, uic, count(arr_delay) n, avg(max(arr_delay, 0)) arr, avg(max(dep_delay, 0)) dep, sum(arr_delay >= 180) late FROM stop_obs WHERE train_no = ? AND skipped = 0 GROUP BY idx, uic ORDER BY idx`, num)
         .map((r) => ({ ...r, name: station(d, r.uic)?.name ?? r.uic })),
       vehicles: all(`SELECT date, unit, type, pos, from_uic, to_uic, km FROM vehicle_run WHERE train_no = ? ORDER BY date DESC, pos LIMIT 120`, num).filter((r) => !stale(r.unit)).map(named),
       since: since(all(`SELECT month, sum(punctual) ok, sum(observed) n FROM hist_train_month WHERE train_no = ? GROUP BY month ORDER BY month`, num)),
@@ -497,7 +499,7 @@ export function stationStats(d: Day, uic: string) {
     d.trips.forEach((t, i) => {
       if (t.date !== d.date) return;
       for (let k = 0; k < t.stops.length / 3 - 1; k++) if (t.stops[k * 3] === s.i) {
-        perHour[Math.floor(t.stops[k * 3 + 2] / 3600) % 24]++;
+        perHour[zurich(d.base / 1000 + t.stops[k * 3 + 2]).hour]++; // wall-clock hour
         const p = trackNo(d.platforms[t.plat[k]]) || d.platforms[t.plat[k]] || "?", l = keys[i]; // sectors "1A-D", "1E-H" are one platform
         plats.set(p, (plats.get(p) ?? 0) + 1);
         lines.set(l, (lines.get(l) ?? 0) + 1);
@@ -509,8 +511,8 @@ export function stationStats(d: Day, uic: string) {
     const typical = Array(24).fill(0);
     for (const r of same.length ? all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date IN (${same.map(() => "?").join(",")}) AND sched_dep IS NOT NULL AND skipped = 0 GROUP BY h`, uic, ...same) : [])
       typical[zurich(Math.floor(r.h) * 3600).hour] += r.n / same.length;
-    const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr FROM stop_obs WHERE uic = ? AND date = ? AND skipped = 0`, uic, date);
-    const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(dep_delay) avg, avg(arr_delay) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ? AND skipped = 0`, uic);
+    const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(max(dep_delay, 0)) avg, avg(max(arr_delay, 0)) arr FROM stop_obs WHERE uic = ? AND date = ? AND skipped = 0`, uic, date);
+    const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(max(dep_delay, 0)) avg, avg(max(arr_delay, 0)) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ? AND skipped = 0`, uic);
     return {
       ...s, trips: d.stations[s.i][4], pax: one(`SELECT daily, weekday, year FROM station_pax WHERE uic = ?`, uic),
       busy: all(`SELECT hour, pct, year FROM station_hour WHERE uic = ? AND pct IS NOT NULL ORDER BY hour`, uic), // SBB's count of station users through the day; some hours it left empty
@@ -542,14 +544,15 @@ export function lineStats(d: Day, key: string) {
       since: since(all(`SELECT month, punctual ok, observed n FROM hist_line_month WHERE line = ? ORDER BY month`, key)) }; // not running today: its history
     const pattern = trips.reduce((a, b) => (b.stops.length > a.stops.length ? b : a)); // the longest variant orders the stops
     const order = Array.from({ length: pattern.stops.length / 3 }, (_, k) => d.stations[pattern.stops[k * 3]][3]);
-    const per = new Map(all(`SELECT uic, count(arr_delay) n, avg(arr_delay) arr, sum(arr_delay < 180) ok FROM stop_obs WHERE line = ? AND arr_delay IS NOT NULL GROUP BY uic`, name).map((r) => [r.uic, r]));
+    const per = new Map(all(`SELECT uic, count(arr_delay) n, avg(max(arr_delay, 0)) arr, sum(arr_delay < 180) ok FROM stop_obs WHERE line = ? AND arr_delay IS NOT NULL AND skipped = 0 GROUP BY uic`, name).map((r) => [r.uic, r]));
     return {
       line: name, cat: category(d, trips[0].route), operator: d.agencies[trips[0].agency] ?? trips[0].agency, trips: trips.length,
       km: Math.round(trips.reduce((a, t) => a + t.km.at(-1)!, 0)),
       stops: order.map((uic) => { const r = per.get(uic); return { uic, name: station(d, uic)?.name ?? uic, n: r?.n ?? 0, arr: r?.arr ?? null, pct: r ? pct(r.ok, r.n) : null }; }),
       today: all(`SELECT train_no, origin, dest, final_delay, cancelled, observed, arr FROM trip_day WHERE line = ? AND date = ? ORDER BY arr`, name, d.date),
       daily: all(`SELECT date, trips, observed, punctual, cancelled, avg_delay FROM agg_line_day WHERE line = ? ORDER BY date`, name).map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled) })),
-      incidents: all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why FROM alert_log WHERE lines LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 30`, `%"${lineName(name)}"%`), // alerts name lines
+      incidents: onLine(all(`SELECT id, kind, sev_max, since, first_seen, last_seen, h, why, stations FROM alert_log WHERE lines LIKE ? AND sev_max >= 2 ORDER BY first_seen DESC LIMIT 60`, `%"${lineName(name)}"%`),
+        new Set(trips.flatMap((t) => Array.from({ length: t.stops.length / 3 }, (_, k) => d.stations[t.stops[k * 3]][3])))),
       since: since(all(`SELECT month, punctual ok, observed n FROM hist_line_month WHERE line = ? ORDER BY month`, name)),
     };
   });

@@ -3,12 +3,10 @@
 // so a day adds in once (hist_done) and months need no detail rows: 8 years stay at a few hundred MB.
 import type { Database } from "bun:sqlite";
 import { upstream } from "./upstream";
-import { addDays, zurichDate } from "./time";
+import { addDays, sane, zurichDate } from "./time";
 import { lineKeys } from "./lines";
 
 const LATE = 180; // punctual = less than 3 min late, the SBB threshold
-// a "delay" outside this is a broken forecast (e.g. dated a day off: 2019-11-04 averaged −27 h), not a delay: unobserved
-const sane = (d: number) => d >= -1800 && d <= 6 * 3600;
 export const ARCHIVE = "https://archive.opentransportdata.swiss";
 
 export function initHistory(db: Database) {
