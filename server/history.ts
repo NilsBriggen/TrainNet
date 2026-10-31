@@ -62,6 +62,8 @@ export async function importDay(db: Database, body: ReadableStream<Uint8Array> |
     t.rows++;
     t.uics.push(uic);
     if (cancelled) return void t.cancelledRows++;
+    // AN_PROGNOSE_STATUS is ignored on purpose: in 2025-09, 2.3 % of arrivals were PROGNOSE (no GESCHAETZT/UNBEKANNT); dropping
+    // them lost 4.4 % of trips and lifted the month 93.35 → 93.65 %, i.e. the year away from SBB's published 94.1 % (ours 94.2)
     const arr = c[col.ANKUNFTSZEIT], arrAct = c[col.AN_PROGNOSE];
     if (arr) {
       const s = secs(arr), raw = arrAct ? secs(arrAct) - s : null, d = raw !== null && sane(raw) ? raw : null;
