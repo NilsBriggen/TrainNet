@@ -777,7 +777,7 @@ async function stationPage(uic, current) {
     ${s.busy.length ? card("When it's busy", `Share of the station's daily users by hour (SBB count, ${s.busy[0].year})`, ch("c-busy"), 6) : ""}
     ${s.edges.length ? card("Platform edges", "Length and height of each platform edge (SBB survey for step-free access)", table([{ h: "Track", f: (x) => esc(x.track) }, { h: "Length", num: 1, f: (x) => `${n0(x.length_m)} m` },
       { h: "Height", num: 1, f: (x) => (x.height_cm ? `${x.height_cm} cm` : "–") }, { h: "", f: (x) => `<span class="muted">${esc(x.type)}</span>` }], s.edges), 6) : ""}
-    ${s.fit?.length ? card("Longest train per track", "Today's longest train on each track (all its units) against the platform edge SBB measured", table([{ h: "Track", f: (x) => esc(x.track) }, { h: "Train", f: (x) => esc(x.train) },
+    ${s.fit?.length ? card("Longest train per track", "Today's longest train on each track (its units at this station) against the platform edge in SBB's survey, which lists some edges only in part", table([{ h: "Track", f: (x) => esc(x.track) }, { h: "Train", f: (x) => esc(x.train) },
       { h: "Train", num: 1, f: (x) => `${n0(x.train_m)} m` }, { h: "Platform", num: 1, f: (x) => `${n0(x.edge_m)} m` }, { h: "", num: 1, f: (x) => (x.train_m > x.edge_m ? `<span style="color:${C.warn}">${n0(x.train_m - x.edge_m)} m over</span>` : "") }],
       s.fit.map((x) => ({ ...x, _href: `#/train/${x.train}` }))), 6) : ""}
     ${card("Lines", "Departures per line today", table([{ h: "Line", f: (r) => badge(r.line) }, { h: "Departures", num: 1, f: (r) => r.n }], s.lines.map((r) => ({ ...r, _href: `#/line/${encodeURIComponent(r.line)}` }))), 4)}

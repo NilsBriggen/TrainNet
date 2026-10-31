@@ -40,11 +40,13 @@ test("line sections: both directions and both traffic kinds of the latest year a
     bp_von_abschnitt_bezeichnung: `S${from}`, bp_bis_abschnitt_bezeichnung: `S${to}`, strecke_bezeichnung: "L", verbindung: { geometry: { coordinates: [[8, 47], [8.1, 47]] } } });
   expect(importSections([line(8500002, 8500001, "Personenverkehr", 300), line(8500001, 8500002, "Personenverkehr", 300), line(8500001, 8500002, "Gueterverkehr", 100), line(8500001, 8500002, "Gueterverkehr", 999, "2024")])).toBe(1);
   expect(db.query("SELECT a, b, trains, freight, name_a FROM section_traffic").all()).toEqual([{ a: "8500001", b: "8500002", trains: 700, freight: 100, name_a: "S8500001" }]);
-  importPlatformEdges([{ didok: "6000", kundengleisnr: "7", perronkante_laenge: 320.4, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" },
-    { didok: "6000", kundengleisnr: "7", perronkante_laenge: 410, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" }]);
+  // two edges end to end on track 7, the second listed in two height segments: 320 + 410, not 1140
+  importPlatformEdges([{ didok: "6000", kundengleisnr: "7", perronkante_fid: 1, perronkante_laenge: 320.4, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" },
+    { didok: "6000", kundengleisnr: "7", perronkante_fid: 2, perronkante_laenge: 410, konformitaet: "P 55 / - / - / - / -", perrontyp: "Mittelperron" },
+    { didok: "6000", kundengleisnr: "7", perronkante_fid: 2, perronkante_laenge: 410, konformitaet: "P 35 / - / - / - / -", perrontyp: "Mittelperron" }]);
   usePlatformEdges();
-  expect(platformEdge("8506000", "7")).toEqual({ length: 410, height: 55 });
-  expect(platformEdge("8506000", "7AB")).toEqual({ length: 410, height: 55 });
+  expect(platformEdge("8506000", "7")).toEqual({ length: 730, height: 55 });
+  expect(platformEdge("8506000", "7AB")).toEqual({ length: 730, height: 55 });
   importBusyHours([{ bpuic: 8503000, uhrzeit: 17, prozentsatz: 9.5, jahr_annee_anno_year: "2023" }, { bpuic: 8503000, uhrzeit: 17, prozentsatz: 9.1, jahr_annee_anno_year: "2024" }]);
   expect(db.query("SELECT hour, pct, year FROM station_hour").all()).toEqual([{ hour: 17, pct: 9.1, year: 2024 }]);
 });

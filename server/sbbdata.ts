@@ -96,14 +96,15 @@ export function importPlatformEdges(rows: any[]) {
     const track = String(r.kundengleisnr ?? "").trim(), didok = String(r.didok ?? "").trim();
     if (!track || !/^\d{1,5}$/.test(didok)) continue;
     const uic = `85${didok.padStart(5, "0")}`, k = `${uic}|${track}`, h = String(r.konformitaet ?? "").match(/^P\s*(\d+)/)?.[1];
-    const x = acc.get(k) ?? acc.set(k, { uic, track, length: 0, height: null, type: r.perrontyp ?? "" }).get(k)!;
-    x.length = Math.max(x.length, r.perronkante_laenge ?? 0);
+    const x = acc.get(k) ?? acc.set(k, { uic, track, edges: new Map<unknown, number>(), height: null, type: r.perrontyp ?? "" }).get(k)!;
+    // one row per height segment, each repeating its edge's length; a track has several edges end to end (Bern 1: 370 + 175 m)
+    x.edges.set(r.perronkante_fid ?? x.edges.size, r.perronkante_laenge ?? 0);
     x.height ??= h ? +h : null;
   }
   db.transaction(() => {
     db.query("DELETE FROM platform_edge").run();
     const q = db.query("INSERT INTO platform_edge VALUES (?, ?, ?, ?, ?)");
-    for (const x of acc.values()) q.run(x.uic, x.track, Math.round(x.length), x.height, x.type);
+    for (const x of acc.values()) q.run(x.uic, x.track, Math.round([...x.edges.values()].reduce((a, b) => a + b, 0)), x.height, x.type);
   })();
   return acc.size;
 }
@@ -184,7 +185,7 @@ export async function loadSbbData(now = Date.now()) {
     exportJson("sektortafel", "bpuic,kundengleisnummer,sektor_vorderseite,sektor_ruckseiter,geopos"),
     exportJson("anzahl-sbb-bahnhofbenutzer-tagesverlauf", "bpuic,uhrzeit,prozentsatz,jahr_annee_anno_year"),
     exportJson("zugzahlen", "von_bpuic,bis_bpuic,geschaeftscode,jahr,anzahl_zuege,gesamtbelastung_bruttotonnen,trassenkilometer,stromverbrauch_auf_abschnitt,bp_von_abschnitt_bezeichnung,bp_bis_abschnitt_bezeichnung,strecke_bezeichnung,verbindung"),
-    exportJson("21197_behig-haltekantesegment", "didok,kundengleisnr,perronkante_laenge,konformitaet,perrontyp"),
+    exportJson("21197_behig-haltekantesegment", "didok,kundengleisnr,perronkante_fid,perronkante_laenge,konformitaet,perrontyp"),
     exportJson("dienststellen-gemass-opentransportdataswiss", "number,designationofficial,operatingpointtechnicaltimetabletype,businessorganisationabbreviationde,geopos",
       `operatingpointtechnicaltimetabletype in ("${KINDS.join('","')}") and validfrom <= "${today}" and validto >= "${today}"`),
     exportJson("linienkilometrierung", "linienr,km,liniename,geo_point_2d"),
