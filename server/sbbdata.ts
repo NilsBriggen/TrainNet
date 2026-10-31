@@ -12,7 +12,7 @@ import { zurichDate } from "./time";
 
 const API = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets";
 const WEEK = 7 * 86400_000;
-const LOADED = "v5"; // bump when a dataset is added, so the next start loads all of them
+const LOADED = "v6"; // bump when a dataset is added, so the next start loads all of them
 
 const exportJson = async (ds: string, select: string, where = "") => {
   const res = await fetch(`${API}/${ds}/exports/json?select=${encodeURIComponent(select)}${where ? `&where=${encodeURIComponent(where)}` : ""}`, { signal: AbortSignal.timeout(120_000) });
