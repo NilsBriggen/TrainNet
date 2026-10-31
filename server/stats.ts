@@ -5,7 +5,7 @@ import { ambiguousLabels, lineName } from "./lines";
 import { current } from "./realtime";
 import { occupancyAll, TYPE_INFO, typeName, wikiOf } from "./details";
 import { addDays, zurichDate } from "./time";
-import { dist } from "./paths";
+import { dist, trackNo } from "./paths";
 import type { Day } from "./gtfs";
 
 const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX)$/;
@@ -150,7 +150,7 @@ function facts(d: Day) {
       for (let k = 0; k < n - 1; k++) if (swiss(s[k * 3])) deps.push(s[k * 3 + 2] % 86400);
       if (/^(NJ|EN)$/.test(d.routes[t.route][1]) || (s[2] % 86400 >= 3600 && s[2] % 86400 < 4 * 3600)) night++;
       ops.set(t.agency, (ops.get(t.agency) ?? 0) + 1);
-      for (let k = 0; k < n; k++) if (t.plat[k]) (plats.get(s[k * 3]) ?? plats.set(s[k * 3], new Set()).get(s[k * 3])!).add(t.plat[k]);
+      for (let k = 0; k < n; k++) if (t.plat[k]) (plats.get(s[k * 3]) ?? plats.set(s[k * 3], new Set()).get(s[k * 3])!).add(trackNo(d.platforms[t.plat[k]]) || d.platforms[t.plat[k]]); // sectors "1A-D", "1E-H" are one platform
       for (let k = 1; k < n; k++) {
         const a = s[(k - 1) * 3], b = s[k * 3], key = a < b ? `${a}-${b}` : `${b}-${a}`;
         const crow = dist(d.stations[a][1], d.stations[a][2], d.stations[b][1], d.stations[b][2]) / 1000;
@@ -498,7 +498,7 @@ export function stationStats(d: Day, uic: string) {
       if (t.date !== d.date) return;
       for (let k = 0; k < t.stops.length / 3 - 1; k++) if (t.stops[k * 3] === s.i) {
         perHour[Math.floor(t.stops[k * 3 + 2] / 3600) % 24]++;
-        const p = d.platforms[t.plat[k]] || "?", l = keys[i];
+        const p = trackNo(d.platforms[t.plat[k]]) || d.platforms[t.plat[k]] || "?", l = keys[i]; // sectors "1A-D", "1E-H" are one platform
         plats.set(p, (plats.get(p) ?? 0) + 1);
         lines.set(l, (lines.get(l) ?? 0) + 1);
       }

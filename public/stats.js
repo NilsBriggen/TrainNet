@@ -79,10 +79,12 @@ main.addEventListener("keydown", (e) => { // rows are links for the keyboard too
   if (tr && e.key === "Enter") location.href = tr.dataset.href;
 });
 
+const redraw = new Map(); // chart id -> how to draw it again at a new width (no refetch on resize)
 /** Plot with the map's dark theme, sized to its container. Wide left margins (long labels) shrink on phones. */
 function draw(id, opts) {
   const el = document.getElementById(id);
   if (!el) return;
+  redraw.set(id, () => draw(id, opts));
   const width = el.clientWidth || 600, narrow = width < 520;
   el.replaceChildren(Plot.plot({
     width, height: narrow ? 200 : 220, marginLeft: 44,
@@ -110,8 +112,11 @@ async function route(keepScroll = false) {
   for (const [re, tab, fn] of routes) {
     const m = h.match(re);
     if (!m) continue;
-    for (const a of document.querySelectorAll("[data-nav]")) a.dataset.nav === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
-    if (!keepScroll) main.innerHTML = `<div class="loading">Loading…</div>`;
+    for (const a of document.querySelectorAll("[data-nav]")) {
+      if (a.dataset.nav !== tab) a.removeAttribute("aria-current");
+      else { a.setAttribute("aria-current", "page"); a.scrollIntoView({ inline: "nearest", block: "nearest" }); } // the nav scrolls on phones
+    }
+    if (!keepScroll) { redraw.clear(); main.innerHTML = `<div class="loading">Loading…</div>`; }
     try {
       await fn(...m.slice(1).map((x) => x && decodeURIComponent(x)), () => token === nav); // pages check `current()` before writing
     } catch (e) {
@@ -129,7 +134,7 @@ async function route(keepScroll = false) {
 }
 addEventListener("hashchange", () => route());
 let lastW = innerWidth;
-addEventListener("resize", () => { if (Math.abs(innerWidth - lastW) > 80) { lastW = innerWidth; route(true); } });
+addEventListener("resize", () => { if (Math.abs(innerWidth - lastW) > 80) { lastW = innerWidth; for (const f of redraw.values()) f(); } });
 fetch("/api/stats/lines").then((r) => (r.ok ? r.json() : {})).catch(() => ({})).then((x) => { LINES = x; route(); });
 
 // ---------- overview ----------
@@ -258,6 +263,7 @@ async function overview(current) {
 async function hotspotMap(id, rows) {
   const el = document.getElementById(id);
   if (!el) return;
+  redraw.set(id, () => hotspotMap(id, rows));
   const outline = await switzerland();
   const lines = rows.map((r) => ({ ...r, gainMin: r.gain / 60 }));
   const w = el.clientWidth || 600;
@@ -294,7 +300,7 @@ async function trainPage(num, current) {
   const t = await api(`train/${encodeURIComponent(num)}`, true);
   if (!current()) return;
   const run = t?.runs[0];
-  if (!t || (!run && !t.history.length)) { main.innerHTML = `<div class="empty-page">No train ${esc(num)} today and nothing recorded for it.</div>`; return; }
+  if (!t || (!run && !t.history.length)) { main.innerHTML = `<div class="empty-page">No train ${esc(num)} today and nothing recorded for it. <a href="#/">Back to the overview</a></div>`; return; }
   document.title = `TrainNet — ${run ? run.line : ""} ${num}`;
   const ph = await photos;
   if (!current()) return;
@@ -360,7 +366,7 @@ async function trainPage(num, current) {
     const types = live?.types ?? [];
     box.innerHTML = units.length ? unitsHtml(ph, units.map((u) => ({ ...u, km: null })))
       : types.length ? photoFigure(ph[types[0].cls], types[0].type) + `<p class="sub">${types.map((u) => `<a class="inline" href="#/type/${encodeURIComponent(u.cls)}">About the ${esc(u.type)} →</a>`).join(" · ")}</p><p class="muted">Today the formation service names its car types but not the vehicle numbers.</p>`
-      : empty(["busy", "error", "offline"].includes(live?.formationStatus ?? "offline") ? "The formation service is busy or didn't answer: reload in a minute." // the map retries, this page doesn't
+      : empty(["busy", "error", "offline"].includes(live?.formationStatus ?? "offline") ? `The formation service is busy or didn't answer. <button class="retry" onclick="location.reload()">Try again</button>` // the map retries, this page doesn't
         : FORMATION_WHY[live.formationStatus]?.(live) ?? (live.formation ? "Its cars are listed, but without vehicle numbers that tell its trainsets." : "No formation for this train."));
     const k = document.querySelector(".kpi-units");
     if (k) (k.querySelector(".value").textContent = units.length || "–"), (k.querySelector(".note").textContent = [...new Set([...units, ...types].map((u) => u.type))].join(", ") || "not listed today");
@@ -424,8 +430,8 @@ async function fleetPage(current) {
     ${kpi("Restaurant cars running", f.restaurantsNow.length)}
   </div>
   <div class="grid">
-    ${card("Trainsets by type", `Units in service today · <a href="#/types">all types →</a>`, f.byType.length ? ch("c-types") + `<div class="spot-links">${f.byType.map((t) => `<a href="#/type/${t.cls}">${esc(t.type)} <small>${t.units}</small></a>`).join("")}</div>` : empty("–"), 6)}
-    ${card("Distance by type", "km run today, all units of a type", f.byType.length ? ch("c-km") : empty("–"), 6)}
+    ${card("Trainsets by type", `Units in service today · <a href="#/types">all types →</a>`, f.byType.length ? ch("c-types") + `<div class="spot-links">${f.byType.map((t) => `<a href="#/type/${t.cls}">${esc(t.type)} <small>${t.units}</small></a>`).join("")}</div>` : empty("No formation recorded yet today."), 6)}
+    ${card("Distance by type", "km run today, all units of a type", f.byType.length ? ch("c-km") : empty("No formation recorded yet today."), 6)}
     ${card("Most kilometres today", "", table([
       { h: "Unit", f: (r) => `${esc(r.type)} <b>${esc(r.unit)}</b>` }, { h: "Trains", num: 1, f: (r) => r.runs }, { h: "km", num: 1, f: (r) => n0(r.km) },
     ], f.leaderboard.map((r) => ({ ...r, _href: `#/vehicle/${r.unit}` }))), 6)}
@@ -433,10 +439,10 @@ async function fleetPage(current) {
     ${card("Most seats", "", table([{ h: "Train", f: (r) => esc(r.train) }, { h: "Units", f: (r) => `<span class="muted">${esc(r.units.join(" + "))}</span>` }, { h: "Seats", num: 1, f: (r) => n0(r.seats) }], f.mostSeats), 6)}
     ${card("Restaurant cars running now", "", table([{ h: "Train", f: (r) => `${badge(r.line)} ${esc(r.train)}` }, { h: "Unit", f: (r) => `${esc(r.type)} ${esc(r.unit)}` }],
       f.restaurantsNow.map((r) => ({ ...r, _href: `#/train/${r.train}` })), "None right now."), 6)}
-    ${card("Which trainsets run which line", "Unit runs per line today", f.mixByLine.length ? ch("c-mix") : empty("–"), 12)}
+    ${card("Which trainsets run which line", "Unit runs per line today", f.mixByLine.length ? ch("c-mix") : empty("No formation recorded yet today."), 12)}
     ${card("How old the fleet in service is", "Build year of every unit running today that SBB's rolling stock register lists", f.ages.length ? ch("c-ages") : empty("No register data yet (it loads once a week)."), 8)}
     ${card("Oldest and newest today", "", f.oldest.length ? table([{ h: "Unit", f: (r) => `${esc(r.type)} <b>${esc(r.unit)}</b>` }, { h: "Built", num: 1, f: (r) => esc(r.built) }],
-      [...f.oldest.slice(0, 4), ...f.newest.slice(0, 4)].map((r) => ({ ...r, _href: `#/vehicle/${r.unit}` }))) : empty("–"), 4)}
+      [...f.oldest.slice(0, 4), ...f.newest.slice(0, 4)].map((r) => ({ ...r, _href: `#/vehicle/${r.unit}` }))) : empty("No register data yet."), 4)}
   </div>`;
   const types = f.byType.map((t) => t.type);
   const typeColor = { domain: types, range: d3.quantize(d3.interpolateRgbBasis(["#5cc8ff", "#8fa8ff", "#c792ff", "#ff7ab6", "#ff9f1c", "#ffd166", "#2ee6a6"]), Math.max(2, types.length)) };
@@ -652,7 +658,12 @@ async function commutePage(a, b, current) {
   const go = () => { const x = document.getElementById("c-from").dataset.uic, y = document.getElementById("c-to").dataset.uic; if (x && y) location.hash = `#/commute/${x}/${y}`; };
   wirePicker("c-from", go);
   wirePicker("c-to", go);
-  document.getElementById("c-swap").onclick = () => { if (a && b) location.hash = `#/commute/${b}/${a}`; };
+  document.getElementById("c-swap").onclick = () => {
+    if (a && b) return void (location.hash = `#/commute/${b}/${a}`);
+    const f = document.getElementById("c-from"), t = document.getElementById("c-to"); // one picked so far: swap the boxes
+    [f.value, t.value] = [t.value, f.value];
+    [f.dataset.uic, t.dataset.uic] = [t.dataset.uic ?? "", f.dataset.uic ?? ""];
+  };
   if (c?.runs) {
     const H = c.hours.map((h) => ({ ...h, med: h.median / 60, p90m: h.p90 / 60 })), maxM = Math.max(3, d3.max(H, (h) => h.p90m) ?? 3);
     draw("c-commute", { x: { label: "hour", type: "band" }, y: { domain: [0, 100], grid: true, label: "% on time" }, marks: [
@@ -733,7 +744,7 @@ async function typePage(cls, current) {
 async function stationPage(uic, current) {
   const s = await api(`station/${encodeURIComponent(uic)}`, true);
   if (!current()) return;
-  if (!s) { main.innerHTML = `<div class="empty-page">Unknown station.</div>`; return; }
+  if (!s) { main.innerHTML = `<div class="empty-page">No station ${esc(uic)}. <a href="#/">Back to the overview</a></div>`; return; }
   document.title = `TrainNet — ${s.name}`;
   main.innerHTML = `
   <div class="page-head"><div><h1>${esc(s.name)}</h1><p class="sub">${n0(s.trips)} train calls today${s.pax ? ` · ≈ ${n0(s.pax.daily)} passengers a day (${s.pax.year}, SBB count)` : ""} · UIC ${esc(s.uic)}</p></div>
@@ -747,7 +758,7 @@ async function stationPage(uic, current) {
   </div>
   <div class="grid">
     ${card("Departures per hour", `Bars: today's timetable${s.typicalDays ? ` · line: departures recorded with live data, average of the last ${s.typicalDays} ${new Date().toLocaleDateString("en-GB", { weekday: "long", timeZone: ZH })}s` : ""}`, ch("c-hour"), 8)}
-    ${card("Platforms", "Departures per platform today", s.platforms.length ? ch("c-plat") : empty("–"), 4)}
+    ${card("Platforms", "Departures per platform today", s.platforms.length ? ch("c-plat") : empty("No platform data today."), 4)}
     ${s.busy.length ? card("When it's busy", `Share of the station's daily users by hour (SBB count, ${s.busy[0].year})`, ch("c-busy"), 6) : ""}
     ${s.edges.length ? card("Platform edges", "Length and height of each platform edge (SBB survey for step-free access)", table([{ h: "Track", f: (x) => esc(x.track) }, { h: "Length", num: 1, f: (x) => `${n0(x.length_m)} m` },
       { h: "Height", num: 1, f: (x) => (x.height_cm ? `${x.height_cm} cm` : "–") }, { h: "", f: (x) => `<span class="muted">${esc(x.type)}</span>` }], s.edges), 6) : ""}
@@ -770,7 +781,7 @@ async function stationPage(uic, current) {
 async function linePage(name, current) {
   const l = await api(`line/${encodeURIComponent(name)}`, true);
   if (!current()) return;
-  if (!l) { main.innerHTML = `<div class="empty-page">No line ${esc(lineLabel(name))} today.</div>`; return; }
+  if (!l) { main.innerHTML = `<div class="empty-page">No line ${esc(lineLabel(name))} today. <a href="#/">Back to the overview</a></div>`; return; }
   document.title = `TrainNet — ${lineLabel(l.line)}`;
   const done = l.today.filter((t) => t.observed && !t.cancelled), ok = done.filter((t) => t.final_delay < 180).length;
   main.innerHTML = `
@@ -844,6 +855,7 @@ async function incidentsPage(current) {
   for (const id of ["f-kind", "f-sev", "f-q"]) document.getElementById(id).addEventListener("input", render);
   render();
   if (byKind.length) draw("c-kind", { marginLeft: 130, x: { grid: true, label: null }, y: { label: null, tickFormat: (k) => KIND[k]?.[0] ?? k }, color: kindColor, marks: [Plot.barX(byKind, { y: "kind", x: "n", fill: "kind", sort: { y: "-x" }, tip: true })] });
+  const drawMap = async () => {
   const el = document.getElementById("c-map"), outline = await switzerland(), w = el.clientWidth || 600;
   el.replaceChildren(Plot.plot({
     width: w, height: Math.round(w * 0.62), projection: { type: "mercator", domain: outline, inset: 10 },
@@ -852,6 +864,9 @@ async function incidentsPage(current) {
       Plot.dot(r.hotspots, { x: "lon", y: "lat", r: "n", fill: "#ff4d4d", fillOpacity: 0.55, stroke: "#ff4d4d", tip: true, title: (d) => `${d.name}: ${d.n} reports` })],
   }));
   el.insertAdjacentHTML("beforeend", r.hotspots.length ? `<div class="spot-links">${r.hotspots.slice(0, 12).map((h) => `<a href="#/station/${h.uic}">${esc(h.name)} <small>${h.n}</small></a>`).join("")}</div>` : empty("No station named yet."));
+  };
+  redraw.set("c-map", drawMap);
+  await drawMap();
 }
 
 // ---------- search ----------
@@ -862,12 +877,14 @@ q.addEventListener("input", () => {
   clearTimeout(debounce);
   debounce = setTimeout(async () => {
     const mine = ++asked; // answers can arrive out of order: only the latest question's counts
-    const found = q.value.trim() ? (await api(`search?q=${encodeURIComponent(q.value)}`).catch(() => [])) ?? [] : [];
+    const text = q.value.trim(); // plain fetch: api()'s restart retries would replace the page for a failed search
+    const found = text ? await fetch(`/api/stats/search?q=${encodeURIComponent(text)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : [];
     if (mine !== asked) return;
-    hits = found;
+    hits = found ?? [];
     cursor = 0;
-    results.innerHTML = hits.map((h, k) => `<li role="option" aria-selected="${k === 0}" data-k="${k}"><span class="kind">${h.kind}</span><span>${esc(h.label)}<br><small>${esc(h.sub)}</small></span><span class="kind">↵</span></li>`).join("");
-    results.hidden = !hits.length;
+    results.innerHTML = hits.map((h, k) => `<li role="option" aria-selected="${k === 0}" data-k="${k}"><span class="rkind">${h.kind}</span><span>${esc(h.label)}<br><small>${esc(h.sub)}</small></span><span class="rkind">↵</span></li>`).join("")
+      || (text ? `<li class="empty" role="option" aria-disabled="true">${found ? `No train, line or station matches “${esc(text)}”` : "Search isn't available right now."}</li>` : "");
+    results.hidden = !results.children.length;
     for (const li of results.children) li.onmousedown = (e) => { e.preventDefault(); go(+li.dataset.k); };
   }, 120);
 });

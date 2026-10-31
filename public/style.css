@@ -56,7 +56,7 @@ a { color: inherit; }
 #results li:hover, #results li[aria-selected="true"] { background: rgba(92, 200, 255, 0.12); }
 #results li small { color: var(--muted); }
 #results .rkind { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
-.stats { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12.5px; white-space: nowrap; min-width: 0; }
+.stats { margin-left: auto; flex: none; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12.5px; white-space: nowrap; min-width: 0; }
 #status-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .stats .sep { width: 1px; height: 18px; background: var(--hairline); }
 #clock { color: var(--text); font-weight: 500; }
@@ -93,9 +93,11 @@ button.pill:hover, button.pill:focus-visible { background: color-mix(in srgb, va
 #tip[hidden] { display: none; } /* the id rule's display:flex would otherwise beat the hidden attribute */
 
 /* credits */
-#credits { bottom: 16px; right: 14px; padding: 6px 12px; font-size: 11px; color: var(--dim); border-radius: 999px; z-index: 1; } /* under the panel and sheet */
+#credits { bottom: 66px; right: 14px; padding: 6px 12px; font-size: 11px; color: var(--dim); border-radius: 999px; z-index: 1; } /* above the chips, under the panel and sheet */
 #credits a { text-decoration: none; }
 body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #credits { right: 430px; } /* beside the panel, not under it */
+body:has(#panel:not([hidden])) #key { right: 430px; } /* the key opened over a panel sits beside it */
+body:has(#panel:not([hidden])) #chips, body:has(#key:not([hidden])) #chips { max-width: calc(100% - 28px - 416px); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } /* the layer toggles scroll into reach instead of sitting under the panel */
 #credits a:hover { color: var(--muted); }
 
 /* panel */
@@ -249,14 +251,13 @@ body:not(.zen) #zen-exit { display: none; }
 body.zen #bar, body.zen #chips, body.zen #panel, body.zen #credits, body.zen #tip, body.zen #vignette, body.zen #key { display: none; }
 body.zen.idle { cursor: none; }
 
+@media (max-width: 1400px) { #spark { display: none; } }
 @media (max-width: 1180px) {
-  #spark { display: none; }
-  #credits { bottom: 66px; } /* above the chips, which span the bottom here */
+  #issues .pill:not(.alarm) { display: none; } /* reported incidents stay reachable on small screens */
   #credits .long { display: none; } /* the licences stay credited, just shorter */
   .brand span { display: none; }
 }
 @media (max-width: 960px) {
-  #issues .pill:not(.alarm) { display: none; } /* reported incidents stay reachable on small screens */
   .stats { gap: 8px; }
 }
 @media (max-width: 760px) {
@@ -280,6 +281,11 @@ body.zen.idle { cursor: none; }
   @keyframes up { from { transform: translateY(20px); opacity: 0; } }
   #tip { display: none; }
   .actions button, .actions a, .tabs button { min-height: 40px; }
+  .stats .long { display: none; } /* "616 · 97 %": the words don't fit beside four icons */
+  #chips { mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
+  #panel, #key { background: #091126; } /* no blur on phones: opaque, or the chips and credits show through */
+  #panel.tall { max-height: 92dvh; } /* dragged up from its handle */
+  body:has(#panel:not([hidden])) #chips, body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #chips, body:has(#key:not([hidden])) #credits { display: none; } /* under the sheet */
 }
 @media (prefers-reduced-motion: reduce) { .dot, #panel, #loading .mark, .pill.alarm::before, .k-train.blink, .k-line.blink { animation: none; } }
 

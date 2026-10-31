@@ -151,6 +151,7 @@ try {
   fitBoundsOptions: { padding: { top: 80, left: 40, right: 40, bottom: 60 } },
   maxBounds: [[3.5, 44.8], [12.9, 48.9]],
   attributionControl: false,
+  fadeDuration: 150, // shorter label cross-fade: less time with two labels on one spot
   style: { version: 8, glyphs: `${location.origin}/glyphs/{fontstack}/{range}.pbf`, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#040a18" } }] },
   });
 } catch (e) {
@@ -339,7 +340,7 @@ function trainFeatures(dt, ts, withTrails) {
   const L = Math.min(4000, Math.max(100, (12 * 107160) / 2 ** z)); // ~12 px of track behind each train: longer ones overlap where lines bundle
   const blinkOn = CALM || ts % 1000 < 550;
   let running = 0, observed = 0, late = 0;
-  const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 10.5, perCat = {};
+  const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 11.5, perCat = {};
   for (let i = 0; i < day.trips.length; i++) {
     const s = day.trips[i][3], style = styles[day.trips[i][0]];
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
@@ -372,7 +373,8 @@ function trainFeatures(dt, ts, withTrails) {
   if (ts - lastStatus > 1000) {
     lastStatus = ts;
     const pct = observed ? Math.round((1 - late / observed) * 100) : 100, age = live.time ? (Date.now() + clockSkew) / 1000 - live.time : 0;
-    $("status-text").textContent = `${running.toLocaleString("de-CH")} trains · ${pct} % on time${age > 120 ? ` · live data ${Math.round(age / 60)} min old` : ""}`;
+    $("status-text").innerHTML = `${running.toLocaleString("de-CH")} <span class="long">trains</span> · ${pct} %<span class="long"> on time</span>`;
+    $("live").title = age > 120 ? `Live data ${Math.round(age / 60)} min old` : "Live data";
     for (const b of $("chips").querySelectorAll("button[data-cat]")) if (b.dataset.cat !== "delays") b.dataset.n = perCat[b.dataset.cat] ?? 0;
   }
   return { trains: fc(feats), trails: withTrails ? fc(trails) : null, alarms };
@@ -529,7 +531,7 @@ map.on("load", async () => {
   map.addLayer({ id: "station-selected", type: "circle", source: "stations", filter: ["==", ["get", "i"], -1], paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 7, 13, 12], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
   // labels sit under the trains: a train passing a station stays visible
   const text = (size, color, offset) => ({
-    layout: { "text-field": ["get", "name"], "text-font": ["Open Sans Semibold"], "text-size": size, "text-offset": [0, offset], "text-anchor": "top", "symbol-sort-key": ["-", ["get", "n"]] },
+    layout: { "text-field": ["get", "name"], "text-font": ["Open Sans Semibold"], "text-size": size, "text-variable-anchor": ["top", "bottom", "right", "left"], "text-radial-offset": offset, "text-justify": "auto", "text-padding": 4, "symbol-sort-key": ["-", ["get", "n"]] },
     paint: { "text-color": color, "text-halo-color": "#040a18", "text-halo-width": 1.5 },
   });
   // minor → mid → hub order: later layers win collisions, so hubs are never hidden by villages
@@ -553,10 +555,11 @@ map.on("load", async () => {
     },
     paint: { "icon-color": ["get", "c"], "icon-opacity": ["get", "o"], "icon-halo-color": ["get", "h"], "icon-halo-width": ["get", "hw"], "icon-halo-blur": 0 },
   });
-  // zoomed in, every train says what it is: "IR15 2515 +4′" (long-distance trains win where labels collide)
-  map.addLayer({ id: "train-labels", type: "symbol", source: "trains", minzoom: 10.5, filter: ["has", "l"],
-    layout: { "text-field": ["get", "l"], "text-font": ["Open Sans Semibold"], "text-size": 10.5, "text-offset": [0, 1.1], "text-anchor": "top", "text-padding": 1, "symbol-sort-key": ["-", 3, ["get", "z"]] },
-    paint: { "text-color": "#dfe8ff", "text-halo-color": "#040a18", "text-halo-width": 1.4, "text-opacity": ["get", "o"] } });
+  // zoomed in, every train says what it is: "IR15 2515 +4′" (long-distance trains win where labels collide; placed under
+  // the hub labels, so a big station's name wins over a passing train)
+  map.addLayer({ id: "train-labels", type: "symbol", source: "trains", minzoom: 11.5, filter: ["has", "l"],
+    layout: { "text-field": ["get", "l"], "text-font": ["Open Sans Semibold"], "text-size": 10.5, "text-offset": [0, 1.1], "text-anchor": "top", "text-padding": 4, "symbol-sort-key": ["-", 3, ["get", "z"]] },
+    paint: { "text-color": "#dfe8ff", "text-halo-color": "#040a18", "text-halo-width": 1.4, "text-opacity": ["get", "o"] } }, "labels-hub");
 
 
   day = await dayPromise;
@@ -569,7 +572,7 @@ map.on("load", async () => {
   setInterval(() => $("live").classList.toggle("stale", !live.time || Date.now() / 1000 - live.time > 120), 5000);
   setInterval(patchPanel, 1000);
   openFromUrl();
-  for (const k of overlays) LOADERS[k]();
+  for (const k of overlays) LOADERS[k]?.();
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -660,9 +663,11 @@ for (const b of $("chips").querySelectorAll("button[data-cat]")) {
 const overlays = new Set();
 try { for (const k of JSON.parse(localStorage.getItem("trainnet.layers") ?? "[]")) overlays.add(k); } catch {}
 let lost = null;
+const layerFailed = (name) => { setOverlay(name, false); toast("Couldn't load that layer. Tap it again to retry."); };
 /** Sections where trains gain delay, from /api/stats/segments, drawn on the same track paths as the trains. */
 async function showLost() {
   lost ??= await fetch("/api/stats/segments").then((r) => (r.ok ? r.json() : null)).catch(() => null); // a failure is asked again next time
+  if (!lost) return layerFailed("lost");
   const ix = uicIndex(), feats = [];
   for (const [ua, ub, gain, n] of lost ?? []) {
     const a = ix.get(ua), b = ix.get(ub), k = a === undefined || b === undefined ? undefined : stationSeg.get(pairKey(a, b))?.k;
@@ -675,9 +680,11 @@ let trafficLoaded = false;
 async function showTraffic() {
   if (trafficLoaded) return;
   const geo = await fetch("/api/sections").then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  if (geo) { map.getSource("traffic").setData(geo); trafficLoaded = true; }
+  if (!geo) return layerFailed("traffic");
+  map.getSource("traffic").setData(geo);
+  trafficLoaded = true;
 }
-const LOADERS = { lost: showLost, traffic: showTraffic, speed: () => {} };
+const LOADERS = { lost: showLost, traffic: showTraffic }; // the speed layers come with the day's data
 function setOverlay(name, on) {
   on ? overlays.add(name) : overlays.delete(name);
   const b = $("chips").querySelector(`[data-layer=${name}]`);
@@ -685,7 +692,7 @@ function setOverlay(name, on) {
   b.setAttribute("aria-pressed", String(on));
   try { localStorage.setItem("trainnet.layers", JSON.stringify([...overlays])); } catch {}
   for (const id of name === "speed" ? ["speed", "speed-osm"] : [name]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
-  if (on && day) LOADERS[name]();
+  if (on && day) LOADERS[name]?.();
 }
 for (const b of $("chips").querySelectorAll("[data-layer]")) {
   b.classList.toggle("off", !overlays.has(b.dataset.layer));
@@ -844,6 +851,7 @@ const hideResults = () => { $("results").hidden = true; $("q").setAttribute("ari
 function pick(k) {
   const r = results[k];
   if (!r) return;
+  $("q").value = "";
   $("q").blur();
   hideResults();
   open(r.kind, r.idx, true);
@@ -934,6 +942,7 @@ function loadProfile(i) {
 const EW = 300, EH = 64; // the chart's viewBox
 function elevationHtml(i) {
   const pr = profiles.get(i), ok = pr?.pts.filter(Boolean) ?? [];
+  if (pr === undefined) return `<h3>Elevation</h3><div class="empty">Loading…</div>`;
   if (ok.length < 2) return "";
   const hs = ok.map((p) => p[1]), lo = Math.min(...hs), hi = Math.max(...hs), span = Math.max(hi - lo, 40), kmMax = pr.stops.at(-1) || ok.at(-1)[0];
   const x = (km) => ((km / kmMax) * EW).toFixed(1), y = (h) => (EH - 6 - ((h - lo) / span) * (EH - 14)).toFixed(1);
@@ -995,6 +1004,7 @@ function closePanel(fromHistory = false) {
   selected = null;
   panelHtml = "";
   $("panel").hidden = true;
+  $("panel").classList.remove("tall");
   map.setFilter("station-selected", ["==", ["get", "i"], -1]);
   map.getSource("route").setData(fc([]));
   setFollow(false);
@@ -1004,10 +1014,14 @@ function closePanel(fromHistory = false) {
   lastFocus = null;
 }
 $("close").onclick = () => closePanel();
-// phones: swipe the bottom sheet down (from its top) to close it
+// phones: swipe the bottom sheet down (from its top) to close it, up to make it taller
 let sheetY = null;
 $("panel").addEventListener("touchstart", (e) => { sheetY = $("panel").scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
-$("panel").addEventListener("touchmove", (e) => { if (sheetY !== null && e.touches[0].clientY - sheetY > 90) { sheetY = null; closePanel(); } }, { passive: true });
+$("panel").addEventListener("touchmove", (e) => {
+  if (sheetY === null) return;
+  const dy = e.touches[0].clientY - sheetY;
+  if (dy > 90) { sheetY = null; closePanel(); } else if (dy < -60) { sheetY = null; $("panel").classList.add("tall"); }
+}, { passive: true });
 function setFollow(on) {
   follow = on;
   $("panel").querySelector("[data-follow]")?.setAttribute("aria-pressed", String(on));
@@ -1172,7 +1186,7 @@ function trainHtml(i) {
   return `<h2>${badge(route)} <span>${esc(num)}</span> ${chip}</h2>${kindLine(route)}
     <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}<span data-live="status"></span><span class="age" data-live="age"></span></div>
     <div class="progress"><i></i></div>
-    ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Stats ↗</a></div>
+    ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Train stats →</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
     ${elevationHtml(i)}<h3>Stops <small>tap a stop for connections</small></h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem">${!cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
 }
@@ -1203,7 +1217,8 @@ function lineHtml(name) {
   const trips = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) ? [i] : [])), rows = runningRows(trips);
   const r0 = day.trips[trips[0]]?.[0] ?? [...selected.routes][0];
   return `<h2>${badge(r0)} <span>Line</span></h2>${kindLine(r0)}
-    <div class="sub">${rows.length} running now · ${trips.length} trains today · <a class="inline" href="/stats#/line/${encodeURIComponent(name)}">Stats ↗</a></div>
+    <div class="sub">${rows.length} running now · ${trips.length} trains today</div>
+    <div class="sub"><a class="inline" href="/stats#/line/${encodeURIComponent(name)}">Line stats →</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.r.some((r) => selected.routes.has(r))))}
     <h3>Running now</h3><ol class="stops deps">${rows.join("") || `<li class="empty">None running right now</li>`}</ol>`;
 }
@@ -1224,7 +1239,8 @@ function stationHtml(si) {
     return `<li data-trip="${i}" role="button" tabindex="0"><span>${hhmm(sched)}</span>${badge(route)}<span>${where}</span><span class="pl">${pf ? `Pl. ${esc(pf)}` : ""}</span><span>${state}</span></li>`;
   }).join("");
   const p = pax[day.stations[si][3]];
-  return `<h2>${esc(name)}</h2><div class="sub">${byStation[si].length} trains today${p ? ` · ≈ ${p[0].toLocaleString("de-CH")} passengers a day` : ""} · <a class="inline" href="/stats#/station/${encodeURIComponent(day.stations[si][3])}">Stats ↗</a></div>
+  return `<h2>${esc(name)}</h2><div class="sub">${byStation[si].length} trains today${p ? ` · ≈ ${p[0].toLocaleString("de-CH")} passengers a day` : ""}</div>
+    <div class="sub"><a class="inline" href="/stats#/station/${encodeURIComponent(day.stations[si][3])}">Station stats →</a></div>
     ${alertsHtml(live.alerts.filter((a) => a.s.includes(si)))}
     <div class="tabs" role="tablist"><button role="tab" data-tab="dep" aria-selected="${!arr}">Departures</button><button role="tab" data-tab="arr" aria-selected="${arr}">Arrivals</button></div>
     <ol class="stops deps">${rows || `<li class="empty">Nothing in the next 90 minutes</li>`}</ol>`;
@@ -1266,7 +1282,7 @@ function alertPanelHtml(id) {
     ${span ? `<h3>Where</h3><div class="span">${span}</div>` : ""}
     ${lines ? `<h3>Lines</h3><div class="lines">${lines}</div>` : ""}
     <h3>Affected trains now</h3><ol class="stops deps">${rows || `<li class="empty">No affected train is running right now</li>`}</ol>
-    <p class="sub"><a class="inline" href="/stats#/incidents">All disruptions of the last 30 days ↗</a></p>`;
+    <p class="sub"><a class="inline" href="/stats#/incidents">All disruptions of the last 30 days →</a></p>`;
 }
 
 function issuesHtml(which) {
