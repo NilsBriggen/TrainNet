@@ -519,14 +519,22 @@ export function stationStats(d: Day, uic: string) {
     const typical = Array(24).fill(0);
     for (const r of same.length ? all(`SELECT sched_dep / 3600 h, count(*) n FROM stop_obs WHERE uic = ? AND date IN (${same.map(() => "?").join(",")}) AND sched_dep IS NOT NULL AND skipped = 0 GROUP BY h`, uic, ...same) : [])
       typical[zurich(Math.floor(r.h) * 3600).hour] += r.n / same.length;
-    // the longest train on each track today against the platform edge SBB measured (shortcut: a train's length is all its
-    // units of the day, also ones coupled for part of the run; tracks whose edge isn't surveyed are left out)
+    // the longest train on each track today against the platform edge SBB measured: a train's length here is the units
+    // whose span (from → to) covers this station, so a portion coupled on later doesn't count; unsurveyed tracks are left out
     const edges = all(`SELECT track, length_m, height_cm, type FROM platform_edge WHERE uic = ? ORDER BY CAST(track AS INTEGER), track`, uic), edgeLen = new Map<string, number>();
     for (const e of edges) edgeLen.set(trackNo(e.track) || e.track, Math.max(edgeLen.get(trackNo(e.track) || e.track) ?? 0, e.length_m));
+    const stopsOf = new Map(d.trips.filter((t) => platAt.has(t.id)).map((t) => [t.id, Array.from({ length: t.stops.length / 3 }, (_, k) => d.stations[t.stops[k * 3]][3])]));
+    const trainLen = new Map<string, { train: string; m: number }>();
+    for (const r of all(`SELECT trip, train_no, from_uic, to_uic, length_m FROM vehicle_run WHERE date = ?`, d.date)) {
+      const st = stopsOf.get(r.trip), here = st?.indexOf(uic) ?? -1, from = st?.indexOf(r.from_uic) ?? -1, to = st?.indexOf(r.to_uic) ?? -1;
+      if (here < 0 || here < from || (to >= 0 && here > to)) continue;
+      const x = trainLen.get(r.trip) ?? trainLen.set(r.trip, { train: r.train_no, m: 0 }).get(r.trip)!;
+      x.m += r.length_m;
+    }
     const fitBy = new Map<string, { track: string; train: string; train_m: number; edge_m: number }>();
-    for (const r of all(`SELECT trip, train_no, sum(length_m) m FROM vehicle_run WHERE date = ? GROUP BY trip`, d.date)) {
-      const track = platAt.get(r.trip), edge = track && edgeLen.get(track);
-      if (edge && r.m > (fitBy.get(track)?.train_m ?? 0)) fitBy.set(track, { track, train: r.train_no, train_m: r.m, edge_m: edge });
+    for (const [trip, x] of trainLen) {
+      const track = platAt.get(trip)!, edge = edgeLen.get(track);
+      if (edge && x.m > (fitBy.get(track)?.train_m ?? 0)) fitBy.set(track, { track, train: x.train, train_m: x.m, edge_m: edge });
     }
     const q = (date: string) => one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(max(dep_delay, 0)) avg, avg(max(arr_delay, 0)) arr FROM stop_obs WHERE uic = ? AND date = ? AND skipped = 0`, uic, date);
     const td = q(d.date), month = one(`SELECT count(dep_delay) n, sum(dep_delay < 180) ok, avg(max(dep_delay, 0)) avg, avg(max(arr_delay, 0)) arr, sum(arr_delay >= 180) arr_late, count(arr_delay) arr_n FROM stop_obs WHERE uic = ? AND skipped = 0`, uic);

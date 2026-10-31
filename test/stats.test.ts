@@ -24,6 +24,8 @@ test("every stats function answers on a small database", async () => {
   recordTrips(day, { 0: { u: [[1, 240, 240, 0], [2, 120, null, 0]] }, 2: { c: 1 } }, at("1000"), [2, 0, 1, 0, 1]);
   flush(day, at("1200"), 0);
   db.exec(`INSERT INTO vehicle_run VALUES ('2026-10-23', '502-206', '502', 'FV-Dosto', '700', 't1', 0, '8500001', '8500003', 0, 0, 100, 200, 100, 400, 0)`);
+  db.exec(`INSERT INTO vehicle_run VALUES ('2026-10-23', '502-207', '502', 'FV-Dosto', '700', 't1', 1, '8500002', '8500003', 0, 0, 50, 200, 100, 400, 0)`); // coupled on at B: not at A
+  db.exec(`INSERT INTO platform_edge VALUES ('8500001', '7', 150, 55, 'Mittelperron')`);
   aggregate("2026-10-23");
   await importDay(db, new Blob([csv]).stream());
   db.exec(`INSERT INTO station_hour VALUES ('8500001', 0, NULL, 2025), ('8500001', 7, 7.5, 2025)`); // SBB leaves some hours empty
@@ -44,7 +46,7 @@ test("every stats function answers on a small database", async () => {
   expect(out.station!.platforms).toEqual([{ p: "7", n: 3 }]); // sector codes count as their platform
   expect(out.commute).toMatchObject({ runs: 1, pct: 100, median: 120 });
   expect(out.overview.today.stopPct).toBe(50); // t1: two stops with live data, one of them on time
-  expect(out.station!.fit).toEqual([]); // no platform edge surveyed for the test station
+  expect(out.station!.fit).toEqual([{ track: "7", train: "700", train_m: 200, edge_m: 150 }]); // the unit coupled on at B doesn't count at A
   expect(out.incidents.byMonth).toEqual([{ month: "1970-01", kind: "signal", n: 2 }]);
   expect(out.type!.punctuality).toBeNull(); // one run: below the minimum
   expect(stats.commute(day, "8500001", "8500001")).toBeNull();
