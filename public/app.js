@@ -619,7 +619,7 @@ function updateTip() {
 function overlayTip(x) {
   if (x.layer === "speed") return `<span>up to ${x.v} km/h</span><span class="sub">line speed (OpenStreetMap)</span>`;
   if (x.layer === "lost") return `<span>+${Math.round(x.g)} s a train</span><span class="sub">delay gained here on average · ${x.n} trains, last 30 days</span>`;
-  return `<span>${esc(x.n)}</span><span class="sub">${x.t.toLocaleString("de-CH")} trains a day · ${x.f} % freight (${x.y}, SBB)</span>`;
+  return `<span>${esc(x.n)}</span><span class="sub">${x.t.toLocaleString("de-CH")} trains a day · ${x.f} % freight${x.tn ? `, ${x.tn.toLocaleString("de-CH")} t a day` : ""}${x.kwh ? ` · ${x.kwh} kWh per train-km` : ""} (${x.y}, SBB)</span>`;
 }
 function stationTip(si) {
   const [name, , , , n] = day.stations[si];

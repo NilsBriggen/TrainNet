@@ -224,7 +224,8 @@ export async function buildSections(graph: Graph | null, cacheFile: string) {
     const p = paths[k] ?? [r.lon_a, r.lat_a, r.lon_b, r.lat_b], coords: number[][] = [];
     for (let i = 0; i < p.length; i += 2) coords.push([p[i], p[i + 1]]);
     return { type: "Feature", geometry: { type: "LineString", coordinates: coords },
-      properties: { t: Math.round(r.trains / 365), f: r.trains ? Math.round((100 * r.freight) / r.trains) : 0, n: `${r.name_a} – ${r.name_b}`, y: r.year } };
+      properties: { t: Math.round(r.trains / 365), f: r.trains ? Math.round((100 * r.freight) / r.trains) : 0, n: `${r.name_a} – ${r.name_b}`, y: r.year,
+        tn: r.tonnes ? Math.round(r.tonnes / 365) : 0, kwh: r.kwh && r.train_km ? Math.round(r.kwh / r.train_km) : 0 } }; // tonnes a day, kWh per train-km
   });
   sectionsGz = Bun.gzipSync(JSON.stringify({ type: "FeatureCollection", features }));
   console.log(`[sbbdata] ${rows.length} line sections drawn, ${paths.filter(Boolean).length} on track`);

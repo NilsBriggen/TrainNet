@@ -43,6 +43,9 @@ test("every stats function answers on a small database", async () => {
   expect(out.station!.busy).toEqual([{ hour: 7, pct: 7.5, year: 2025 }]);
   expect(out.station!.platforms).toEqual([{ p: "7", n: 3 }]); // sector codes count as their platform
   expect(out.commute).toMatchObject({ runs: 1, pct: 100, median: 120 });
+  expect(out.overview.today.stopPct).toBe(50); // t1: two stops with live data, one of them on time
+  expect(out.station!.fit).toEqual([]); // no platform edge surveyed for the test station
+  expect(out.incidents.byMonth).toEqual([{ month: "1970-01", kind: "signal", n: 2 }]);
   expect(out.type!.punctuality).toBeNull(); // one run: below the minimum
   expect(stats.commute(day, "8500001", "8500001")).toBeNull();
   expect(stats.stationStats(day, "9999999")).toBeNull();
