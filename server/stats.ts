@@ -11,7 +11,7 @@ import type { Day } from "./gtfs";
 const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX)$/;
 /** Same categories as the map's chips. */
 const catOfRow = (cat: string, agency: string) =>
-  LONG.test(cat) ? "Long distance" : cat === "IR" ? "InterRegio" : cat === "RE" ? "RegioExpress" : cat === "S" || cat === "SN" ? "S-Bahn" : cat === "PE" ? "Panorama" : agency === "11" ? "Regional" : "Private";
+  LONG.test(cat) ? "Long distance" : cat === "IR" ? "InterRegio" : cat === "RE" ? "RegioExpress" : cat === "S" || cat === "SN" ? "S-Bahn" : cat === "PE" ? "Panorama" : agency === "11" ? "Regional" : "Other railways";
 // A unit's series ("502" of 502-213, "ABe416" of ABe416-3145) and today's name for it: rows store the name they were
 // recorded with, which may be "Class 147" from before the series was listed
 const clsOf = (unit: string) => unit.slice(0, unit.lastIndexOf("-"));

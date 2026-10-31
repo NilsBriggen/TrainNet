@@ -1,5 +1,5 @@
 import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
-import { routeStyle, trainKind } from "./colors.js";
+import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 import { FORMATION_WHY } from "./formation.js";
 
@@ -7,9 +7,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const TIME = new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" }), DATE = new Intl.DateTimeFormat("de-CH", { timeZone: "Europe/Zurich" });
 const hhmm = (t) => TIME.format(day.base + t * 1000);
-const SEV = { 1: "#5a6b8c", 2: "#ffb547", 3: "#ff4d4d" };
-const STANDING = "#ff9f5a"; // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
-const SEV_NAME = { 1: "Planned", 2: "Limited service", 3: "Interrupted" };
+const STANDING = token("standing"); // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", staff: "Staff shortage", other: "Disruption" };
 const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
 const TRAIL_O = [0.7, 0.45, 0.25, 0.1]; // trail pieces, nearest the train first
@@ -223,7 +221,7 @@ function setAlerts() {
   // alerts without a drawn span get a diamond at each named station (a line-only one: the stations of its line), at most 12; the worst one wins
   const pts = new Map();
   for (const a of alerts) if (!a.seg) for (const st of (a.s.length ? a.s : lineStations(a.r[0])).slice(0, 12)) if ((pts.get(st)?.sev ?? 0) < a.sev) pts.set(st, a);
-  map.getSource("alert-pts").setData(fc([...pts].map(([i, a]) => point(day.stations[i].slice(1, 3), { sev: a.sev, c: a.sudden ? SEV[3] : SEV[a.sev], id: a.id, sudden: a.sudden ? 1 : 0 }))));
+  map.getSource("alert-pts").setData(fc([...pts].map(([i, a]) => point(day.stations[i].slice(1, 3), { sev: a.sev, c: a.sudden ? SEV[3][1] : SEV[a.sev][1], id: a.id, sudden: a.sudden ? 1 : 0 }))));
   incidentTrains = new Map();
   for (const a of alerts) if (trainScoped(a)) for (const i of a.t) incidentTrains.set(i, a);
   rippleAlerts = alerts.filter((a) => a.sudden && !trainScoped(a)).flatMap((a) => (a.seg ? [midpoint(a.seg[0])] : a.s.length === 1 ? [day.stations[a.s[0]].slice(1, 3)] : []));
@@ -262,9 +260,9 @@ function renderIssues() {
   const n = [0, 0, 0, 0];
   for (const a of live.alerts) n[a.sev]++;
   const now_ = live.alerts.filter((a) => a.sudden).length, st = standingTrains().length; // reported incidents only; standing is a guess
-  $("issues").innerHTML = (now_ ? `<button class="pill alarm" data-issues="now" style="--c:${SEV[3]}">${now_} incident${now_ > 1 ? "s" : ""}</button>` : "")
+  $("issues").innerHTML = (now_ ? `<button class="pill alarm" data-issues="now" style="--c:${SEV[3][1]}">${now_} just happened</button>` : "")
     + [[3, "interrupted"], [2, "limited"], [1, "planned"]].filter(([s]) => n[s])
-      .map(([s, w]) => `<button class="pill" data-issues="${s}" style="--c:${SEV[s]}">${n[s]} ${w}</button>`).join("")
+      .map(([s, w]) => `<button class="pill" data-issues="${s}" style="--c:${SEV[s][1]}">${n[s]} ${w}</button>`).join("")
     + (st ? `<button class="pill quiet" data-issues="standing" style="--c:${STANDING}" title="Delay rising while heading for the same stop: probably standing. An inference, not a report.">${st} standing</button>` : "");
   for (const b of $("issues").children) b.onclick = () => open("issues", b.dataset.issues);
 }
@@ -511,10 +509,10 @@ map.on("load", async () => {
     "line-color": ["interpolate", ["linear"], ["get", "g"], 20, "#ffd23f", 60, "#ff9f1c", 120, "#ff4d4d"],
     "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.2, 12, 5], "line-opacity": 0.85 } });
   const calmSev = (n) => ["all", ["==", ["get", "sev"], n], ["==", ["get", "sudden"], 0]];
-  map.addLayer({ id: "alert-seg-1", type: "line", source: "alert-seg", filter: calmSev(1), paint: { "line-color": SEV[1], "line-width": 1.4, "line-opacity": 0.4, "line-dasharray": [2, 2] } });
-  map.addLayer({ id: "alert-seg-2", type: "line", source: "alert-seg", filter: calmSev(2), paint: { "line-color": SEV[2], "line-width": 2, "line-opacity": 0.7 } });
-  map.addLayer({ id: "alert-seg-3", type: "line", source: "alert-seg", filter: calmSev(3), paint: { "line-color": SEV[3], "line-width": 2.6, "line-opacity": 0.6, "line-blur": 0.4 } });
-  map.addLayer({ id: "alert-seg-sudden", type: "line", source: "alert-seg", filter: ["==", ["get", "sudden"], 1], layout: { "line-cap": "round" }, paint: { "line-color": SEV[3], "line-width": 3.4 } });
+  map.addLayer({ id: "alert-seg-1", type: "line", source: "alert-seg", filter: calmSev(1), paint: { "line-color": SEV[1][1], "line-width": 1.4, "line-opacity": 0.4, "line-dasharray": [2, 2] } });
+  map.addLayer({ id: "alert-seg-2", type: "line", source: "alert-seg", filter: calmSev(2), paint: { "line-color": SEV[2][1], "line-width": 2, "line-opacity": 0.7 } });
+  map.addLayer({ id: "alert-seg-3", type: "line", source: "alert-seg", filter: calmSev(3), paint: { "line-color": SEV[3][1], "line-width": 2.6, "line-opacity": 0.6, "line-blur": 0.4 } });
+  map.addLayer({ id: "alert-seg-sudden", type: "line", source: "alert-seg", filter: ["==", ["get", "sudden"], 1], layout: { "line-cap": "round" }, paint: { "line-color": SEV[3][1], "line-width": 3.4 } });
   map.addLayer({ id: "alert-hit", type: "line", source: "alert-seg", paint: { "line-color": "#000", "line-width": 18, "line-opacity": 0.01 } }); // wide invisible target for clicks
   const routeWidth = (w) => ["interpolate", ["linear"], ["zoom"], 12, w, 16, w * 1.8]; // wider than the tracks it runs on
   map.addLayer({ id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "part"], "ahead"], paint: { "line-color": ["get", "c"], "line-width": routeWidth(2), "line-opacity": 0.45 } });
@@ -543,7 +541,7 @@ map.on("load", async () => {
   map.addLayer({ id: "me-halo", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-opacity": 0.18, "circle-radius": 16, "circle-blur": 0.4 } });
   map.addLayer({ id: "me", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-radius": 5.5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
   map.addLayer({ id: "trails", type: "line", source: "trails", layout: { "line-cap": "butt", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-opacity": ["get", "o"], "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.4, 10, 2.6, 14, 4.5] } });
-  map.addLayer({ id: "ripples", type: "circle", source: "ripples", layout: { visibility: CALM ? "none" : "visible" }, paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 6, "circle-stroke-color": SEV[3], "circle-stroke-width": 2, "circle-stroke-opacity": 0.8 } });
+  map.addLayer({ id: "ripples", type: "circle", source: "ripples", layout: { visibility: CALM ? "none" : "visible" }, paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 6, "circle-stroke-color": SEV[3][1], "circle-stroke-width": 2, "circle-stroke-opacity": 0.8 } });
   map.addLayer({ id: "train-glow", type: "circle", source: "trains", filter: ["==", ["get", "g"], 1], paint: { "circle-color": ["get", "c"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 6, 10, 10, 14, 18], "circle-blur": 1, "circle-opacity": ["*", 0.22, ["get", "o"]] } });
   const trainSize = ["interpolate", ["linear"], ["zoom"], 6, ["*", 0.34, ["get", "s"]], 8, ["*", 0.5, ["get", "s"]], 10, 0.8, 12, 1, 15, 1.5];
   map.addLayer({
@@ -637,7 +635,7 @@ function alertTip(id) {
   const a = live.alerts.find((x) => x.id === id);
   if (!a) return "";
   const names = a.s.map((s) => day.stations[s][0]), span = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(" – ");
-  return `<span class="sev-dot" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"></span><span>${a.sudden ? "Just happened" : SEV_NAME[a.sev]}</span>${span ? `<span class="sub">${esc(span)}</span>` : ""}<span class="sub">· ${esc(whyText(a))}</span>`;
+  return `<span class="sev-dot" style="--c:${a.sudden ? SEV[3][1] : SEV[a.sev][1]}"></span><span>${a.sudden ? "Just happened" : SEV[a.sev][0]}</span>${span ? `<span class="sub">${esc(span)}</span>` : ""}<span class="sub">· ${esc(whyText(a))}</span>`;
 }
 map.on("click", (e) => {
   if (zen) return showZenExit();
@@ -969,7 +967,7 @@ function open(type, idx, fly = false, push = true) {
   map.setFilter("station-selected", ["==", ["get", "i"], type === "station" ? idx : -1]);
   const a = type === "alert" ? live.alerts.find((x) => x.id === idx) : null;
   $("panel").hidden = false;
-  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : type === "line" ? styles[[...selected.routes][0]].c : a ? (a.sudden ? SEV[3] : SEV[a.sev]) : type === "issues" ? (idx === "standing" ? STANDING : SEV[idx === "now" ? 3 : idx]) : "#5cc8ff");
+  $("panel").style.setProperty("--line", type === "train" ? styles[day.trips[idx][0]].c : type === "line" ? styles[[...selected.routes][0]].c : a ? (a.sudden ? SEV[3][1] : SEV[a.sev][1]) : type === "issues" ? (idx === "standing" ? STANDING : SEV[idx === "now" ? 3 : idx][1]) : "#5cc8ff");
   if (type !== "train") map.getSource("route").setData(fc([]));
   setUrl(push && !was);
   renderPanel();
@@ -1029,7 +1027,7 @@ function setFollow(on) {
 }
 
 const delayText = (d) => (d >= 60 ? `<span class="${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)}′</span>` : "");
-const alertHtml = (a) => `<div class="alert" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"><span class="sev">${a.sudden ? "Just happened" : SEV_NAME[a.sev]} · ${esc(whyText(a))}</span><strong>${esc(a.h)}</strong>${a.d ? `<p>${esc(a.d)}</p>` : ""}<button class="more" data-alert="${a.id}">Details →</button></div>`;
+const alertHtml = (a) => `<div class="alert" style="--c:${a.sudden ? SEV[3][1] : SEV[a.sev][1]}"><span class="sev">${a.sudden ? "Just happened" : SEV[a.sev][0]} · ${esc(whyText(a))}</span><strong>${esc(a.h)}</strong>${a.d ? `<p>${esc(a.d)}</p>` : ""}<button class="more" data-alert="${a.id}">Details →</button></div>`;
 const alertsHtml = (list) => {
   const liveOnes = list.filter((a) => a.sev > 1), planned = list.filter((a) => a.sev === 1);
   return liveOnes.map(alertHtml).join("") + (planned.length ? `<details class="planned"><summary>${planned.length} planned / notices</summary>${planned.map(alertHtml).join("")}</details>` : "");
@@ -1266,7 +1264,7 @@ function runningRows(trips) {
 function alertPanelHtml(id) {
   const a = live.alerts.find((x) => x.id === id);
   if (!a) return `<h2>Disruption</h2><div class="sub">This disruption is no longer reported.</div>`;
-  const c = a.sudden ? SEV[3] : SEV[a.sev], ago = a.from ? Math.round((Date.now() / 1000 - a.from) / 60) : null;
+  const c = a.sudden ? SEV[3][1] : SEV[a.sev][1], ago = a.from ? Math.round((Date.now() / 1000 - a.from) / 60) : null;
   const when = [a.from ? `since ${dateClock(a.from)}` : "", a.to ? `until ≈ ${dateClock(a.to)}` : "",
     ago !== null ? `started ${ago < 60 ? `${ago} min` : ago < 1440 ? `${Math.floor(ago / 60)} h ${ago % 60} min` : `${Math.floor(ago / 1440)} days`} ago` : ""].filter(Boolean).join(" · ");
   const span = a.s.map((s) => `<button class="stn" data-station="${s}">${esc(day.stations[s][0])}</button>`).join(`<span class="arrow">${a.s.length === 2 ? "↔" : "·"}</span>`);
@@ -1274,7 +1272,7 @@ function alertPanelHtml(id) {
   const t = now();
   const onLines = a.t.length ? a.t : day.trips.map((_, i) => i).filter((i) => a.r.includes(day.trips[i][0]) && locate(expected(i).stops, t));
   const rows = runningRows(onLines.slice(0, 40)).slice(0, 15).join("");
-  return `<span class="sev-tag" style="--c:${c}">${a.sudden ? "Just happened" : SEV_NAME[a.sev]}</span>
+  return `<span class="sev-tag" style="--c:${c}">${a.sudden ? "Just happened" : SEV[a.sev][0]}</span>
     <div class="kind-title">${esc(whyText(a))}</div>
     <div class="sub">${when}</div>
     <p class="headline">${esc(a.h)}</p>${a.d ? `<p class="desc">${esc(a.d)}</p>` : ""}
@@ -1288,13 +1286,13 @@ function alertPanelHtml(id) {
 function issuesHtml(which) {
   if (which === "standing") {
     const rows = runningRows(standingTrains()).join("");
-    return `<h2>Probably standing</h2><div class="sub">Trains whose expected delay at their next stop keeps rising. An inference from the forecasts, not a reported incident: often a short wait for a connection or a slot.</div>
+    return `<h2>Probably standing</h2><div class="sub">Trains whose expected delay at their next stop keeps rising. An inference from the forecasts, not a reported disruption: often a short wait for a connection or a slot.</div>
       ${rows ? `<ol class="stops deps">${rows}</ol>` : `<div class="empty">None right now.</div>`}`;
   }
   const list = which === "now" ? live.alerts.filter((a) => a.sudden) : live.alerts.filter((a) => a.sev === +which);
-  const items = list.map((a) => `<li data-alert="${a.id}" role="button" tabindex="0" style="--c:${a.sudden ? SEV[3] : SEV[a.sev]}"><span class="sev-dot"></span>
+  const items = list.map((a) => `<li data-alert="${a.id}" role="button" tabindex="0" style="--c:${a.sudden ? SEV[3][1] : SEV[a.sev][1]}"><span class="sev-dot"></span>
     <div><strong>${esc(a.h)}</strong><small>${esc(whyText(a))}${a.from ? ` · since ${clock(a.from)}` : ""}</small></div></li>`).join("");
-  const title = which === "now" ? "Incidents right now" : SEV_NAME[which];
+  const title = which === "now" ? "Just happened" : SEV[which][0];
   return `<h2>${title}</h2><div class="sub">${list.length} disruption${list.length === 1 ? "" : "s"}</div>
     ${items ? `<ol class="issues">${items}</ol>` : `<div class="empty">Nothing right now.</div>`}`;
 }

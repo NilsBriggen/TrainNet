@@ -61,10 +61,10 @@
     <button data-cat="re" style="--c:#2ee6a6">RegioExpress</button>
     <button data-cat="reg" style="--c:#5cc8ff">Regional</button>
     <button data-cat="s" class="rainbow">S-Bahn</button>
-    <button data-cat="priv" style="--c:#c792ff">Private</button>
+    <button data-cat="priv" style="--c:var(--cat-priv)">Other railways</button>
     <button data-cat="pe" style="--c:#ffd166">Panorama</button>
     <span class="gap"></span>
-    <button data-cat="delays" style="--c:#ffd23f">Delays</button>
+    <button data-cat="delays" style="--c:var(--late)">Delays</button>
     <button data-layer="lost" style="--c:#ff7a4d" title="Sections where trains gain delay, last 30 days">Time lost</button>
     <button data-layer="traffic" style="--c:#c792ff" title="Trains a day per line section, freight included (SBB counts)">Traffic</button>
     <button data-layer="speed" style="--c:#2ee6a6" title="Line speed (OpenStreetMap maxspeed)">Line speed</button>
@@ -82,18 +82,18 @@
       <li><span class="ki"><span class="k-train rainbow"></span>S-Bahn: every line its own colour</span></li>
       <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ffd23f"></span>3+ min late</span><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ff4d4d"></span>10+ min late</span><small>with "Delays" on</small></li>
       <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;--o:#ff9f5a;opacity:.75"></span>probably standing</span><small>its delay keeps rising: our inference, not a report</small></li>
-      <li><span class="ki"><span class="k-train blink" style="--c:#5cc8ff;--o:#ff4d4d"></span>an incident reported for this train</span></li>
+      <li><span class="ki"><span class="k-train blink" style="--c:#5cc8ff;--o:#ff4d4d"></span>a disruption reported for this train</span></li>
       <li><span class="ki"><span class="k-train" style="--c:#5cc8ff;opacity:.3"></span>cancelled</span></li>
     </ul>
     <h3>Disruptions</h3>
     <ul>
-      <li><span class="ki"><span class="k-line dashed"></span>planned works</span><span class="ki"><span class="k-line" style="--c:#ffb547"></span>limited service</span><span class="ki"><span class="k-line" style="--c:#ff4d4d"></span>interrupted</span></li>
-      <li><span class="ki"><span class="k-line blink" style="--c:#ff4d4d"></span>just happened</span><small>unplanned, first hour</small><span class="ki"><span class="k-diamond"></span>at a station</span></li>
+      <li><span class="ki"><span class="k-line dashed"></span>planned works</span><span class="ki"><span class="k-line" style="--c:var(--warn)"></span>limited service</span><span class="ki"><span class="k-line" style="--c:var(--very-late)"></span>interrupted</span></li>
+      <li><span class="ki"><span class="k-line blink" style="--c:var(--very-late)"></span>just happened</span><small>unplanned, first hour</small><span class="ki"><span class="k-diamond"></span>at a station</span></li>
     </ul>
     <h3>Map</h3>
     <ul>
       <li><span class="ki"><span class="k-hub"></span>major station</span><span class="ki"><span class="k-stn"></span>station</span><span class="ki"><span class="k-line tunnel"></span>tunnel: trains dim inside</span><span class="ki"><span class="k-line bridge"></span>bridge (zoomed in)</span></li>
-      <li><span class="ki"><span class="k-line" style="--c:#ffd23f"></span><span class="k-line" style="--c:#ff4d4d"></span>time lost</span><small>with "Time lost" on: sections where trains gain 20 s to 2+ min of delay on average, last 30 days</small></li>
+      <li><span class="ki"><span class="k-line" style="--c:var(--late)"></span><span class="k-line" style="--c:var(--very-late)"></span>time lost</span><small>with "Time lost" on: sections where trains gain 20 s to 2+ min of delay on average, last 30 days</small></li>
       <li><span class="ki"><span class="k-line" style="--c:#5cc8ff"></span><span class="k-line" style="--c:#ff7a4d"></span>traffic</span><small>with "Traffic" on: thicker = more trains a day; orange = much freight</small></li>
       <li><span class="ki"><span class="k-line" style="--c:#3b5998"></span><span class="k-line" style="--c:#2ee6a6"></span><span class="k-line" style="--c:#ff3d5a"></span>line speed</span><small>with "Line speed" on: 60 → 250 km/h</small></li>
       <li><span class="ki"><span class="k-me"></span>you</span><small>"Near me" opens the nearest station; moving with a train, it finds that train. Your location stays in your browser.</small></li>
