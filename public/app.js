@@ -443,9 +443,12 @@ map.on("load", async () => {
   // pre-rendered hillshade, not a DEM: browsers with anti-fingerprinting (Firefox resistFingerprinting, LibreWolf)
   // block reading canvas pixels, which MapLibre needs to decode elevation tiles; plain raster tiles are only drawn
   map.addSource("relief", { type: "raster", tiles: ["https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissalti3d-reliefschattierung_monodirektional/default/current/3857/{z}/{x}/{y}.png"], tileSize: 256, maxzoom: 17 });
-  // the other base maps: swisstopo's national map and SWISSIMAGE aerial photos (free with "© swisstopo", no key)
-  for (const [id, layer] of [["map", "pixelkarte-farbe"], ["aerial", "swissimage"]])
-    map.addSource(id, { type: "raster", tiles: [`https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.${layer}/default/current/3857/{z}/{x}/{y}.jpeg`], tileSize: 256, maxzoom: 18 });
+  // the other base maps: swisstopo's national map and SWISSIMAGE aerial photos (free with "© swisstopo", no key). Only tiles
+  // over Switzerland: the national map goes on to the sea, which the neighbours' land fill doesn't cover
+  // The national map at tileSize 128: each zoom shows the next zoom's tiles at half size, so its lettering and roads come out
+  // at their printed size on sharp screens and the more detailed map scale takes over a step earlier (4× the tiles)
+  for (const [id, layer, size] of [["map", "pixelkarte-farbe", 128], ["aerial", "swissimage", 256]])
+    map.addSource(id, { type: "raster", tiles: [`https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.${layer}/default/current/3857/{z}/{x}/{y}.jpeg`], tileSize: size, maxzoom: 18, bounds: [5.9, 45.8, 10.5, 47.85] });
   map.addSource("neighbours", { type: "geojson", data: "neighbours.geojson" });
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
