@@ -1,7 +1,7 @@
 // History for the stats page: finished trips, per-stop delays, network samples, alerts, vehicle runs.
 // Detail is kept 30 days; daily aggregates are kept forever.
 import { Database } from "bun:sqlite";
-import { applyDelays } from "../public/position.js";
+import { applyDelays, locate } from "../public/position.js";
 import { addDays, serviceBase, zurichDate } from "./time";
 import type { Day } from "./gtfs";
 import { initHistory } from "./history";
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS trip_day (date TEXT, trip TEXT, train_no TEXT, line T
   stops INTEGER, stops_ok INTEGER, stuck_min REAL, PRIMARY KEY (date, trip));
 CREATE INDEX IF NOT EXISTS trip_day_no ON trip_day (train_no, date);
 CREATE TABLE IF NOT EXISTS stop_obs (date TEXT, trip TEXT, train_no TEXT, line TEXT, idx INTEGER, uic TEXT,
-  sched_arr INTEGER, sched_dep INTEGER, arr_delay INTEGER, dep_delay INTEGER, skipped INTEGER, PRIMARY KEY (date, trip, idx));
+  sched_arr INTEGER, sched_dep INTEGER, arr_delay INTEGER, dep_delay INTEGER, skipped INTEGER, arr_fc INTEGER, dep_fc INTEGER, PRIMARY KEY (date, trip, idx));
 CREATE INDEX IF NOT EXISTS stop_obs_uic ON stop_obs (uic, date);
 CREATE INDEX IF NOT EXISTS stop_obs_no ON stop_obs (train_no);
 CREATE INDEX IF NOT EXISTS stop_obs_line ON stop_obs (line);
@@ -60,7 +60,9 @@ const LATE = 180; // punctual = less than 3 min late, the SBB threshold
 const GRACE = 20 * 60; // write a trip this long after its arrival, so late updates still land
 
 export let db: Database;
-type State = { u?: (number | null)[][]; c?: 1; stuck: number };
+// fa / fd: stop index -> the feed's arrival delay forecast when first seen running towards it, departure delay forecast
+// when first seen standing there: against the actual delays they tell how far off the forecast was, where the map's trains jump
+type State = { u?: (number | null)[][]; c?: 1; stuck: number; fa?: Record<number, number>; fd?: Record<number, number> };
 let dayOf: Day | undefined;
 const state = new Map<number, State>(); // trip index of the current day -> what realtime told us
 let lastFeed = 0; // feed timestamp of the previous recordTrips: standing minutes are the time between feeds
@@ -73,6 +75,7 @@ export function initRecord(file: string) {
   db.exec(SCHEMA);
   initHistory(db);
   try { db.exec("ALTER TABLE net_sample ADD COLUMN observed INTEGER"); } catch {} // databases from before the column
+  for (const c of ["arr_fc", "dep_fc"]) try { db.exec(`ALTER TABLE stop_obs ADD COLUMN ${c} INTEGER`); } catch {}
   return db;
 }
 
@@ -113,9 +116,15 @@ export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number 
   if (dayOf !== d) startDay(d, feedTime);
   const step = lastFeed ? Math.min(feedTime - lastFeed, 120) / 60 : 0.5; // minutes since the previous feed (~30 s); a pause of ours isn't standing time
   lastFeed = feedTime;
+  const t = feedTime - d.base / 1000;
   for (const [i, v] of Object.entries(delays)) {
     const st = state.get(+i) ?? { stuck: 0 };
     if (v.u) st.u = v.u;
+    if (v.u && !v.c) { // shortcut: after a restart or midnight the first forecast seen is a later one, a slightly better one
+      const s = d.trips[+i].stops, e = applyDelays(s, v.u), p = locate(e.stops, t);
+      if (p && !p.at) (st.fa ??= {})[p.b] ??= e.stops[p.b * 3 + 1] - s[p.b * 3 + 1];
+      else if (p && p.a < s.length / 3 - 1) (st.fd ??= {})[p.a] ??= e.stops[p.a * 3 + 2] - s[p.a * 3 + 2];
+    }
     st.c = v.c ? 1 : 0; // a cancelled train can be reinstated
     if (v.x) st.stuck += step;
     state.set(+i, st);
@@ -131,7 +140,7 @@ export function recordTrips(d: Day, delays: Record<number, { c?: 1; u?: (number 
 export function flush(d: Day, nowSec: number, grace: number) {
   const t = nowSec - d.base / 1000;
   const insTrip = db.query("INSERT OR REPLACE INTO trip_day VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-  const insStop = db.query("INSERT OR REPLACE INTO stop_obs VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+  const insStop = db.query("INSERT OR REPLACE INTO stop_obs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const done: string[] = [];
   db.transaction(() => {
     d.trips.forEach((trip, i) => {
@@ -147,7 +156,7 @@ export function flush(d: Day, nowSec: number, grace: number) {
         if (p && !e.skipped[p]) { stops++; if (arr! < LATE) ok++; max = Math.max(max, arr!); }
         // per-stop rows only carry delays: a trip realtime never mentioned, or a cancelled one, would just be timetable copies
         if (observed && !st!.c) insStop.run(trip.date, trip.id, trip.num, line, p, stations[s[p * 3]][3], p ? base + s[p * 3 + 1] : null, p < last ? base + s[p * 3 + 2] : null,
-          arr, dep, e.skipped[p] ? 1 : 0);
+          arr, dep, e.skipped[p] ? 1 : 0, p ? st!.fa?.[p] ?? null : null, p < last ? st!.fd?.[p] ?? null : null);
       }
       // punctuality at the last Swiss stop, like the official figures (and the history): a delay in Milano isn't ours
       let fin = last;

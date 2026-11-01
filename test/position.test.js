@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, distanceAt, frontEnd, locate, matchTrain, motion, timeTable } from "../public/position.js";
+import { applyDelays, distanceAt, ease, frontEnd, locate, matchTrain, motion, timeTable } from "../public/position.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -120,6 +120,16 @@ test("on a train: the one whose position follows the phone's wins; two trains si
   const twins = { 0: pos[0], 1: (t) => [pos[0](t)[0] + 0.0001, 47] };
   expect(matchTrain(phone, [0, 1], (i, t) => twins[i](t))).toBeNull();
   expect(matchTrain(phone, [1, 2], (i, t) => pos[i](t))).toBeNull(); // nothing close enough
+});
+
+test("a new forecast is rolled into, not jumped to (IR35 2389 was 700 m off, S1 11182 2 km)", () => {
+  const dt = 50, own = 2; // a 50 ms frame of a train doing 40 m/s
+  expect(ease(10_000, 12_000, own, dt)).toBeLessThanOrEqual(10_000 + own + 25 * (dt / 1000)); // behind by 2 km: catch-up ≤ 25 m/s
+  expect(ease(10_000, 12_000, own, dt)).toBeGreaterThan(10_000 + own);
+  expect(ease(10_700, 10_000, own, dt)).toBeCloseTo(10_700 + 0.3 * own); // ahead: creeps on, never back, never dead still
+  expect(ease(10_000, 16_000, own, dt)).toBe(16_000); // over 5 km off: snaps
+  expect(ease(undefined, 3_000, 0, dt)).toBe(3_000); // first frame
+  expect(ease(9_999, 10_000, own, dt)).toBe(10_000); // its own motion never carries it past the forecast
 });
 
 test("line speed: a train crawls through a slow station area and makes up for it on the open line", () => {

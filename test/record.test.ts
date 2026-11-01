@@ -68,6 +68,16 @@ test("standing minutes follow the feed clock: feeds 30 s apart add half a minute
   expect(db.query("SELECT stuck_min FROM trip_day WHERE trip = 't1'").get()).toEqual({ stuck_min: 1 });
 });
 
+test("the forecasts first seen are kept beside the actual delays: arriving while running towards a stop, leaving while standing there", () => {
+  recordTrips(day, { 0: { u: [[1, 60, 60, 0]] } }, at("1015"), [2, 0, 0, 0, 2]); // running A → B, B forecast +1 min
+  recordTrips(day, { 0: { u: [[1, 60, 60, 0]] } }, at("1031") + 30, [2, 0, 0, 0, 2]); // standing at B, leaving forecast +1 min
+  recordTrips(day, { 0: { u: [[1, 60, 90, 0]] } }, at("1040"), [2, 0, 0, 0, 2]); // it left B at +1.5 min, running towards C
+  flush(day, at("1200"), 0);
+  const rows = db.query("SELECT idx, arr_delay, dep_delay, arr_fc, dep_fc FROM stop_obs WHERE trip = 't1' ORDER BY idx").all();
+  expect(rows).toEqual([{ idx: 0, arr_delay: null, dep_delay: 0, arr_fc: null, dep_fc: null }, { idx: 1, arr_delay: 60, dep_delay: 90, arr_fc: 60, dep_fc: 60 },
+    { idx: 2, arr_delay: 90, dep_delay: null, arr_fc: 90, dep_fc: null }]);
+});
+
 test("a cancelled train that comes back in the feed is stored as run, not cancelled", () => {
   recordTrips(day, { 0: { c: 1 } }, at("1000"), [2, 0, 1, 0, 2]);
   recordTrips(day, { 0: { u: [[1, 60, 60, 0]] } }, at("1005"), [2, 0, 0, 0, 2]);

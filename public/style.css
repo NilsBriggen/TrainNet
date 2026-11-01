@@ -291,6 +291,7 @@ body.zen.idle { cursor: none; }
   #panel.tall { max-height: 92dvh; } /* dragged up from its handle */
   body:has(#panel:not([hidden])) #chips, body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #chips, body:has(#key:not([hidden])) #credits { display: none; } /* under the sheet */
 }
+@media (max-width: 420px) { #bar .brand { display: none; } } /* five buttons and the status need the room; the logo is decoration here */
 @media (prefers-reduced-motion: reduce) { .dot, #panel, #loading .mark, .pill.alarm::before, .k-train.blink, .k-line.blink { animation: none; } }
 
 /* round 4: chip counts, near me, toast, connections, empty search */
@@ -305,6 +306,13 @@ body.zen.idle { cursor: none; }
 .stops li .conn .empty { color: var(--dim); font-size: var(--fs-m); padding: 4px 0; }
 h3 small { color: var(--dim); font-weight: 400; font-size: var(--fs-s); margin-left: 6px; }
 #results li.empty { color: var(--dim); cursor: default; }
+/* base map menu, under its button */
+.base-wrap { position: relative; display: flex; }
+#base { position: absolute; top: calc(100% + 8px); right: 0; z-index: 1; display: grid; gap: 2px; min-width: 150px; padding: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-m); box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5); }
+#base[hidden] { display: none; }
+#base label { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: var(--r-s); color: var(--text); cursor: pointer; }
+#base label:hover, #base label:has(input:checked) { background: rgba(92, 200, 255, 0.12); }
+#base input { margin: 0; accent-color: var(--accent); }
 .unit-row a:first-child { display: inline-flex; align-items: center; }
 .unit-row .unit-photo { width: 36px; height: 24px; object-fit: cover; border-radius: 4px; margin: -2px 7px -2px -4px; }
 .elev { display: block; width: 100%; height: auto; margin: 2px 0 12px; overflow: visible; }

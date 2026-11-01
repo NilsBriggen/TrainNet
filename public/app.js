@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cumStops, distanceAt, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cumStops, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 import { FORMATION_WHY } from "./formation.js";
@@ -26,7 +26,7 @@ let day, live = { delays: {}, alerts: [], stats: [] }, styles = [], byStation = 
 const nextTrip = new Map(), prevTrip = new Map(); // through-running: the same train continues under another number
 let pax = {}; // station UIC -> [average daily passengers, year] (SBB stations only)
 const paxPromise = fetch("/api/pax").then((r) => r.json()).catch(() => ({}));
-const expCache = new Map(), routeCache = new Map(), shown = new Map(), shownTarget = new Map(); // trip -> expected times / track model / eased distance
+const expCache = new Map(), routeCache = new Map(), shown = new Map(), shownTarget = new Map(), shownE = new Map(); // trip -> expected times / track model / eased distance / the forecast it was eased under
 let selected = null; // { type: "train" | "station" | "alert" | "issues", idx, tab? }
 let incidentTrains = new Map(), rippleAlerts = []; // trip -> its sudden alert; where sudden things happened
 let follow = false, zen = false, lastFocus = null;
@@ -94,7 +94,7 @@ function indexDay() {
     path.speeds = (day.speeds?.[k] ?? []).map(([f0, f1, v]) => ({ d0: f0 * total, d1: f1 * total, v }));
     return path;
   });
-  for (const m of [expCache, routeCache, shown, shownTarget, details, fetching, nextTrip, prevTrip, profiles]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, shownTarget, shownE, details, fetching, nextTrip, prevTrip, profiles]) m.clear(); // trip indexes changed
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
@@ -317,16 +317,13 @@ function positionOf(i, t, dt) {
   if (!p) return null;
   const { route, cum } = tripRoute(i);
   const target = alongRoute(i, e, p);
-  let d = shown.get(i);
-  const last = shownTarget.get(i) ?? target;
+  // its own motion since the last frame, under this frame's forecast: across a new forecast, target − last would be the
+  // whole correction and the train would jump by it
+  let own = target - (shownTarget.get(i) ?? target);
+  if (shownE.get(i) !== e) { const q = locate(e.stops, t - dt / 1000); own = q ? target - alongRoute(i, e, q) : 0; }
   shownTarget.set(i, target);
-  if (d === undefined || Math.abs(d - target) > 5000) d = target; // first frame or a big correction
-  // ahead of its expected position (a new delay): it just waits there, never rolls back. Behind: its own motion since
-  // the last frame, plus a gentle catch-up of at most 25 m/s
-  else if (d < target) {
-    d = Math.min(target, d + Math.max(0, target - last));
-    d += Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
-  }
+  shownE.set(i, e);
+  const d = ease(shown.get(i), target, own, dt);
   shown.set(i, d);
   return { p, e, q: atDistance(route, cum, d), dist: d, done };
 }
@@ -446,6 +443,9 @@ map.on("load", async () => {
   // pre-rendered hillshade, not a DEM: browsers with anti-fingerprinting (Firefox resistFingerprinting, LibreWolf)
   // block reading canvas pixels, which MapLibre needs to decode elevation tiles; plain raster tiles are only drawn
   map.addSource("relief", { type: "raster", tiles: ["https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissalti3d-reliefschattierung_monodirektional/default/current/3857/{z}/{x}/{y}.png"], tileSize: 256, maxzoom: 17 });
+  // the other base maps: swisstopo's national map and SWISSIMAGE aerial photos (free with "© swisstopo", no key)
+  for (const [id, layer] of [["map", "pixelkarte-farbe"], ["aerial", "swissimage"]])
+    map.addSource(id, { type: "raster", tiles: [`https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.${layer}/default/current/3857/{z}/{x}/{y}.jpeg`], tileSize: 256, maxzoom: 18 });
   map.addSource("neighbours", { type: "geojson", data: "neighbours.geojson" });
   map.addSource("ch", { type: "geojson", data: "switzerland.geojson" });
   map.addSource("lakes", { type: "geojson", data: "lakes.geojson" });
@@ -458,6 +458,9 @@ map.on("load", async () => {
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
   // the opaque neighbour fill hides the bit of swisstopo coverage beyond the border
   map.addLayer({ id: "relief", type: "raster", source: "relief", paint: { "raster-saturation": -1, "raster-contrast": 0.25, "raster-brightness-max": 0.36, "raster-fade-duration": 0 } });
+  // the national map toned down a little, so trains and track keep the eye; the photos as they are
+  map.addLayer({ id: "base-map", type: "raster", source: "map", layout: { visibility: "none" }, paint: { "raster-fade-duration": 0, "raster-saturation": -0.55, "raster-contrast": -0.2 } });
+  map.addLayer({ id: "base-aerial", type: "raster", source: "aerial", layout: { visibility: "none" }, paint: { "raster-fade-duration": 0 } });
   map.addLayer({ id: "nb-fill", type: "fill", source: "neighbours", paint: { "fill-color": "#050b1a" } });
   map.addLayer({ id: "nb-line", type: "line", source: "neighbours", paint: { "line-color": "#152a52", "line-width": 0.6, "line-opacity": 0.8 } });
   map.addLayer({ id: "ch-glow", type: "line", source: "ch", paint: { "line-color": "#2a66ff", "line-width": 10, "line-blur": 10, "line-opacity": 0.18 } });
@@ -558,6 +561,7 @@ map.on("load", async () => {
   map.addLayer({ id: "train-labels", type: "symbol", source: "trains", minzoom: 11.5, filter: ["has", "l"],
     layout: { "text-field": ["get", "l"], "text-font": ["Open Sans Semibold"], "text-size": 10.5, "text-offset": [0, 1.1], "text-anchor": "top", "text-padding": 4, "symbol-sort-key": ["-", 3, ["get", "z"]] },
     paint: { "text-color": "#dfe8ff", "text-halo-color": "#040a18", "text-halo-width": 1.4, "text-opacity": ["get", "o"] } }, "labels-hub");
+  setBase(savedBase());
 
 
   day = await dayPromise;
@@ -795,6 +799,34 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "?") toggleKey();
 });
 if (!/Mac|iPhone|iPad/.test(navigator.platform)) document.querySelector(".search kbd").textContent = "Ctrl K";
+
+// ---------- base map ----------
+const TRACKS = ["rail", "rail-tunnel", "osm-main", "osm-tunnel"], trackColor = {}; // light blue for the dark bases, dark blue on the national map
+/** Relief (the dark default), the national map or aerial photos. The dark tint and our own lakes would cover the other two; the dark neighbours stay. */
+function setBase(name) {
+  if (!["relief", "map", "aerial"].includes(name)) name = "relief";
+  if (map.getLayer("relief")) {
+    for (const id of TRACKS) {
+      trackColor[id] ??= map.getPaintProperty(id, "line-color"); // the style's own, before the first change
+      map.setPaintProperty(id, "line-color", name === "map" ? "#1c3d8f" : trackColor[id]);
+    }
+    for (const [id, b] of [["relief", "relief"], ["base-map", "map"], ["base-aerial", "aerial"]]) map.setLayoutProperty(id, "visibility", b === name ? "visible" : "none");
+    for (const id of ["ch-fill", "ch-glow", "lakes", "lakes-line", "tlm-lakes", "tlm-lakes-line"]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", name === "relief" ? "visible" : "none");
+  }
+  $("vignette").hidden = name === "map";
+  for (const r of $("base").querySelectorAll("input")) r.checked = r.value === name;
+  try { localStorage.setItem("trainnet.base", name); } catch {}
+}
+const savedBase = () => { try { return localStorage.getItem("trainnet.base"); } catch { return null; } };
+function toggleBase(on = $("base").hidden) {
+  $("base").hidden = !on;
+  $("base-btn").setAttribute("aria-expanded", String(on));
+  if (on) $("base").querySelector("input:checked")?.focus();
+}
+$("base-btn").onclick = (e) => { e.stopPropagation(); toggleBase(); };
+$("base").onchange = (e) => setBase(e.target.value);
+$("base").addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Enter") { e.stopPropagation(); toggleBase(false); $("base-btn").focus(); } });
+document.addEventListener("click", (e) => { if (!$("base").hidden && !e.target.closest(".base-wrap")) toggleBase(false); });
 
 // ---------- key (legend) ----------
 function toggleKey(on = $("key").hidden) {

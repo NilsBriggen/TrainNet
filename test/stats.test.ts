@@ -37,7 +37,7 @@ test("every stats function answers on a small database", async () => {
     train: stats.train(day, "700"), vehicle: stats.vehicle(day, "502-206"), station: stats.stationStats(day, "8500001"),
     line: stats.lineStats(day, key.line), lineByName: stats.lineStats(day, "IC1"), types: stats.types(day), type: stats.trainType(day, "502"),
     history: stats.longHistory(), labels: stats.lineLabels(day), segments: stats.segments(), records: stats.records(day),
-    commute: stats.commute(day, "8500001", "8500003"),
+    commute: stats.commute(day, "8500001", "8500003"), bias: stats.forecastBias(),
   };
   for (const [k, v] of Object.entries(out)) expect([k, v]).not.toEqual([k, null]);
   expect(out.lineByName!.line).toBe(key.line);
@@ -45,6 +45,8 @@ test("every stats function answers on a small database", async () => {
   expect(out.station!.busy).toEqual([{ hour: 7, pct: 7.5, year: 2025 }]);
   expect(out.station!.platforms).toEqual([{ p: "7", n: 3 }]); // sector codes count as their platform
   expect(out.commute).toMatchObject({ runs: 1, pct: 100, median: 120 });
+  expect(out.overview.history.forecast).toEqual([{ date: "2026-10-23", arr: null, dep: 0, arrIn30: null, depIn30: 100, n: 1 }]); // the 10:00 feed saw t1 standing at A, forecast to leave on time, and it did
+  expect(out.bias).toEqual({ sections: [], stops: [] }); // under 20 runs anywhere
   expect(out.overview.today.stopPct).toBe(50); // t1: two stops with live data, one of them on time
   expect(out.station!.fit).toEqual([{ track: "7", train: "700", train_m: 200, edge_m: 150 }]); // the unit coupled on at B doesn't count at A
   expect(out.incidents.byMonth).toEqual([{ month: "1970-01", kind: "signal", n: 2 }]);

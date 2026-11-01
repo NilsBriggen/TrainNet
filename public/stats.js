@@ -222,6 +222,7 @@ async function overview(current) {
   <div class="grid">
     ${card("Daily punctuality", "Finished trains less than 3 min late; the line is the 90th-percentile final delay", H.days.length ? ch("c-days") : empty("No complete day recorded yet."), 6)}
     ${card("When trains run late", "Average departure delay by weekday and hour, last 30 days", H.heat.length ? ch("c-heat") : empty("Fills in as trains finish."), 6)}
+    ${H.forecast?.length ? card("How good the live forecasts are", "How far the feed's forecast was from what happened, average in seconds: arrivals as forecast while the train ran towards the stop, departures as forecast while it stood there", ch("c-fc"), 6) : ""}
     ${card("Disruptions per week", "Interrupted or limited service, by kind", H.incidentsByWeek.length ? ch("c-week") : empty("Nothing recorded yet."), 12)}
   </div>`;
 
@@ -254,6 +255,11 @@ async function overview(current) {
   ] });
   if (H.heat.length) draw("c-heat", { height: 230, marginLeft: 40, x: { label: "hour", domain: d3.range(24) }, y: { label: null, domain: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] },
     color: { scheme: "YlOrRd", legend: true, label: "avg delay, min" }, marks: [Plot.cell(H.heat, { x: "hour", y: "dow", fill: "avg", inset: 1, tip: true })] });
+  if (H.forecast?.length) {
+    const F = H.forecast.flatMap((f) => [{ date: f.date, what: "arrivals", s: f.arr, in30: f.arrIn30 }, { date: f.date, what: "departures", s: f.dep, in30: f.depIn30 }]).filter((f) => f.s != null);
+    draw("c-fc", { x: { type: "band", label: null, tickFormat: dmy }, y: { grid: true, label: "s", zero: true }, color: { domain: ["arrivals", "departures"], range: [C.accent, C.warn], legend: true },
+      marks: [Plot.lineY(F, { x: "date", y: "s", stroke: "what", marker: "circle", tip: true, title: (f) => `${dmy(f.date)} ${f.what}: ${n0(f.s)} s off on average · ${f.in30} % within 30 s` })] });
+  }
   if (H.incidentsByWeek.length) draw("c-week", { x: { label: "week of", type: "band" }, y: { grid: true, label: null }, color: { ...kindColor, legend: true }, marks: [Plot.barY(H.incidentsByWeek, { x: "week", y: "n", fill: "kind", tip: true })] });
   hotspotMap("c-hot", T.hotspots);
 

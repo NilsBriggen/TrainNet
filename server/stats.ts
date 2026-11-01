@@ -219,6 +219,10 @@ function history() {
         .map((r) => ({ ...r, pct: pct(r.punctual, r.observed - r.cancelled), coverage: covered(r) })),
       heat: [...heat.values()].map((x) => ({ dow: DOW[x.dow], hour: x.hour, avg: x.sum / x.n / 60, late: pct(x.late, x.n), n: x.n })),
       incidentsByWeek: byWeek(all(`SELECT first_seen, kind FROM alert_log WHERE sev_max >= 2 ORDER BY first_seen`)),
+      // how far the feed's forecast was from what happened: arrivals as forecast when the train ran towards the stop, departures as forecast when it stood there
+      forecast: all(`SELECT date, count(arr_fc) an, avg(abs(arr_delay - arr_fc)) arr, sum(abs(arr_delay - arr_fc) <= 30) a30, count(dep_fc) dn, avg(abs(dep_delay - dep_fc)) dep,
+        sum(abs(dep_delay - dep_fc) <= 30) d30 FROM stop_obs WHERE skipped = 0 AND (arr_fc IS NOT NULL OR dep_fc IS NOT NULL) GROUP BY date ORDER BY date`)
+        .map((r) => ({ date: r.date, arr: r.arr, dep: r.dep, arrIn30: pct(r.a30, r.an), depIn30: pct(r.d30, r.dn), n: r.an + r.dn })),
     };
   });
 }
@@ -732,6 +736,20 @@ export function segments() {
     }
     return [...by.values()].filter((v) => v[2] >= 30).map(([a, b, n, s]) => [a, b, Math.round(s / n), n]);
   });
+}
+
+// ---------- forecast bias (for the map's guess, once scripts/forecastcheck.ts shows it helps) ----------
+/**
+ * Last 30 days, seconds: how much later (+) or earlier trains really arrived per section (previous stop → stop) than the
+ * feed forecast when they set off, and left per stop than forecast when they got there. [a, b, err, n] / [uic, err, n].
+ */
+export function forecastBias() {
+  return cached("bias", 3600, () => ({
+    sections: all(`SELECT x.uic a, y.uic b, count(*) n, avg(y.arr_delay - y.arr_fc) err FROM stop_obs x JOIN stop_obs y ON y.date = x.date AND y.trip = x.trip AND y.idx = x.idx + 1
+      WHERE y.arr_fc IS NOT NULL AND y.arr_delay IS NOT NULL AND x.skipped = 0 AND y.skipped = 0 GROUP BY a, b HAVING n >= 20`).map((r) => [r.a, r.b, Math.round(r.err), r.n]),
+    stops: all(`SELECT uic, count(*) n, avg(dep_delay - dep_fc) err FROM stop_obs WHERE dep_fc IS NOT NULL AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY uic HAVING n >= 20`)
+      .map((r) => [r.uic, Math.round(r.err), r.n]),
+  }));
 }
 
 // ---------- line labels ----------

@@ -57,6 +57,19 @@ export function motion(f, dur) {
 }
 
 /**
+ * The drawn distance along a trip for this frame: d = drawn last frame, target = where the forecast puts it now,
+ * own = how far the forecast moved it since the last frame (its own speed), dt = ms. A new forecast is rolled into,
+ * never jumped to: behind, it catches up at most 25 m/s; ahead (a later forecast), it creeps at 30 % of its speed
+ * until the forecast catches up, so it neither rolls back nor stops dead mid-line. Over 5 km off it snaps.
+ */
+export function ease(d, target, own, dt) {
+  if (d === undefined || Math.abs(d - target) > 5000) return target;
+  if (d > target) return d + 0.3 * Math.max(0, own);
+  d = Math.min(target, d + Math.max(0, own));
+  return d + Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
+}
+
+/**
  * Where line speed makes a train slow: cumulative running time along a stretch between two stops, from its line speeds.
  * speeds: [{ d0, d1, v }] (metres along the stretch in travel order, km/h); untagged track counts as `untagged` km/h.
  * Returns { d, t }: metres and the share of the running time spent until there (0..1), for distanceAt().

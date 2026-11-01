@@ -172,6 +172,7 @@ const server = Bun.serve({
     "/api/stats/history": (req) => statsJson(req, stats.longHistory),
     "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
     "/api/stats/segments": (req) => statsJson(req, stats.segments),
+    "/api/stats/bias": (req) => statsJson(req, stats.forecastBias),
     "/api/stats/records": (req) => statsJson(req, stats.records),
     "/api/stats/network": (req) => statsJson(req, stats.network),
     // the track network's vector tiles (see server/tiles.ts); empty tiles are 204, as MapLibre expects
