@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cars, cumStops, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cars, cumStops, rigidCars, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 import { FORMATION_WHY, sideView } from "./formation.js";
@@ -420,21 +420,29 @@ function trainFeatures(dt, ts, only) {
       const { route, cum } = tripRoute(i), w = bodyPx(z, style.s), long = Math.max(real, MIN_LEN[k] * w * mpp);
       const cab = (CAB_HALF - 4) * (w / 16) * mpp; // m behind the tip where the car's line stops: 4 image px into the cab, over its edge
       const front = Math.min(cum[cum.length - 1], Math.max(dist, real, 3 * cab)); // at its first stop the train stands ahead of the trip's start, not behind it
-      let lens_ = lens.map((len) => (len * long) / real), nLoco = locos;
-      if (Math.min(...lens_) < 6 * mpp) { const n = Math.max(1, Math.floor(long / mpp / 6)); lens_ = Array(n).fill(long / n); nLoco = 0; } // cars under 6 px: fewer, longer ones
+      let lens_ = lens.map((len) => (len * long) / real), nLoco = locos, merged = false;
+      if (Math.min(...lens_) < 6 * mpp) { const n = Math.max(1, Math.floor(long / mpp / 6)); lens_ = Array(n).fill(long / n); nLoco = 0; merged = true; } // cars under 6 px: fewer, longer ones
+      // real cars are rigid, bent only at their links; stretched or merged ones (zoomed out) follow the track instead
+      const gap = Math.max(1.5, 1.2 * mpp), rigid = long === real && !merged;
       // one outline under the whole train and its cars on top, train by train (sort key): the gaps show the outline even
       // where another train's body runs beneath
       const sk = (zs * 20000 + i) * 2, cabK = locos ? "loco" : k;
-      const outline = slice(route, cum, front - long + cab, front - cab);
+      let pieces, outline, fr, rr_;
+      if (rigid) ({ pieces, outline, front: fr, rear: rr_ } = rigidCars(route, cum, front, lens_, gap, cab, cab));
+      else {
+        pieces = cars(route, cum, front, lens_, gap, cab, cab);
+        outline = slice(route, cum, front - long + cab, front - cab);
+        // the track's bearing at a stop can be the next leg's, which may leave the other way: turn along the body's ends
+        const brg = (k) => Math.atan2((outline[k + 2] - outline[k]) * Math.cos((outline[k + 1] * Math.PI) / 180), outline[k + 3] - outline[k + 1]) * 180 / Math.PI;
+        const ok = outline.length >= 4, a = atDistance(route, cum, front), b = atDistance(route, cum, front - long);
+        fr = { ...a, bearing: ok ? brg(outline.length - 4) : a.bearing };
+        rr_ = front - long > 0 ? { ...b, bearing: ok ? brg(0) : b.bearing } : null;
+      }
       if (outline.length >= 4) bodies.push(line(outline, { i, col: h, x: 2 * hw, s: style.s, o, sk }));
-      cars(route, cum, front, lens_, Math.max(1.5, 1.2 * mpp), cab, cab).forEach((car, n) => bodies.push(line(car, { i, col: style.c, x: 0, win: n >= nLoco ? 1 : 0, s: style.s, o, sk: sk + 1 }))); // a locomotive: no window band
-      // cab ends go in the cars' source (one source updates in one pass, so they never drift apart), turned along the body's
-      // own ends: the track's bearing at a stop can be the next leg's, which may leave the other way
-      const brg = (k) => Math.atan2((outline[k + 2] - outline[k]) * Math.cos((outline[k + 1] * Math.PI) / 180), outline[k + 3] - outline[k + 1]) * 180 / Math.PI;
-      q = atDistance(route, cum, front);
-      const ok = outline.length >= 4;
-      bodies.push(point([q.lon, q.lat], { i, n: cabK, e: "f", r: (ok ? brg(outline.length - 4) : q.bearing) - 90, c: style.c, h, hw, s: style.s, o, sk }));
-      if (front - long > 0) { const t = atDistance(route, cum, front - long); bodies.push(point([t.lon, t.lat], { i, n: cabK, e: "r", r: (ok ? brg(0) : t.bearing) + 90, c: style.c, h, hw, s: style.s, o, sk })); }
+      pieces.forEach((car, n) => bodies.push(line(car, { i, col: style.c, x: 0, win: n >= nLoco ? 1 : 0, s: style.s, o, sk: sk + 1 }))); // a locomotive: no window band
+      // cab ends go in the cars' source: one source updates in one pass, so they never drift apart
+      if (fr) { q = fr; bodies.push(point([fr.lon, fr.lat], { i, n: cabK, e: "f", r: fr.bearing - 90, c: style.c, h, hw, s: style.s, o, sk })); }
+      if (rr_) bodies.push(point([rr_.lon, rr_.lat], { i, n: cabK, e: "r", r: rr_.bearing + 90, c: style.c, h, hw, s: style.s, o, sk }));
     }
     if (!body && !(selected?.type === "train" && selected.idx === i)) continue; // off screen: no label or glow to place (the selected one is followed)
     drawn.push(i);

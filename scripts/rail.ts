@@ -20,6 +20,54 @@ const SVC = (service?: string) => (!service ? 0 : service === "crossover" ? 2 : 
 const GAUGE = (t: any) => (t.railway === "narrow_gauge" || t.railway === "tram" || parseInt(t.gauge ?? "1435", 10) < 1400 ? 1 : 0);
 
 /**
+ * Rounds the corners OSM leaves where a track has few nodes: a node with exactly two neighbours that turns by more than 3°
+ * between segments over 15 m becomes a short curve (a quadratic Bézier from ⅓ of each segment, at most 25 m, back towards
+ * the corner; 3 points, 5 from 8°). Dense curves (short segments) are left alone: rounding all 180,000 small kinks doubled
+ * the graph. Done
+ * on the ways before anything else, so the routing graph and the map tiles get the same track: trains stay on the drawn
+ * rails. Junctions (3+ neighbours) and dead ends stay where they are. Inserted points get negative ids, the same for every
+ * way through the corner (`-(id·8 + k + 1)`, k from the neighbour with the smaller id), so two ways meeting there still join.
+ * Mutates and returns `ways` (Overpass ways with `out geom`: nodes and geometry of equal length).
+ */
+export function roundCorners(ways: { nodes: number[]; geometry: { lon: number; lat: number }[] }[], maxD = 25, minTurn = 3, minSeg = 15) {
+  const pos = new Map<number, { lon: number; lat: number }>(), nb = new Map<number, Set<number>>();
+  for (const w of ways) w.nodes.forEach((id, k) => {
+    pos.set(id, w.geometry[k]);
+    const s = nb.get(id) ?? nb.set(id, new Set()).get(id)!;
+    if (k) s.add(w.nodes[k - 1]);
+    if (k < w.nodes.length - 1) s.add(w.nodes[k + 1]);
+  });
+  const corners = new Map<number, { a: number; pts: { lon: number; lat: number }[]; use: number[] }>();
+  for (const [id, s] of nb) {
+    if (s.size !== 2) continue;
+    const [a, b] = [...s].sort((x, y) => x - y), V = pos.get(id)!, A = pos.get(a)!, B = pos.get(b)!, kx = Math.cos((V.lat * Math.PI) / 180);
+    const ax = (A.lon - V.lon) * kx * 111320, ay = (A.lat - V.lat) * 111320, bx = (B.lon - V.lon) * kx * 111320, by = (B.lat - V.lat) * 111320;
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by), turn = Math.PI - Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb || 1))));
+    const d = Math.min(la / 3, lb / 3, maxD);
+    if (turn < (minTurn * Math.PI) / 180 || Math.min(la, lb) < minSeg) continue;
+    const pa = { x: (ax / la) * d, y: (ay / la) * d }, pb = { x: (bx / lb) * d, y: (by / lb) * d };
+    const pts = [0, 0.25, 0.5, 0.75, 1].map((t) => { // Bézier pa → corner → pb, relative to the corner
+      const x = (1 - t) ** 2 * pa.x + t * t * pb.x, y = (1 - t) ** 2 * pa.y + t * t * pb.y;
+      return { lon: +(V.lon + x / (kx * 111320)).toFixed(7), lat: +(V.lat + y / 111320).toFixed(7) };
+    });
+    corners.set(id, { a, pts, use: turn < (8 * Math.PI) / 180 ? [0, 2, 4] : [0, 1, 2, 3, 4] });
+  }
+  for (const w of ways) {
+    const nodes: number[] = [], geometry: { lon: number; lat: number }[] = [], n = w.nodes.length;
+    w.nodes.forEach((id, k) => {
+      const c = corners.get(id);
+      if (!c) return nodes.push(id), geometry.push(w.geometry[k]);
+      const fromA = k ? w.nodes[k - 1] === c.a : w.nodes[k + 1] !== c.a; // travelling a → b through the corner
+      const ks = (k === 0 ? [2, 3, 4] : k === n - 1 ? [0, 1, 2] : [0, 1, 2, 3, 4]).map((j) => (fromA ? j : 4 - j));
+      for (const j of ks.filter((j) => c.use.includes(j))) nodes.push(-(id * 8 + j + 1)), geometry.push(c.pts[j]);
+    });
+    w.nodes = nodes;
+    w.geometry = geometry;
+  }
+  return ways;
+}
+
+/**
  * OSM ways that end a few metres from another track without sharing a node (tunnel portals, bridges, station heads)
  * leave gaps the router can't cross. Links a dead end to the nearest node of another way within `max` metres that lies
  * straight ahead of it (within 20°): two ways meeting end to end, or a junction node missing. Not to a track beside it:
@@ -201,6 +249,7 @@ export async function buildRail(out = OUT, ways_ = false) {
   if (json.remark) throw new Error(`overpass: ${json.remark}`); // a timeout mid-query still answers 200, with part of the ways
   const all: any[] = json.elements, ways = all.filter((w) => w.tags?.railway !== "construction"); // routing: built track only
   if (process.env.RAIL_OSM && !cached) await Bun.write(process.env.RAIL_OSM, JSON.stringify({ elements: all })); // to rebuild without asking Overpass again
+  roundCorners(all.filter((w) => w.nodes && w.geometry)); // before the graph and the tiles: both get the same, rounded track
 
   const index = new Map<number, number>(), nodes: number[] = [], edges: number[] = [], svc: number[] = [], kind: number[] = [], name: number[] = [], speed: number[] = [], ref: number[] = [], gauge: number[] = [];
   const names: string[] = [], nameIdx = new Map<string, number>(), refs: string[] = [], refIdx = new Map<string, number>(), wayOf: number[] = [];

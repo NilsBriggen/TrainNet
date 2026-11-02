@@ -185,3 +185,33 @@ test("line km: nearest marker, interpolated along its line; nothing far from any
   expect(kmAt(idx, 7.4026, 46.90005).km).toBe(10.3); // 30 % of the way from the 2nd to the 3rd marker, a few metres off the line
   expect(kmAt(idx, 7.402, 46.91)).toBeNull(); // 1 km north
 });
+
+import { rigidCars } from "../public/position.js";
+test("rigid cars: straight through bogies on the track, the links bend at a corner", () => {
+  const route = [{ path: L, reverse: false }], cum = cumStops(route), corner = atDistance(route, cum, L.cum[1]);
+  const { pieces, outline, front, rear } = rigidCars(route, cum, L.cum[1] + 60, [25, 25, 25, 25], 1.5, 4, 3); // the third car straddles the corner
+  expect(pieces.length).toBe(4);
+  for (const p of pieces) expect(p.length).toBe(4); // one straight piece per car
+  const len = (p) => metres(p[0], p[1], p[2], p[3]);
+  expect(len(pieces[1])).toBeCloseTo(25 - 1.5, 0); // metres() vs the track's own distances: ~1 % apart
+  expect(len(pieces[0])).toBeCloseTo(25 - 0.75 - 4, 0);
+  expect(len(pieces[3])).toBeCloseTo(25 - 0.75 - 3, 0);
+  // the straddling car's bogies (3.75 m in from its ends) lie on the track, on either leg; the car between them cuts the corner
+  const r2 = L.cum[1] + 60 - 75, bogies = [atDistance(route, cum, r2 + 3.75), atDistance(route, cum, r2 + 25 - 3.75)];
+  const [x0, y0, x1, y1] = pieces[2], kx = Math.cos((47 * Math.PI) / 180);
+  for (const b of bogies) { // distance from the bogie to the car's line, m
+    const dx = (x1 - x0) * kx, dy = y1 - y0, ex = (b.lon - x0) * kx, ey = b.lat - y0;
+    expect((Math.abs(dx * ey - dy * ex) / Math.hypot(dx, dy)) * 111320).toBeLessThan(0.05);
+  }
+  const mid = [(x0 + x1) / 2, (y0 + y1) / 2];
+  expect(mid[0]).toBeLessThan(corner.lon - 0.3 / (111320 * kx)); // inside the corner, off both legs
+  expect(mid[1]).toBeGreaterThan(corner.lat + 0.3 / 111320);
+  // the front cab end: the first car's end on the straight north leg, heading north; the outline runs rear → front
+  const tip = atDistance(route, cum, L.cum[1] + 60);
+  expect(metres(front.lon, front.lat, tip.lon, tip.lat)).toBeLessThan(0.05);
+  expect(front.bearing).toBeCloseTo(0, 0);
+  expect(rear.bearing).toBeCloseTo(90, 0); // the rear car is still on the east leg
+  expect(metres(outline.at(-2), outline.at(-1), pieces[0][2], pieces[0][3])).toBeLessThan(0.01);
+  expect(metres(outline[0], outline[1], pieces[3][0], pieces[3][1])).toBeLessThan(0.01);
+  expect(rigidCars(route, cum, 50, [25, 25, 25, 25]).rear).toBeNull(); // reaches back past the start: no rear cab
+});

@@ -206,6 +206,35 @@ export function cars(route, cum, dist, lens, gap = 1.5, nose = 0, tail = 0) {
   return out;
 }
 
+/**
+ * Rigid cars: like cars(), but each car is a straight piece through its two bogies, which run on the track 15 % of the car's
+ * length in from its ends: cars don't bend, the links between them do. Returns { pieces (front car first, [lon,lat,lon,lat]),
+ * outline (one line rear → front through every car's ends, for the casing), front, rear } with front/rear the train's
+ * outer ends as { lon, lat, bearing } along their car (rear null when the train reaches back past the trip's start).
+ */
+export function rigidCars(route, cum, dist, lens, gap = 1.5, nose = 0, tail = 0) {
+  const total = cum[cum.length - 1], pieces = [], ends = [];
+  let front = Math.min(dist, total), first = null, last = null;
+  lens.forEach((len, k) => {
+    const r = Math.max(0, front - len), f = front;
+    front -= len;
+    if (f - r < 1) return;
+    const ins = Math.min(0.15 * len, (f - r) / 3), A = atDistance(route, cum, r + ins), B = atDistance(route, cum, f - ins);
+    const kx = 111320 * Math.cos((A.lat * Math.PI) / 180), ky = 111320;
+    let ux = (B.lon - A.lon) * kx, uy = (B.lat - A.lat) * ky;
+    const l = Math.hypot(ux, uy) || 1;
+    ux /= l; uy /= l;
+    const at = (P, m) => [P.lon + (ux * m) / kx, P.lat + (uy * m) / ky], bearing = (Math.atan2(ux, uy) * 180) / Math.PI;
+    const outer = k === lens.length - 1 || front <= 0, back = outer ? (r > 0 ? tail : 0) : gap / 2; // cut off at the trip's start: no cab there
+    const R = at(A, -ins), F = at(B, ins);
+    pieces.push([...at(A, -ins + back), ...at(B, ins - (k ? gap / 2 : nose))]);
+    ends.push([outer ? at(A, -ins + back) : R, k ? F : at(B, ins - nose)]);
+    if (!k) first = { lon: F[0], lat: F[1], bearing };
+    last = r > 0 && outer ? { lon: R[0], lat: R[1], bearing } : null;
+  });
+  return { pieces, outline: ends.reverse().flat(2), front: first, rear: last };
+}
+
 /** Metres between two points (equirectangular: plenty for a few km). */
 export const metres = (lon1, lat1, lon2, lat2) => Math.hypot((lon2 - lon1) * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180), lat2 - lat1) * 111_320;
 

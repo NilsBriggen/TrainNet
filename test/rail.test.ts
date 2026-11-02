@@ -42,3 +42,25 @@ test("node heights: nearest 3D line, interpolated; a bridge track takes the brid
   expect(h[1]).toBe(520); // on the bridge edge: the bridge, although the line below is just as near
   expect(Number.isNaN(h[3])).toBe(true);
 });
+
+import { roundCorners } from "../scripts/rail";
+test("roundCorners: a sparse corner becomes a curve, the same for every way through it; junctions stay", () => {
+  const P = (x: number, y: number) => ({ lon: 8 + x / 76000, lat: 47 + y / 111320 }); // x, y in m
+  // 1 → 2 → 3 turns 10° at node 2, split into two ways meeting at 2; node 3 is a junction (4 and 5 hang off it)
+  const ways = roundCorners([
+    { nodes: [1, 2], geometry: [P(0, 0), P(200, 0)] },
+    { nodes: [3, 2], geometry: [P(200 + 197, 34.7), P(200, 0)] }, // drawn from the far end: towards the corner
+    { nodes: [3, 4], geometry: [P(397, 34.7), P(450, 100)] },
+    { nodes: [3, 5], geometry: [P(397, 34.7), P(600, 70)] },
+  ]);
+  const [a, b, c] = ways;
+  expect(a.nodes).toEqual([1, -17, -18, -19]); // up to the curve's middle (k 0, 1, 2 from node 1's side)
+  expect(b.nodes).toEqual([3, -21, -20, -19]); // from node 3's side, meeting a at the same middle point
+  expect(b.geometry.at(-1)).toEqual(a.geometry.at(-1));
+  expect(c.nodes).toEqual([3, 4]); // node 3 has three neighbours: a junction, not rounded
+  // the curve starts 25 m before the corner and bends evenly: no single turn larger than half the corner's 10°
+  const pts = [...a.geometry, ...b.geometry.slice(0, -1).reverse()].map((p) => [(p.lon - 8) * 76000, (p.lat - 47) * 111320]);
+  expect(pts[1][0]).toBeCloseTo(175, 0);
+  const heading = (p: number[], q: number[]) => Math.atan2(q[1] - p[1], q[0] - p[0]);
+  for (let k = 1; k < pts.length - 1; k++) expect(Math.abs(heading(pts[k], pts[k + 1]) - heading(pts[k - 1], pts[k])) * 180 / Math.PI).toBeLessThan(5.1);
+});
