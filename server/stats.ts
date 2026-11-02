@@ -6,6 +6,7 @@ import { current } from "./realtime";
 import { occupancyAll, TYPE_INFO, typeName, wikiOf } from "./details";
 import { addDays, zurichDate } from "./time";
 import { dist, trackNo } from "./paths";
+import { unitSpan } from "./fleet";
 import type { Day } from "./gtfs";
 
 const LONG = /^(IC|ICE|ICN|EC|EN|NJ|TGV|RJ|RJX)$/;
@@ -750,6 +751,22 @@ export function forecastBias() {
     stops: all(`SELECT uic, count(*) n, avg(dep_delay - dep_fc) err FROM stop_obs WHERE dep_fc IS NOT NULL AND dep_delay IS NOT NULL AND skipped = 0 GROUP BY uic HAVING n >= 20`)
       .map((r) => [r.uic, Math.round(r.err), r.n]),
   }));
+}
+
+// ---------- consists (the map's real-length trains) ----------
+/** Today's recorded formations per trip index: [[length m, from stop, to stop], ...] per unit, from vehicle_run. */
+export function consists(d: Day) {
+  return cached(`consists:${d.version}`, 300, () => {
+    const idx = new Map(d.trips.flatMap((t, i) => (t.date === d.date ? [[t.id, i] as const] : [])));
+    const out: Record<number, [number, number, number][]> = {};
+    for (const r of all(`SELECT trip, from_uic, to_uic, length_m FROM vehicle_run WHERE date = ? AND length_m > 0`, d.date)) {
+      const i = idx.get(r.trip);
+      if (i === undefined) continue;
+      const [a, b] = unitSpan(d.trips[i], (st) => d.stations[st][3], { from: r.from_uic, to: r.to_uic });
+      (out[i] ??= []).push([Math.round(r.length_m), a, b]);
+    }
+    return out;
+  });
 }
 
 // ---------- line labels ----------

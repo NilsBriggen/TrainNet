@@ -1,7 +1,7 @@
-import { applyDelays, atDistance, cumStops, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cars, cumStops, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
 import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
-import { FORMATION_WHY } from "./formation.js";
+import { FORMATION_WHY, sideView } from "./formation.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -10,7 +10,6 @@ const hhmm = (t) => TIME.format(day.base + t * 1000);
 const STANDING = token("standing"); // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", staff: "Staff shortage", other: "Disruption" };
 const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
-const TRAIL_O = [0.7, 0.45, 0.25, 0.1]; // trail pieces, nearest the train first
 const clock = (sec) => TIME.format(sec * 1000);
 const dayOf = (sec) => DATE.format(sec * 1000);
 /** HH:MM, with the date when it isn't today (works lasting days, weeks). */
@@ -119,6 +118,8 @@ async function pollLive() {
       rippleAlerts = [];
       folded = [];
       lost = null;
+      consists = {};
+      loadConsists();
       indexDay();
       setStatic();
       if (overlays.has("lost")) showLost();
@@ -181,11 +182,63 @@ function sdf(W, H, dist) {
   }
   return { width: W, height: H, data };
 }
-// train body: 36×18 px rounded car with a round cab at +x (drawn at pixelRatio 2 → 18×9 on screen at size 1)
-const train = () => sdf(60, 40, (px, py) => {
-  const rr = (cx, cy, hw, hh, r) => { const dx = Math.abs(px - cx) - hw + r, dy = Math.abs(py - cy) - hh + r; return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0) - r; };
-  return Math.min(rr(-5, 0, 13, 9, 3.5), Math.hypot(px - 9, py) - 9); // body from -18 to +8, cab circle to +18
-});
+// cab shape per category; PAD: room for the outline (SDF halo) all round
+const SHAPE_OF = { long: "long", ir: "mid", re: "mid", pe: "mid", s: "short", reg: "short", priv: "short" }, PAD = 10;
+// signed distance to a rounded box centred at (cx, 0), and to a half-ellipse nose of length a ending at x = cx + a
+const rr = (px, py, cx, hw, hh, r) => { const dx = Math.abs(px - cx) - hw + r, dy = Math.abs(py) - hh + r; return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0) - r; };
+const ell = (px, py, cx, a) => (Math.hypot((px - cx) / a, py / 8) - 1) * Math.min(a, 8);
+// The cab ends of a train drawn car by car: the end of the car's line, tip at the image centre, body running out of the
+// image's left edge (no outline there: the line's casing carries on). 16 px tall = the line width at icon size w / 8
+const CAB_HALF = 20, strip = (px, py, x1, r) => rr(px, py, x1 - 100, 100, 8, r);
+// a nose tapering over n px to a point: half-height 8·(1 − t²), t from 0 at the nose's start to 1 at the tip (x = 0)
+const point_ = (px, py, n) => {
+  if (px >= 0) return Math.hypot(px, py);
+  const t = (px + n) / n, h = 8 * (1 - t * t), slope = (16 * t) / n;
+  return (Math.abs(py) - h) / Math.hypot(1, slope);
+};
+const CABS = {
+  long: (px, py) => Math.min(strip(px, py, -16, 0), point_(px, py, 16)), // pointed
+  mid: (px, py) => Math.min(strip(px, py, -8, 0), ell(px, py, -8, 8)), // rounded
+  short: (px, py) => strip(px, py, 0, 5), // rounded corners
+  loco: (px, py) => strip(px, py, 0, 2.5), // blunt
+};
+const LIGHTS = { long: [-7, 3], mid: [-3.5, 4], short: [-2.6, 4.4], loco: [-2, 4.8] }; // [x, ±y] of the pair of lamps
+function cabLights(k, colour) {
+  const c = document.createElement("canvas"), [x, y] = LIGHTS[k];
+  c.width = 2 * CAB_HALF; c.height = 16 + 2 * PAD;
+  const g = c.getContext("2d");
+  g.translate(CAB_HALF, c.height / 2);
+  g.fillStyle = colour;
+  for (const sy of [-y, y]) { g.beginPath(); g.arc(x, sy, 1.7, 0, 2 * Math.PI); g.fill(); }
+  return g.getImageData(0, 0, c.width, c.height);
+}
+// body width by zoom [zoom, px, scaled by the train's size: regional trains thinner at country zoom]; real cars are ~9× as
+// long as wide, so the width stays well under a car's length on screen
+const BODY_W = [[6, 2, 1], [8, 2.6, 1], [10, 3], [12, 3.2], [14, 4], [16, 5.5], [18, 8]];
+function bodyPx(z, s) {
+  const at = ([, w, sc]) => w * (sc ? s : 1), k = BODY_W.findIndex(([zz]) => zz > z);
+  if (k <= 0) return at(BODY_W[k < 0 ? BODY_W.length - 1 : 0]);
+  const a = BODY_W[k - 1], b = BODY_W[k], f = (z - a[0]) / (b[0] - a[0]);
+  return at(a) + f * (at(b) - at(a));
+}
+const zoomW = (f) => ["interpolate", ["linear"], ["zoom"], ...BODY_W.flatMap(([z, w, sc]) => [z, f(sc ? ["*", w, ["get", "s"]] : w)])];
+const MIN_LEN = { long: 5, mid: 4.2, short: 3.5 }; // body widths: zoomed out a train is drawn longer than it is, never shorter
+// a train's length: its units recorded today that cover where it is now (a portion coupled on later doesn't count yet), else typical
+const DEFAULT_LEN = { long: 300, ir: 200, re: 150, s: 100, reg: 75, priv: 60, pe: 120 };
+let consists = {};
+const loadConsists = () => fetch("/api/stats/consists").then((r) => (r.ok ? r.json() : null)).then((j) => { if (j) consists = j; }).catch(() => {});
+const LOCO_MAX = 22; // m: every locomotive is shorter, every multiple unit longer
+const split = (len, car) => { const n = Math.max(1, Math.round(len / car)); return Array(n).fill(len / n); };
+/** Car lengths in metres, front first, and how many of the leading ones are locomotives. */
+function carLengths(i, p, cat) {
+  const units = (consists[i] ?? []).filter(([, from, to]) => from <= p.a && to >= p.b).map(([len]) => len), typical = DEFAULT_LEN[cat] || 100;
+  const locos = units.filter((len) => len < LOCO_MAX), sum = units.reduce((a, b) => a + b, 0);
+  // shortcut: coaches without vehicle numbers aren't recorded units, so a loco-hauled IC can read as its 19 m locomotive:
+  // under half the typical length, coaches make it up to that. Which end the loco is at isn't recorded either: drawn
+  // leading. Upgrade: record the formation's order and total length per trip
+  const rest = sum >= typical / 2 ? [] : split(typical - sum, locos.length ? 26.5 : 25);
+  return { lens: [...locos, ...units.filter((len) => len >= LOCO_MAX).flatMap((len) => split(len, 25)), ...rest], locos: locos.length };
+}
 const diamond = () => sdf(32, 32, (px, py) => Math.abs(px) + Math.abs(py) - 8);
 
 function setStatic() {
@@ -330,40 +383,57 @@ function positionOf(i, t, dt) {
 
 const CHIP_DELAYS = () => !hidden.has("delays");
 let lastStatus = 0;
-function trainFeatures(dt, ts, withTrails) {
-  const t = now(), feats = [], trails = [], alarms = [], z = map.getZoom();
-  const L = Math.min(4000, Math.max(100, (12 * 107160) / 2 ** z)); // ~12 px of track behind each train: longer ones overlap where lines bundle
+function trainFeatures(dt, ts) {
+  const t = now(), feats = [], alarms = [], z = map.getZoom();
   const blinkOn = CALM || ts % 1000 < 550;
   let running = 0, observed = 0, late = 0;
   const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 11.5, perCat = {};
+  // close in, a train long enough on screen is drawn at its real length on its track, car by car, instead of the silhouette
+  const bodies = [], mpp = (40075016.686 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** z);
+  const vb = map.getBounds(), padX = (vb.getEast() - vb.getWest()) * 0.2, padY = (vb.getNorth() - vb.getSouth()) * 0.2;
+  const kx = 1 / (111320 * Math.cos((map.getCenter().lat * Math.PI) / 180)), ky = 1 / 111320;
+  // the train's front within `m` metres of the view (plus a margin): a long train's rear cars show though its front is off screen
+  const inView = (q, m = 0) => q.lon > vb.getWest() - padX - m * kx && q.lon < vb.getEast() + padX + m * kx && q.lat > vb.getSouth() - padY - m * ky && q.lat < vb.getNorth() + padY + m * ky;
   for (let i = 0; i < day.trips.length; i++) {
     const s = day.trips[i][3], style = styles[day.trips[i][0]];
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
     const r = positionOf(i, t, dt);
     if (!r) continue;
-    const { p, e, q, dist, done } = r;
+    const { p, e, dist, done } = r;
+    let { q } = r;
     const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && (selected.type === "line" ? selected.routes.has(day.trips[i][0]) : selected.idx === i);
     const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
     if (!cancelled && !done) { running++; perCat[style.cat] = (perCat[style.cat] ?? 0) + 1; } // arrived ones aren't running
     if (!cancelled && !done && live.delays[i]?.u) { observed++; if (d >= 180) late++; } // same rule as the server: no realtime = unknown
     const o = (cancelled ? 0.3 : dimOthers && !sel ? 0.4 : still ? 0.75 : 1) * (!sel && inTunnel(i, dist) ? 0.45 : 1), showDelay = CHIP_DELAYS() && !cancelled; // underground: dimmed
     if (flagged) alarms.push(point([q.lon, q.lat], {}));
+    // a dark outline separates the body from track and trail; reported incidents blink red, inferred standing is a steady orange line
+    const h = sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : still ? STANDING : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18";
+    const hw = sel ? 2.2 : flagged ? 2.4 : still ? 1.6 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9;
+    const k = SHAPE_OF[style.cat] ?? "short", { lens, locos } = carLengths(i, p, style.cat), real = lens.reduce((a, b) => a + b, 0);
+    const zs = flagged ? 3 : style.glow ? 2 : style.s > 0.7 ? 1 : 0, body = inView(q, Math.max(real, MIN_LEN[k] * bodyPx(z, style.s) * mpp));
+    if (body) {
+      const { route, cum } = tripRoute(i), w = bodyPx(z, style.s), long = Math.max(real, MIN_LEN[k] * w * mpp);
+      const cab = (CAB_HALF - 4) * (w / 16) * mpp; // m behind the tip where the car's line stops: 4 image px into the cab, over its edge
+      const front = Math.min(cum[cum.length - 1], Math.max(dist, real, 3 * cab)); // at its first stop the train stands ahead of the trip's start, not behind it
+      let lens_ = lens.map((len) => (len * long) / real), nLoco = locos;
+      if (Math.min(...lens_) < 6 * mpp) { const n = Math.max(1, Math.floor(long / mpp / 6)); lens_ = Array(n).fill(long / n); nLoco = 0; } // cars under 6 px: fewer, longer ones
+      // one outline under the whole train and its cars on top, train by train (sort key): the gaps show the outline even
+      // where another train's body runs beneath
+      const sk = (zs * 20000 + i) * 2, cabK = locos ? "loco" : k;
+      const outline = slice(route, cum, front - long + cab, front - cab);
+      if (outline.length >= 4) bodies.push(line(outline, { i, col: h, x: 2 * hw, s: style.s, o, sk }));
+      cars(route, cum, front, lens_, Math.max(1.5, 1.2 * mpp), cab, cab).forEach((car, n) => bodies.push(line(car, { i, col: style.c, x: 0, win: n >= nLoco ? 1 : 0, s: style.s, o, sk: sk + 1 }))); // a locomotive: no window band
+      q = atDistance(route, cum, front); // cab ends go in the cars' source: one source updates in one pass, so they never drift apart
+      bodies.push(point([q.lon, q.lat], { i, n: cabK, e: "f", r: q.bearing - 90, c: style.c, h, hw, s: style.s, o, sk }));
+      if (front - long > 0) { const t = atDistance(route, cum, front - long); bodies.push(point([t.lon, t.lat], { i, n: cabK, e: "r", r: t.bearing + 90, c: style.c, h, hw, s: style.s, o, sk })); }
+    }
     feats.push(point([q.lon, q.lat], {
-      i, c: style.c, s: style.s, g: style.glow, r: q.bearing - 90,
-      // a dark outline separates the body from track and trail; reported incidents blink red, inferred standing is a steady orange line
-      h: sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : still ? STANDING : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18",
-      hw: sel ? 2.2 : flagged ? 2.4 : still ? 1.6 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9,
-      o, z: flagged ? 3 : style.glow ? 2 : style.s > 0.7 ? 1 : 0,
+      i, c: style.c, s: style.s, g: style.glow, r: q.bearing - 90, h, hw, k,
+      o, z: zs,
       // only characters the local glyph files have (Latin-1): no ′ or ✕
       ...(labels && { l: `${lineName(day.trips[i][0])} ${day.trips[i][2]}${cancelled ? " ×" : showDelay && d >= 60 ? ` +${Math.round(d / 60)}'` : ""}` }),
     }, i));
-    if (withTrails && !cancelled && !p.at && (style.glow || z >= 8)) {
-      const { route, cum } = tripRoute(i);
-      for (let k = 0; k < 4; k++) {
-        const piece = slice(route, cum, dist - (L * (k + 1)) / 4, dist - (L * k) / 4);
-        if (piece.length >= 4) trails.push(line(piece, { c: style.c, o: TRAIL_O[k] * o }));
-      }
-    }
   }
   if (ts - lastStatus > 1000) {
     lastStatus = ts;
@@ -372,10 +442,10 @@ function trainFeatures(dt, ts, withTrails) {
     $("live").title = age > 120 ? `Live data ${Math.round(age / 60)} min old` : "Live data";
     for (const b of $("chips").querySelectorAll("button[data-cat]")) if (b.dataset.cat !== "delays") b.dataset.n = perCat[b.dataset.cat] ?? 0;
   }
-  return { trains: fc(feats), trails: withTrails ? fc(trails) : null, alarms };
+  return { trains: fc(feats), alarms, bodies: fc(bodies) };
 }
 
-let shownTrains = { features: [] }, lastTip = 0, last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, lastTrail = 0, lastAnim = 0, hadRipples = false;
+let lastZ = 0, hadBodies = false, shownTrains = { features: [] }, lastTip = 0, last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, lastAnim = 0, hadRipples = false;
 function frame(ts) {
   try { tickFrame(ts); } finally { requestAnimationFrame(frame); } // one bad frame must not stop the map for good
 }
@@ -389,14 +459,15 @@ function updateMs() {
   return incidentTrains.size && !CALM ? Math.min(ms, 250) : ms; // reported incidents blink
 }
 function tickFrame(ts) {
-  if (ts - last > updateMs()) {
-    const dt = Math.min(ts - lastFrame, 1000), withTrails = ts - lastTrail > 500; // trails: twice a second is plenty
+  if (ts - last > updateMs() || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
+    lastZ = map.getZoom();
+    const dt = Math.min(ts - lastFrame, 1000);
     last = lastFrame = ts;
-    if (withTrails) lastTrail = ts;
-    const { trains, trails, alarms } = trainFeatures(dt, ts, withTrails);
+    const { trains, alarms, bodies } = trainFeatures(dt, ts);
     shownTrains = trains;
     map.getSource("trains").setData(trains);
-    if (trails) map.getSource("trails").setData(trails);
+    if (bodies.features.length || hadBodies) map.getSource("bodies").setData(bodies); // nothing to clear: skip the upload
+    hadBodies = bodies.features.length > 0;
     const ripples = alarms.length + rippleAlerts.length > 0;
     if (ripples || hadRipples) map.getSource("ripples").setData(fc([...alarms, ...rippleAlerts.map((c) => point(c, {}))])); // nothing to clear: skip the upload
     hadRipples = ripples;
@@ -438,8 +509,12 @@ function setRoute(i) {
 }
 
 map.on("load", async () => {
-  map.addImage("train", train(), { sdf: true, pixelRatio: 2 });
   map.addImage("diamond", diamond(), { sdf: true, pixelRatio: 2 });
+  for (const [k, f] of Object.entries(CABS)) {
+    map.addImage(`cab-${k}`, sdf(2 * CAB_HALF, 16 + 2 * PAD, f), { sdf: true, pixelRatio: 2 });
+    map.addImage(`lamp-${k}-f`, cabLights(k, "#ffffff"), { pixelRatio: 2 });
+    map.addImage(`lamp-${k}-r`, cabLights(k, "#ff4d4d"), { pixelRatio: 2 });
+  }
   // pre-rendered hillshade, not a DEM: browsers with anti-fingerprinting (Firefox resistFingerprinting, LibreWolf)
   // block reading canvas pixels, which MapLibre needs to decode elevation tiles; plain raster tiles are only drawn
   map.addSource("relief", { type: "raster", tiles: ["https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissalti3d-reliefschattierung_monodirektional/default/current/3857/{z}/{x}/{y}.png"], tileSize: 256, maxzoom: 17 });
@@ -455,7 +530,7 @@ map.on("load", async () => {
   // the real track network (every OSM track, sidings and yards too) as vector tiles, drawn from z 11 (server/tiles.ts)
   // ?v: browsers keep tiles a day; bump it when the tiles are rebuilt with other properties
   map.addSource("osm-rail", { type: "vector", tiles: [`${location.origin}/tiles/rail/{z}/{x}/{y}?v=5`], minzoom: 5, maxzoom: 15 });
-  for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "trails", "stations", "trains", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
+  for (const id of ["rail", "speed", "traffic", "lost", "alert-seg", "alert-pts", "route", "stations", "trains", "bodies", "ripples", "me"]) map.addSource(id, { type: "geojson", data: fc([]) });
   map.addSource("junctions", { type: "geojson", data: "/api/junctions?v=1" }); // ATLAS operating points: junctions, crossovers, passing loops
 
   // swissALTI3D hillshade (CH + LI only) is opaque grey: it sits first, under a translucent navy country fill that tints it, so shadows come out darker;
@@ -546,19 +621,19 @@ map.on("load", async () => {
 
   map.addLayer({ id: "me-halo", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-opacity": 0.18, "circle-radius": 16, "circle-blur": 0.4 } });
   map.addLayer({ id: "me", type: "circle", source: "me", paint: { "circle-color": "#4da3ff", "circle-radius": 5.5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
-  map.addLayer({ id: "trails", type: "line", source: "trails", layout: { "line-cap": "butt", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-opacity": ["get", "o"], "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.4, 10, 2.6, 14, 4.5] } });
   map.addLayer({ id: "ripples", type: "circle", source: "ripples", layout: { visibility: CALM ? "none" : "visible" }, paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 6, "circle-stroke-color": SEV[3][1], "circle-stroke-width": 2, "circle-stroke-opacity": 0.8 } });
   map.addLayer({ id: "train-glow", type: "circle", source: "trains", filter: ["==", ["get", "g"], 1], paint: { "circle-color": ["get", "c"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 6, 10, 10, 14, 18], "circle-blur": 1, "circle-opacity": ["*", 0.22, ["get", "o"]] } });
-  const trainSize = ["interpolate", ["linear"], ["zoom"], 6, ["*", 0.34, ["get", "s"]], 8, ["*", 0.5, ["get", "s"]], 10, 0.8, 12, 1, 15, 1.5];
-  map.addLayer({
-    id: "trains", type: "symbol", source: "trains",
-    layout: {
-      "icon-image": "train", "icon-rotate": ["get", "r"], "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true, "icon-padding": 0,
-      "icon-size": trainSize, // regional trains shrink at country zoom (s < 1) so the long-distance network reads first
-      "symbol-sort-key": ["get", "z"], "symbol-z-order": "source",
-    },
-    paint: { "icon-color": ["get", "c"], "icon-opacity": ["get", "o"], "icon-halo-color": ["get", "h"], "icon-halo-width": ["get", "hw"], "icon-halo-blur": 0 },
-  });
+  // real-length trains: each car cut from the train's own track; the casing carries the outline colour (delay, incident, selected)
+  // dimmed (tunnel, cancelled, another train selected) by darkening, not transparency: track and the overlapping cab ends
+  // would show through
+  const dimmed = (prop) => ["interpolate", ["linear"], ["get", "o"], 0, "#040a18", 1, ["to-color", ["get", prop]]];
+  const isLine = ["==", ["geometry-type"], "LineString"], isCab = ["==", ["geometry-type"], "Point"];
+  const cabLayout = { "icon-rotate": ["get", "r"], "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true, "icon-size": zoomW((w) => ["/", w, 8]), "symbol-sort-key": ["get", "sk"], "symbol-z-order": "source" };
+  // cab ends under the cars: the image's back edge blends into a hairline of outline colour, which the car's line covers
+  map.addLayer({ id: "cabs", type: "symbol", source: "bodies", filter: isCab, layout: { ...cabLayout, "icon-image": ["concat", "cab-", ["get", "n"]] }, paint: { "icon-color": dimmed("c"), "icon-halo-color": dimmed("h"), "icon-halo-width": ["get", "hw"], "icon-halo-blur": 0 } });
+  map.addLayer({ id: "bodies", type: "line", source: "bodies", filter: isLine, layout: { "line-cap": "butt", "line-join": "round", "line-sort-key": ["get", "sk"] }, paint: { "line-color": dimmed("col"), "line-width": zoomW((w) => ["+", w, ["get", "x"]]) } });
+  map.addLayer({ id: "bodies-win", type: "line", source: "bodies", minzoom: 15, filter: ["all", isLine, ["==", ["get", "win"], 1]], layout: { "line-cap": "butt", "line-sort-key": ["get", "sk"] }, paint: { "line-color": "#040a18", "line-width": zoomW((w) => ["*", w, 0.3]), "line-opacity": 0.4 } }); // window band
+  map.addLayer({ id: "cab-lamps", type: "symbol", source: "bodies", filter: isCab, minzoom: 13, layout: { ...cabLayout, "icon-image": ["concat", "lamp-", ["get", "n"], "-", ["get", "e"]] }, paint: { "icon-opacity": ["get", "o"] } });
   // zoomed in, every train says what it is: "IR15 2515 +4′" (long-distance trains win where labels collide; placed under
   // the hub labels, so a big station's name wins over a passing train)
   map.addLayer({ id: "train-labels", type: "symbol", source: "trains", minzoom: 11.5, filter: ["has", "l"],
@@ -578,6 +653,8 @@ map.on("load", async () => {
   setInterval(patchPanel, 1000);
   openFromUrl();
   for (const k of overlays) LOADERS[k]?.();
+  loadConsists();
+  setInterval(loadConsists, 10 * 60_000); // the formation crawl adds trains through the day
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -588,9 +665,21 @@ map.getCanvas().addEventListener("mouseleave", () => { hoverPt = null; updateTip
 // a finger needs a bigger target than a mouse; where several trains are close, the nearest wins, not the first drawn
 const HIT = hoverable ? 7 : 20;
 const nearest = (fs, pt) => fs.reduce((a, f) => { const q = map.project(f.geometry.coordinates), d = (q.x - pt.x) ** 2 + (q.y - pt.y) ** 2; return !a || d < a.d ? { f, d } : a; }, null)?.f;
+/** The feature whose drawn line (or point) passes closest to pt, in screen pixels: neighbouring tracks' trains touch on screen. */
+function closest(fs, pt) {
+  const seg = (a, b) => { const dx = b.x - a.x, dy = b.y - a.y, t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / (dx * dx + dy * dy || 1))); return Math.hypot(a.x + t * dx - pt.x, a.y + t * dy - pt.y); };
+  const d = (f) => {
+    if (f.geometry.type === "Point") return seg(map.project(f.geometry.coordinates), map.project(f.geometry.coordinates));
+    const lines = f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [f.geometry.coordinates]; // cut at tile edges
+    return Math.min(...lines.flatMap((l) => { const ps = l.map((c) => map.project(c)); return ps.slice(1).map((p, k) => seg(ps[k], p)); }));
+  };
+  return fs.reduce((a, f) => { const x = d(f); return !a || x < a.x ? { f, x } : a; }, null)?.f;
+}
 function hitAt(pt) {
   const box = [[pt.x - HIT, pt.y - HIT], [pt.x + HIT, pt.y + HIT]];
-  const t = nearest(map.queryRenderedFeatures(box, { layers: ["trains"] }), pt);
+  // a click right on a drawn train wins (anywhere on a long one), then the train closest to it
+  const on = map.queryRenderedFeatures([[pt.x - 3, pt.y - 3], [pt.x + 3, pt.y + 3]], { layers: ["bodies", "cabs"] });
+  const t = closest(on, pt) ?? closest(map.queryRenderedFeatures(box, { layers: ["bodies", "cabs"] }), pt);
   if (t) return { type: "train", idx: t.properties.i };
   const s = nearest(map.queryRenderedFeatures(box, { layers: ["stations-hub", "stations-mid", "stations-minor"] }), pt);
   if (s) return { type: "station", idx: s.properties.i };
@@ -1176,7 +1265,7 @@ function trainHtml(i) {
     if (count("1")) facts.push(`<span>${count("1")}× 1st</span>`);
     if (count("2")) facts.push(`<span>${count("2")}× 2nd</span>`);
     if (seats) facts.push(`<span>${seats.toLocaleString("de-CH")} seats</span>`);
-    if (len) facts.push(`<span>${Math.round(len)} m</span>`);
+    if (len && f.every((c) => c.unit)) facts.push(`<span>${Math.round(len)} m</span>`); // coaches without a unit have no length: no total
     if (f.some((c) => c.wr)) facts.push(`<span>${ICON.wr} Restaurant</span>`);
     if (f.some((c) => c.bike)) facts.push(`<span>${ICON.bike} Bikes</span>`);
     if (f.some((c) => c.wc)) facts.push(`<span>${ICON.wc} Wheelchair${f.some((c) => c.wct) ? " + toilet" : ""}</span>`);
@@ -1200,7 +1289,7 @@ function trainHtml(i) {
     const split = dests.length > 1 ? `<div class="sub">Splits: ${extra.goals.map(([a, b, uic]) => `cars ${a}–${b} → ${esc(nameOf(uic))}`).join(" · ")}</div>` : "";
     const first = st[sched[0]][3], lastUic = st[sched[(n - 1) * 3]][3];
     const partial = units.filter((u) => (u.from && u.from !== first) || (u.to && u.to !== lastUic));
-    formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3>${dir}<div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}${front ? `, front on the ${front}` : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
+    formation = `<h3>Formation${where ? ` <small>at ${where}</small>` : ""}</h3>${sideView(f, units, styles[route].c)}${dir}<div class="formation" aria-label="Coach formation, coach numbers${at ? " and platform sectors" : ""}${front ? `, front on the ${front}` : ""}">${strip}</div>${split}<div class="facts">${facts.join("")}</div>`
       + (units.length || extra.types?.length ? `<div class="unit-row">${(units.length ? units : extra.types).map((u) => `<span class="unit"><a href="/stats#/type/${encodeURIComponent(u.cls)}" title="About this type${photos[u.cls] ? ` (photo: ${esc(photos[u.cls].author)}, ${esc(photos[u.cls].licence)})` : ""}">${photos[u.cls] ? `<img class="unit-photo" src="${esc(photos[u.cls].src)}" alt="" loading="lazy">` : ""}${esc(u.type)}</a>${u.id ? `<a href="/stats#/vehicle/${encodeURIComponent(u.id)}" title="This trainset's day and history"><b>${esc(u.id)}</b></a>` : ""}</span>`).join("")}</div>` : "")
       + (partial.length ? `<div class="sub">${partial.map((u) => `${esc(u.type)} ${esc(u.id)} only ${esc(nameOf(u.from || first))} → ${esc(nameOf(u.to || lastUic))}`).join(" · ")}</div>` : "");
   }

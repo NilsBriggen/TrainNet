@@ -57,7 +57,7 @@ test("bearing follows the track, reversed when travelling backwards", () => {
   expect(along(L, 0.9, true).bearing).toBeCloseTo(270, 0);
 });
 
-import { cut, cumStops, atDistance, slice } from "../public/position.js";
+import { cut, cumStops, atDistance, slice, cars, metres } from "../public/position.js";
 test("cut splits at the position, oriented in travel direction", () => {
   const c = cut(L, 0.2); // 600 m in, before the corner
   expect(c.behind.length).toBe(4); // start + cut point
@@ -87,6 +87,39 @@ test("slice follows the track across a station, without duplicate points", () =>
   expect(b[3]).toBeCloseTo(47.0181, 3); // the station point appears once
   expect(b[1]).toBeCloseTo(b[5], 4); // 500 m before and after the far end, on the same leg
   expect(slice(route, cum, -100, 0)).toEqual([]); // nothing behind the start
+});
+
+test("a train body lies on its track: every point of every car on the rail, the front at the train's position", () => {
+  const route = [{ path: L, reverse: false }, { path: L, reverse: true }], cum = cumStops(route);
+  const off = (lon, lat) => { // metres from the track polyline
+    let best = Infinity;
+    for (let i = 0; i + 3 < L.pts.length; i += 2) {
+      const [x0, y0, x1, y1] = [L.pts[i], L.pts[i + 1], L.pts[i + 2], L.pts[i + 3]], kx = Math.cos((y0 * Math.PI) / 180);
+      const dx = (x1 - x0) * kx, dy = y1 - y0, t = Math.max(0, Math.min(1, (((lon - x0) * kx) * dx + (lat - y0) * dy) / (dx * dx + dy * dy)));
+      best = Math.min(best, metres(lon, lat, x0 + t * (x1 - x0), y0 + t * dy));
+    }
+    return best;
+  };
+  for (const dist of [1200, 3150]) { // across the corner, and through the turnaround station
+    const body = cars(route, cum, dist, Array(16).fill(25));
+    expect(body.length).toBe(16);
+    for (const car of body) for (let i = 0; i < car.length; i += 2) expect(off(car[i], car[i + 1])).toBeLessThan(0.01);
+    const front = atDistance(route, cum, dist);
+    expect(metres(body[0].at(-2), body[0].at(-1), front.lon, front.lat)).toBeLessThan(0.01); // each car runs back → front
+  }
+  // on the straight north leg, so along the track equals as the crow flies
+  const sixteen = Array(16).fill(25), body = cars(route, cum, 2900, sixteen), gaps = body.slice(1).map((car, k) => metres(body[k][0], body[k][1], car.at(-2), car.at(-1))); // rear of one car to the front of the next
+  expect(gaps.length).toBe(15);
+  for (const g of gaps) expect(g).toBeCloseTo(1.5, 1);
+  expect(cars(route, cum, 50, sixteen).length).toBe(2); // the rest would be behind the start
+  // a locomotive and two coaches with room for both cab ends: car lengths as given, less half a gap at each joint
+  const len = (car) => car.reduce((a, _, i) => (i >= 2 && i % 2 === 0 ? a + metres(car[i - 2], car[i - 1], car[i], car[i + 1]) : a), 0);
+  const [loco, c1, c2] = cars(route, cum, 2900, [19, 26.5, 26.5], 1.5, 4, 3);
+  expect(len(loco)).toBeCloseTo(19 - 4 - 0.75, 0); // metres() vs the track's own distances: ~1 % apart
+  expect(len(c1)).toBeCloseTo(26.5 - 1.5, 0);
+  expect(len(c2)).toBeCloseTo(26.5 - 0.75 - 3, 0);
+  const front = atDistance(route, cum, 2900 - 4);
+  expect(metres(loco.at(-2), loco.at(-1), front.lon, front.lat)).toBeLessThan(0.01); // the cab end starts where the car stops
 });
 
 test("motion: starts and ends at the stations, never runs backwards, slow at both ends", () => {

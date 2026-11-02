@@ -12,7 +12,7 @@
   --very-late: #ff4d4d;
   --warn: #ffb547;
   --ok: #3ddc97;
-  --standing: var(--standing); /* inferred "probably standing": a quiet outline, never a blink */
+  --standing: #ff9f5a; /* inferred "probably standing": a quiet outline, never a blink */
   --planned: #5a6b8c; /* planned works */
   --cat-long: #ff3d5a; --cat-ir: #ff9f1c; --cat-re: #2ee6a6; --cat-reg: #5cc8ff; --cat-s: #8fa8ff; --cat-priv: #c792ff; --cat-pe: #ffd166; /* train categories; colors.js reads these */
   --r: 14px; --r-m: 12px; --r-s: 8px; /* cards and panels / tips and callouts / controls and badges */
@@ -177,6 +177,12 @@ h3::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .tabs button { flex: 1; height: 28px; border: 0; border-radius: var(--r-s); background: transparent; color: var(--muted); font-size: var(--fs-m); font-weight: 500; cursor: pointer; }
 .tabs button[aria-selected="true"] { background: rgba(255, 255, 255, 0.08); color: var(--text); }
 
+/* side view of the consist, to scale, above the coach strip */
+.sideview { display: block; width: 100%; height: auto; margin: 2px 0 8px; }
+.sideview .sv-body { fill: #e9edf3; stroke: #8396bf; stroke-width: 0.6; }
+.sideview .sv-win { fill: #1b2a4a; }
+.sideview .sv-panto { fill: none; stroke: #8396bf; stroke-width: 1; }
+.sideview .sv-rail { stroke: var(--border); stroke-width: 1; }
 .formation { display: flex; gap: 2px; margin: 4px 0 6px; overflow-x: auto; padding-bottom: 2px; align-items: flex-start; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .dir { font-size: var(--fs-s); color: var(--muted); margin: 2px 0 -2px; }
 .dir.right { text-align: right; }
@@ -236,7 +242,10 @@ h3::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 #key:focus-visible { outline: none; }
 #key p { margin: 0; font-size: var(--fs-m); color: var(--muted); }
 #key kbd { font: 11px/1 Inter, system-ui; border: 1px solid var(--border); border-radius: 5px; padding: 2px 5px; color: var(--text); }
-.k-train { display: inline-block; flex: none; width: 18px; height: 9px; border-radius: 3px 5px 5px 3px; background: var(--c); box-shadow: 0 0 0 1.5px var(--o, var(--bg)); }
+/* the map's trains: cars with joints in the outline colour; cab ends rounded (short), half-pointed (mid), pointed (long) */
+.k-train { display: inline-block; flex: none; width: 22px; height: 5px; border-radius: 2.5px; background: repeating-linear-gradient(90deg, var(--c) 0 6.5px, var(--o, var(--bg)) 6.5px 7.5px); box-shadow: 0 0 0 1px var(--o, var(--bg)); }
+.k-train.mid { width: 26px; border-radius: 2.5px 4px 4px 2.5px / 2.5px; }
+.k-train.long { width: 30px; border-radius: 2px 8px 8px 2px / 2px 2.5px 2.5px 2px; }
 .k-train.rainbow { background: linear-gradient(90deg, #f66, #fd6, #6f9, #6cf, #c6f); }
 .k-train.blink, .k-line.blink { animation: blink 1s steps(1) infinite; }
 .k-line { display: inline-block; flex: none; width: 20px; height: 3px; border-radius: 2px; background: var(--c); }

@@ -189,6 +189,23 @@ export function slice(route, cum, d0, d1) {
   return out;
 }
 
+/**
+ * A train whose front is at trip distance `dist`, as one [lon,lat,...] piece per car (`lens`: car lengths in metres, front
+ * car first; `gap` m between cars), cut from the trip's own track with slice(): it lies on the rail by construction. The
+ * front car stops `nose` m short of the front and the rear car starts `tail` m after the rear (room for the drawn cab ends).
+ * Each car runs from its rear to its front; cars that would be behind the trip's start are left out.
+ */
+export function cars(route, cum, dist, lens, gap = 1.5, nose = 0, tail = 0) {
+  const out = [];
+  let front = dist;
+  lens.forEach((len, k) => {
+    const rear = front - len, piece = slice(route, cum, rear + (k === lens.length - 1 ? tail : gap / 2), front - (k ? gap / 2 : nose));
+    if (piece.length >= 4) out.push(piece);
+    front = rear;
+  });
+  return out;
+}
+
 /** Metres between two points (equirectangular: plenty for a few km). */
 export const metres = (lon1, lat1, lon2, lat2) => Math.hypot((lon2 - lon1) * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180), lat2 - lat1) * 111_320;
 

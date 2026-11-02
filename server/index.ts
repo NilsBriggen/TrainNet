@@ -173,6 +173,10 @@ const server = Bun.serve({
     "/api/stats/lines": (req) => statsJson(req, stats.lineLabels),
     "/api/stats/segments": (req) => statsJson(req, stats.segments),
     "/api/stats/bias": (req) => statsJson(req, stats.forecastBias),
+    "/api/stats/consists": async (req) => { // dev records no formations: production's, else whatever the local database has
+      const r = LIVE_FROM ? await borrow("/api/stats/consists").catch(() => null) : null;
+      return r?.ok ? r : statsJson(req, stats.consists);
+    },
     "/api/stats/records": (req) => statsJson(req, stats.records),
     "/api/stats/network": (req) => statsJson(req, stats.network),
     // the track network's vector tiles (see server/tiles.ts); empty tiles are 204, as MapLibre expects
