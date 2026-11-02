@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { applyDelays, distanceAt, ease, frontEnd, locate, matchTrain, motion, timeTable } from "../public/position.js";
+import { applyDelays, departure, distanceAt, ease, frontEnd, locate, matchTrain, profile, reversals, speedAt } from "../public/position.js";
+import { traction } from "../public/traction.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
 const T = [0, 36000, 36000, 1, 36600, 36720, 2, 37200, 37200];
@@ -122,16 +123,60 @@ test("a train body lies on its track: every point of every car on the rail, the 
   expect(metres(loco.at(-2), loco.at(-1), front.lon, front.lat)).toBeLessThan(0.01); // the cab end starts where the car stops
 });
 
-test("motion: starts and ends at the stations, never runs backwards, slow at both ends", () => {
-  for (const dur of [60, 120, 600, 3600]) {
-    let prev = 0;
-    for (let f = 0; f <= 1.0001; f += 0.01) { const x = motion(f, dur); expect(x).toBeGreaterThanOrEqual(prev - 1e-12); prev = x; }
-    expect(motion(0, dur)).toBe(0);
-    expect(motion(1, dur)).toBe(1);
-    expect(motion(0.5, dur)).toBeCloseTo(0.5, 10); // symmetric
-    expect(motion(0.05, dur)).toBeLessThan(0.05); // still accelerating
+test("speed profile: under the line speed, physical acceleration and braking, at rest at both ends, on time", () => {
+  const tr = traction(["521"], 0, "s"), speeds = [{ d0: 0, d1: 2000, v: 60 }, { d0: 2000, d1: 8000, v: 160 }];
+  for (const T of [300, 420, 600]) { // 8 km: tight, normal, slack
+    const p = profile(8000, speeds, tr, T), n = p.s.length - 1;
+    expect(p.v[0]).toBe(0);
+    expect(p.v[n]).toBe(0);
+    expect(p.t[n]).toBeCloseTo(T, 6);
+    expect(distanceAt(p, T)).toBeCloseTo(8000, 6);
+    expect(distanceAt(p, 0)).toBe(0);
+    if (T >= 420) for (let i = 1; i < n; i++) expect(p.v[i]).toBeLessThanOrEqual((p.s[i] <= 2000 ? 60 : 160) / 3.6 + 1e-9);
+    for (let i = 0; i < n; i++) {
+      const dv = p.v[i + 1] - p.v[i], dt = p.t[i + 1] - p.t[i], f = T >= 420 ? 1 : 1.5; // a run squeezed by the feed may exceed physics
+      expect(dv / dt).toBeLessThanOrEqual(tr.a0 * f + 1e-6);
+      expect(-dv / dt).toBeLessThanOrEqual(tr.b * f + 1e-6);
+    }
   }
-  expect(motion(0.1, 3600)).toBeCloseTo(0.1 / (1 - 45 / 3600) - (45 / 3600 / 2) / (1 - 45 / 3600), 6); // long segment: cruising at 10 %
+  const p = profile(8000, speeds, tr, 420);
+  expect(speedAt(p, 0)).toBe(0);
+  expect(speedAt(p, 200)).toBeGreaterThan(8000 / 420); // cruising mid-way: above the run's mean
+  expect(speedAt(p, 200)).toBeLessThanOrEqual(160 / 3.6);
+  let prev = 0;
+  for (let tau = 0; tau <= 420; tau += 1) { const d = distanceAt(p, tau); expect(d).toBeGreaterThanOrEqual(prev); prev = d; }
+  expect(profile(0, [], tr, 100).t.at(-1)).toBe(0); // nothing to run
+});
+
+test("traction: a FLIRT reaches 100 km/h before a Giruno, ten coaches behind a Re 460 are slower than four", () => {
+  expect(traction(["521"], 0, "s").a0).toBeGreaterThan(traction(["501"], 0, "long").a0);
+  expect(traction(["460"], 10, "long").a0).toBeLessThan(traction(["460"], 4, "long").a0);
+  expect(traction(["460"], 10, "long").a0).toBeCloseTo(300 / (84 + 450), 6);
+  expect(traction(["460"], 2, "long").a0).toBe(1); // adhesion caps it
+  expect(traction([], 0, "s")).toEqual({ a0: 1.1, b: 0.8, vmax: 140 });
+  expect(traction(["521", "523"], 0, "s").vmax).toBe(160);
+  expect(traction(["999"], 0, "ir").a0).toBe(0.8); // unknown series: the category
+});
+
+test("real departures: standing until the offset has passed, never into the next stop's arrival", () => {
+  const off = () => 30;
+  expect(locate(T, 36010)).toEqual({ a: 0, b: 1, f: 0.5 / 30, at: false }); // without an offset: rolling
+  expect(locate(T, 36010, off)).toBeNull(); // not yet left its first stop
+  expect(locate(T, 36031, off)).toMatchObject({ a: 0, b: 1, at: false });
+  expect(locate(T, 36740, off)).toMatchObject({ a: 1, b: 1, at: true }); // B: dep 10:12, still standing at 10:12:20
+  expect(locate(T, 36751, off)).toMatchObject({ a: 1, b: 2, at: false });
+  expect(departure(T, 1, () => 1000)).toBe(36720 + 160); // capped at a third of the 480 s run
+  expect(departure(T, 2, off)).toBe(37200); // the last stop has no run after it
+});
+
+test("reversals: a route folding back at a stop, not a straight join", () => {
+  const line = (pts) => { const packed = []; let px = 0, py = 0; for (let i = 0; i < pts.length; i += 2) { const x = Math.round(pts[i] * 1e5), y = Math.round(pts[i + 1] * 1e5); packed.push(x - px, y - py); px = x; py = y; } return packed; };
+  // A → B eastwards, then back west over the same track to C (beyond A)
+  const ab = unpackPath(line([7.40, 46.95, 7.41, 46.95])), bc = unpackPath(line([7.39, 46.95, 7.41, 46.95]));
+  const route = [{ path: ab, reverse: false }, { path: bc, reverse: true }], cum = cumStops(route);
+  expect(reversals(route, cum)).toEqual([false, true, false]);
+  const on = [{ path: ab, reverse: false }, { path: unpackPath(line([7.41, 46.95, 7.42, 46.95])), reverse: false }];
+  expect(reversals(on, cumStops(on))).toEqual([false, false, false]);
 });
 
 test("front of the train: the platform end toward the next station, on the side of the strip where that sector is", () => {
@@ -166,15 +211,15 @@ test("a new forecast is rolled into, not jumped to (IR35 2389 was 700 m off, S1 
 });
 
 test("line speed: a train crawls through a slow station area and makes up for it on the open line", () => {
-  // 10 km: the first km at 40 km/h (the station throat), the rest at 160: the first km takes 0.025 h of 0.08125 h
-  const tt = timeTable(10_000, [{ d0: 0, d1: 1000, v: 40 }, { d0: 1000, d1: 10_000, v: 160 }]);
-  expect(distanceAt(tt, 0.025 / 0.08125)).toBeCloseTo(1000, 0);
-  expect(distanceAt(tt, 0.5)).toBeCloseTo(1000 + ((0.5 - 0.025 / 0.08125) / (0.05625 / 0.08125)) * 9000, 0);
-  expect([distanceAt(tt, 0), distanceAt(tt, 1)]).toEqual([0, 10_000]);
-  // no speeds: the same as a steady speed; an untagged gap counts as 80 km/h
-  expect(distanceAt(timeTable(5000), 0.3)).toBeCloseTo(1500, 6);
-  const gap = timeTable(3000, [{ d0: 1000, d1: 3000, v: 160 }]); // 1 km untagged (80), 2 km at 160: equal times
-  expect(distanceAt(gap, 0.5)).toBeCloseTo(1000, 0);
+  // 10 km, generous time: the first km at 40 km/h (the station throat), the rest up to 160
+  const tr = traction(["511"], 0, "re"), p = profile(10_000, [{ d0: 0, d1: 1000, v: 40 }, { d0: 1000, d1: 10_000, v: 160 }], tr, 500);
+  const n = p.s.length - 1, throat = p.t[p.s.findIndex((x) => x >= 1000)];
+  expect(throat).toBeGreaterThan(1000 / (40 / 3.6)); // at most 40 km/h over the first km, slower while pulling away
+  expect(Math.max(...p.v.slice(0, n).filter((_, i) => p.s[i] <= 900))).toBeLessThanOrEqual(40 / 3.6 + 1e-9);
+  expect(Math.max(...p.v)).toBeGreaterThan(100 / 3.6); // fast on the open line
+  expect(p.t[n]).toBeCloseTo(500, 6);
+  // no speeds: untagged track counts as 80 km/h; this run has slack, so it cruises under that
+  expect(Math.max(...profile(5000, [], tr, 400).v)).toBeLessThanOrEqual(80 / 3.6 + 1e-9);
 });
 
 test("line km: nearest marker, interpolated along its line; nothing far from any line", async () => {

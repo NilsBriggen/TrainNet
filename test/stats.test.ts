@@ -47,7 +47,7 @@ test("every stats function answers on a small database", async () => {
   expect(out.commute).toMatchObject({ runs: 1, pct: 100, median: 120 });
   expect(out.overview.history.forecast).toEqual([{ date: "2026-10-23", arr: null, dep: 0, arrIn30: null, depIn30: 100, n: 1 }]); // the 10:00 feed saw t1 standing at A, forecast to leave on time, and it did
   expect(out.bias).toEqual({ sections: [], stops: [] }); // under 20 runs anywhere
-  expect(out.consists).toEqual({ 0: [[200, 0, 2], [200, 1, 2]] }); // t1: one unit all the way, one coupled on at B
+  expect(out.consists).toEqual({ 0: [[200, 0, 2, "502"], [200, 1, 2, "502"]] }); // t1: one unit all the way, one coupled on at B
   expect(out.overview.today.stopPct).toBe(50); // t1: two stops with live data, one of them on time
   expect(out.station!.fit).toEqual([{ track: "7", train: "700", train_m: 200, edge_m: 150 }]); // the unit coupled on at B doesn't count at A
   expect(out.incidents.byMonth).toEqual([{ month: "1970-01", kind: "signal", n: 2 }]);

@@ -6,7 +6,7 @@
  * Returns flat [station, arr, dep, ...] like the input, plus per-stop delay and skipped flags.
  */
 export function applyDelays(stops, updates = []) {
-  const n = stops.length / 3, out = stops.slice(), delay = new Array(n).fill(0), skipped = new Array(n).fill(false);
+  const n = stops.length / 3, out = stops.slice(), delay = new Array(n).fill(0), dep = new Array(n).fill(0), skipped = new Array(n).fill(false);
   let d = 0, u = 0;
   for (let i = 0; i < n; i++) {
     let arrD = d, depD = d;
@@ -20,40 +20,89 @@ export function applyDelays(stops, updates = []) {
     out[i * 3 + 1] = stops[i * 3 + 1] + arrD;
     out[i * 3 + 2] = Math.max(stops[i * 3 + 2] + depD, out[i * 3 + 1]);
     delay[i] = arrD;
+    dep[i] = depD;
     d = depD;
   }
-  return { stops: out, delay, skipped };
+  return { stops: out, delay, dep, skipped };
+}
+
+const NO_OFF = () => 0;
+/**
+ * When the train rolls away from stop k: its expected departure plus off(k), the seconds a train really takes to
+ * leave after the feed's departure (never past a third of the run to the next stop, so a tight leg stays runnable).
+ */
+export function departure(stops, k, off = NO_OFF) {
+  const d = stops[k * 3 + 2], a = stops[k * 3 + 4];
+  return a === undefined ? d : d + Math.min(off(k), Math.max(0, (a - d) / 3));
 }
 
 /**
  * Where a trip is at time t: null if not running, else { a, b, f, at }
- * a/b = stop positions (equal while standing at a stop), f = 0..1 between them.
+ * a/b = stop positions (equal while standing at a stop), f = 0..1 between them. off(k): see departure().
  */
-export function locate(stops, t) {
+export function locate(stops, t, off = NO_OFF) {
   const n = stops.length / 3;
-  if (t < stops[2] || t > stops[(n - 1) * 3 + 1]) return null;
+  if (t < departure(stops, 0, off) || t > stops[(n - 1) * 3 + 1]) return null;
   let lo = 0, hi = n - 1; // last stop whose arrival <= t
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     stops[mid * 3 + 1] <= t ? (lo = mid) : (hi = mid - 1);
   }
-  if (t <= stops[lo * 3 + 2] || lo === n - 1) return { a: lo, b: lo, f: 0, at: true };
-  const dep = stops[lo * 3 + 2], arr = stops[(lo + 1) * 3 + 1];
+  if (lo === n - 1) return { a: lo, b: lo, f: 0, at: true };
+  const dep = departure(stops, lo, off), arr = stops[(lo + 1) * 3 + 1];
+  if (t <= dep) return { a: lo, b: lo, f: 0, at: true };
   return { a: lo, b: lo + 1, f: arr > dep ? (t - dep) / (arr - dep) : 1, at: false };
 }
 
 /**
- * Share of a segment covered at time share f (0..1) of its running time `dur` (s): accelerate, cruise, brake.
- * Trains visibly slow into stations and pull away instead of gliding at one speed. Acceleration takes
- * ~45 s (at most 30 % of the segment each way), the same for every train: a look, not physics.
+ * Speed profile of one train over one stretch, { s, t, v } on a 25 m grid (metres, seconds from departure, m/s):
+ * the fastest physical run under the line speeds (tractive effort constant to 40 km/h then constant power, so a(v) =
+ * a0·min(1, 11.1/v); service braking b; top speed vmax), fitted to the T seconds the feed gives the run. Slack goes
+ * into running under the line speed (the caps scaled down until the time fits, as ADL-driven trains do), never into
+ * softer acceleration or braking. speeds: [{ d0, d1, v }] km/h in travel order, untagged track at `untagged` km/h.
+ * tr: { a0, b, vmax } from traction().
  */
-export function motion(f, dur) {
-  const a = Math.min(0.3, 45 / Math.max(dur, 1)), v = 1 / (1 - a); // cruise speed so the whole segment takes exactly dur
-  if (f <= 0) return 0;
-  if (f >= 1) return 1;
-  if (f < a) return (0.5 * v * f * f) / a;
-  if (f > 1 - a) return 1 - (0.5 * v * (1 - f) * (1 - f)) / a;
-  return v * (f - a / 2);
+export function profile(len, speeds, tr, T, untagged = 80) {
+  if (!(len > 0) || !(T > 0)) return { s: [0, Math.max(0, len)], t: [0, 0], v: [0, 0] };
+  const n = Math.max(2, Math.ceil(len / 25)), h = len / n, s = new Float64Array(n + 1), lim = new Float64Array(n + 1);
+  for (let i = 1; i < n; i++) {
+    s[i] = i * h;
+    lim[i] = Math.min(tr.vmax, speeds.find((x) => s[i] >= x.d0 && s[i] <= x.d1)?.v ?? untagged) / 3.6;
+  }
+  s[n] = len;
+  const acc = (v) => tr.a0 * Math.min(1, 11.1 / Math.max(v, 0.1));
+  const run = (k) => {
+    const v = new Float64Array(n + 1), t = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) v[i + 1] = Math.min(k * lim[i + 1], Math.sqrt(v[i] * v[i] + 2 * acc(v[i]) * h));
+    for (let i = n; i > 0; i--) v[i - 1] = Math.min(v[i - 1], Math.sqrt(v[i] * v[i] + 2 * tr.b * h));
+    for (let i = 0; i < n; i++) t[i + 1] = t[i] + (2 * h) / (v[i] + v[i + 1]);
+    return { v, t };
+  };
+  let best = run(1);
+  if (best.t[n] < T) { // slack: cruise slower, found by bisection on the cap factor
+    let lo = 0, hi = 1;
+    for (let r = 0; r < 14; r++) { const k = (lo + hi) / 2, p = run(k); p.t[n] > T ? (lo = k) : ((hi = k), (best = p)); }
+  }
+  // the last metres of fit, and a run the feed gives less time than physics allows (a late departure with an unchanged
+  // arrival, or untagged track that is really faster than 80): the same run on a faster clock
+  const f = T / best.t[n];
+  return { s, t: best.t.map((x) => x * f), v: best.v.map((x) => x / f) };
+}
+const slot = ({ t }, tau) => { // last grid point reached at tau seconds
+  let lo = 0, hi = t.length - 2;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; t[mid] <= tau ? (lo = mid) : (hi = mid - 1); }
+  return lo;
+};
+const share = ({ t }, k, tau) => (t[k + 1] > t[k] ? Math.min(1, Math.max(0, (tau - t[k]) / (t[k + 1] - t[k]))) : 1);
+/** Metres along the stretch tau seconds after departure, by profile(). */
+export function distanceAt(p, tau) {
+  const k = slot(p, tau);
+  return p.s[k] + share(p, k, tau) * (p.s[k + 1] - p.s[k]);
+}
+/** Speed (m/s) tau seconds after departure, by profile(). */
+export function speedAt(p, tau) {
+  const k = slot(p, tau), u = share(p, k, tau);
+  return p.v[k] + u * (p.v[k + 1] - p.v[k]);
 }
 
 /**
@@ -67,27 +116,6 @@ export function ease(d, target, own, dt) {
   if (d > target) return d + 0.3 * Math.max(0, own);
   d = Math.min(target, d + Math.max(0, own));
   return d + Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
-}
-
-/**
- * Where line speed makes a train slow: cumulative running time along a stretch between two stops, from its line speeds.
- * speeds: [{ d0, d1, v }] (metres along the stretch in travel order, km/h); untagged track counts as `untagged` km/h.
- * Returns { d, t }: metres and the share of the running time spent until there (0..1), for distanceAt().
- */
-export function timeTable(len, speeds = [], untagged = 80) {
-  const d = [0], t = [0];
-  let at = 0, time = 0;
-  const to = (x, v) => { if (x > at) { time += (x - at) / v; at = x; d.push(at); t.push(time); } };
-  for (const s of speeds) { to(Math.min(s.d0, len), untagged); to(Math.min(s.d1, len), s.v); }
-  to(len, untagged);
-  return { d, t: t.map((x) => (time ? x / time : 0)) };
-}
-/** Metres along the stretch once `u` (0..1) of its running time is spent, by timeTable(). */
-export function distanceAt({ d, t }, u) {
-  let k = 1;
-  while (k < t.length - 1 && t[k] < u) k++;
-  const span = t[k] - t[k - 1];
-  return d[k - 1] + (span > 0 ? (Math.min(Math.max(u, t[k - 1]), t[k]) - t[k - 1]) / span : 1) * (d[k] - d[k - 1]);
 }
 
 /**
@@ -158,6 +186,17 @@ export function cumStops(route) {
   const out = [0];
   for (const r of route) out.push(out[out.length - 1] + r.path.cum[r.path.cum.length - 1]);
   return out;
+}
+/**
+ * Per stop: does the train leave it back the way it came (the other end leads from here, as at Bern or Zürich HB)?
+ * The track's direction 30 m before the stop against 30 m after, a turn of more than 120°.
+ */
+export function reversals(route, cum) {
+  return cum.map((d, k) => {
+    if (k === 0 || k === cum.length - 1) return false;
+    const m = Math.min(30, (d - cum[k - 1]) / 2, (cum[k + 1] - d) / 2), a = atDistance(route, cum, d - m).bearing, b = atDistance(route, cum, d + m).bearing;
+    return Math.abs(((b - a + 540) % 360) - 180) > 120;
+  });
 }
 export function atDistance(route, cum, d) {
   const n = route.length;

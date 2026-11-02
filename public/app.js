@@ -1,4 +1,5 @@
-import { applyDelays, atDistance, cars, cumStops, rigidCars, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, motion, slice, timeTable, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cars, cumStops, departure, rigidCars, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, profile, reversals, slice, speedAt, unpackPath } from "./position.js";
+import { traction } from "./traction.js";
 import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
 import { FORMATION_WHY, sideView } from "./formation.js";
@@ -53,9 +54,10 @@ function tripRoute(i) {
       const a = s[k - 3], pa = pl(k / 3 - 1), b = s[k], pb = pl(k / 3), fwd = segIndex.get(segKey(a, pa, b, pb)), reverse = fwd === undefined, path = paths[fwd ?? segIndex.get(segKey(b, pb, a, pa))];
       // line speeds in travel order: where the train is slow (a station throat at 40, a bridge at 60) it takes longer
       const total = path.cum[path.cum.length - 1], sp = reverse ? path.speeds.map((x) => ({ d0: total - x.d1, d1: total - x.d0, v: x.v })).reverse() : path.speeds;
-      route.push({ path, reverse, tt: timeTable(total, sp) });
+      route.push({ path, reverse, speeds: sp });
     }
-    routeCache.set(i, (r = { route, cum: cumStops(route) }));
+    const cum = cumStops(route);
+    routeCache.set(i, (r = { route, cum, rev: reversals(route, cum) }));
   }
   return r;
 }
@@ -93,7 +95,7 @@ function indexDay() {
     path.speeds = (day.speeds?.[k] ?? []).map(([f0, f1, v]) => ({ d0: f0 * total, d1: f1 * total, v }));
     return path;
   });
-  for (const m of [expCache, routeCache, shown, shownTarget, shownE, details, fetching, nextTrip, prevTrip, profiles]) m.clear(); // trip indexes changed
+  for (const m of [expCache, routeCache, shown, shownTarget, shownE, shownV, shownLeg, depSeen, details, fetching, nextTrip, prevTrip, profiles]) m.clear(); // trip indexes changed
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
@@ -232,15 +234,15 @@ let consists = {};
 const loadConsists = () => fetch("/api/stats/consists").then((r) => (r.ok ? r.json() : null)).then((j) => { if (j) consists = j; }).catch(() => {});
 const LOCO_MAX = 22; // m: every locomotive is shorter, every multiple unit longer
 const split = (len, car) => { const n = Math.max(1, Math.round(len / car)); return Array(n).fill(len / n); };
-/** Car lengths in metres, front first, and how many of the leading ones are locomotives. */
+/** Car lengths in metres, front first, how many of the leading ones are locomotives, and the units' series. */
 function carLengths(i, p, cat) {
-  const units = (consists[i] ?? []).filter(([, from, to]) => from <= p.a && to >= p.b).map(([len]) => len), typical = DEFAULT_LEN[cat] || 100;
+  const here = (consists[i] ?? []).filter(([, from, to]) => from <= p.a && to >= p.b), units = here.map(([len]) => len), typical = DEFAULT_LEN[cat] || 100;
   const locos = units.filter((len) => len < LOCO_MAX), sum = units.reduce((a, b) => a + b, 0);
   // shortcut: coaches without vehicle numbers aren't recorded units, so a loco-hauled IC can read as its 19 m locomotive:
   // under half the typical length, coaches make it up to that. Which end the loco is at isn't recorded either: drawn
   // leading. Upgrade: record the formation's order and total length per trip
   const rest = sum >= typical / 2 ? [] : split(typical - sum, locos.length ? 26.5 : 25);
-  return { lens: [...locos, ...units.filter((len) => len >= LOCO_MAX).flatMap((len) => split(len, 25)), ...rest], locos: locos.length };
+  return { lens: [...locos, ...units.filter((len) => len >= LOCO_MAX).flatMap((len) => split(len, 25)), ...rest], locos: locos.length, cls: here.map((u) => u[3]).filter(Boolean) };
 }
 const diamond = () => sdf(32, 32, (px, py) => Math.abs(px) + Math.abs(py) - 8);
 
@@ -338,7 +340,7 @@ function drawSpark() {
 }
 
 /** The line speed (OSM maxspeed) where trip i is drawn now, 0 if unknown. */
-function speedAt(i) {
+function lineSpeedAt(i) {
   const d = shown.get(i);
   if (d === undefined) return 0;
   const { route, cum } = tripRoute(i);
@@ -359,29 +361,54 @@ function inTunnel(i, d) {
   return path.structs.some((s) => s.kind === 1 && x >= s.d0 && x <= s.d1);
 }
 
-/** Position of a trip eased along its own track (never across it) so delay corrections roll instead of jump. */
-/** Metres along trip i's route at position p: the share of the stretch's time spent, through its line speeds (eased at both ends). */
-function alongRoute(i, e, p) {
+// real departures: a train rolls away later than the feed's departure (doors, dispatch). How much later is learned per
+// stop (/api/stats/bias: left vs forecast while standing, 30 days), else DEP_LATE. It applies only while the feed's departure
+// delay for that stop is the one seen when the train was approaching: a later update for that stop is the real departure
+const DEP_LATE = 30, depSeen = new Map(); // trip -> Map(stop -> the departure delay the feed gave when the train came)
+let depBias = new Map(); // station UIC -> seconds
+const loadBias = () => fetch("/api/stats/bias").then((r) => (r.ok ? r.json() : null)).then((j) => { if (j) depBias = new Map(j.stops.map(([uic, err]) => [uic, Math.min(90, Math.max(0, err))])); }).catch(() => {});
+function depOff(i, e) {
+  const seen = depSeen.get(i);
+  return (k) => (seen?.get(k) === e.dep[k] ? depBias.get(day.stations[e.stops[k * 3]][3]) ?? DEP_LATE : 0);
+}
+/** Where trip i is at time t (locate() with its real departures). */
+function where(i, t) { const e = expected(i); return locate(e.stops, t, depOff(i, e)); }
+/** Metres along trip i's route at position p: the train's speed profile over the stretch, `start` metres into it (a reversal). */
+function alongRoute(i, e, p, off, tr, start) {
   const { route, cum } = tripRoute(i);
-  return cum[p.a] + (p.at ? 0 : distanceAt(route[p.a].tt, motion(p.f, e.stops[p.b * 3 + 1] - e.stops[p.a * 3 + 2])));
+  if (p.at) return cum[p.a];
+  const leg = route[p.a], dep = departure(e.stops, p.a, off), T = e.stops[p.b * 3 + 1] - dep, len = cum[p.b] - cum[p.a] - start;
+  const key = `${T}|${start | 0}|${tr.a0}|${tr.b}|${tr.vmax}`;
+  if (leg.prof?.key !== key) leg.prof = { key, p: profile(len, start ? leg.speeds.map((x) => ({ d0: x.d0 - start, d1: x.d1 - start, v: x.v })) : leg.speeds, tr, T) };
+  return cum[p.a] + start + distanceAt(leg.prof.p, p.f * T);
 }
 const ARRIVED = 60; // s a train stays at its last stop: seen to arrive, and a drawn position that lagged behind gets there
+const shownV = new Map(), shownLeg = new Map(); // trip -> speed (m/s) at its drawn position / the leg it was last on
+/** Position of a trip eased along its own track (never across it) so delay corrections roll instead of jump. */
 function positionOf(i, t, dt) {
-  const e = expected(i), end = e.stops.length / 3 - 1, arr = e.stops[end * 3 + 1];
-  let p = locate(e.stops, t), done = false;
+  const e = expected(i), end = e.stops.length / 3 - 1, arr = e.stops[end * 3 + 1], off = depOff(i, e), cat = styles[day.trips[i][0]].cat;
+  let p = locate(e.stops, t, off), done = false;
   if (!p && t > arr && t - arr < ARRIVED) (p = { a: end, b: end, f: 0, at: true }), (done = true);
-  if (!p) return null;
-  const { route, cum } = tripRoute(i);
-  const target = alongRoute(i, e, p);
+  if (!p) { if (t < e.stops[2] && !depSeen.has(i)) depSeen.set(i, new Map([[0, e.dep[0]]])); return null; }
+  const seen = depSeen.get(i) ?? depSeen.set(i, new Map()).get(i);
+  if (!p.at || !seen.has(p.b)) seen.set(p.b, e.dep[p.b]); // frozen once it stands there
+  const { route, cum, rev } = tripRoute(i), { lens, locos, cls } = carLengths(i, p, cat), real = lens.reduce((a, b) => a + b, 0);
+  const tr = traction(cls, lens.length - locos, cat);
+  // leaving a stop back the way it came, the old rear leads: the run starts a train length on (where the rear stood)
+  const start = !p.at && rev[p.a] ? Math.min(real, (cum[p.b] - cum[p.a]) / 2) : 0;
+  const target = alongRoute(i, e, p, off, tr, start);
   // its own motion since the last frame, under this frame's forecast: across a new forecast, target − last would be the
   // whole correction and the train would jump by it
   let own = target - (shownTarget.get(i) ?? target);
-  if (shownE.get(i) !== e) { const q = locate(e.stops, t - dt / 1000); own = q ? target - alongRoute(i, e, q) : 0; }
+  if (shownE.get(i) !== e) { const q = locate(e.stops, t - dt / 1000, off); own = q ? target - alongRoute(i, e, q, off, tr, q.at || q.a !== p.a ? 0 : start) : 0; }
   shownTarget.set(i, target);
   shownE.set(i, e);
+  if (start && shownLeg.get(i) !== p.a) shown.delete(i); // the jump of a train length is a snap, not eased over the fold
+  shownLeg.set(i, p.at ? -1 : p.a);
   const d = ease(shown.get(i), target, own, dt);
   shown.set(i, d);
-  return { p, e, q: atDistance(route, cum, d), dist: d, done };
+  shownV.set(i, p.at ? 0 : speedAt(route[p.a].prof.p, p.f * (e.stops[p.b * 3 + 1] - departure(e.stops, p.a, off))));
+  return { p, e, q: atDistance(route, cum, d), dist: d, done, lens, locos, real };
 }
 
 const CHIP_DELAYS = () => !hidden.has("delays");
@@ -403,7 +430,7 @@ function trainFeatures(dt, ts, only) {
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
     const r = positionOf(i, t, dt);
     if (!r) continue;
-    const { p, e, dist, done } = r;
+    const { p, e, dist, done, lens, locos, real } = r;
     let { q } = r;
     const cancelled = !!live.delays[i]?.c, d = e.delay[p.b], sel = dimOthers && (selected.type === "line" ? selected.routes.has(day.trips[i][0]) : selected.idx === i);
     const flagged = !cancelled && incidentTrains.has(i), still = !cancelled && !flagged && standing(i);
@@ -414,7 +441,7 @@ function trainFeatures(dt, ts, only) {
     // a dark outline separates the body from track and trail; reported incidents blink red, inferred standing is a steady orange line
     const h = sel ? "#ffffff" : flagged ? (blinkOn ? "#ff4d4d" : "#040a18") : still ? STANDING : showDelay && d >= 600 ? "#ff4d4d" : showDelay && d >= 180 ? "#ffd23f" : "#040a18";
     const hw = sel ? 2.2 : flagged ? 2.4 : still ? 1.6 : showDelay && d >= 600 ? 1.8 : showDelay && d >= 180 ? 1.4 : 0.9;
-    const k = SHAPE_OF[style.cat] ?? "short", { lens, locos } = carLengths(i, p, style.cat), real = lens.reduce((a, b) => a + b, 0);
+    const k = SHAPE_OF[style.cat] ?? "short";
     const zs = flagged ? 3 : style.glow ? 2 : style.s > 0.7 ? 1 : 0, body = inView(q, Math.max(real, MIN_LEN[k] * bodyPx(z, style.s) * mpp));
     if (body) {
       const { route, cum } = tripRoute(i), w = bodyPx(z, style.s), long = Math.max(real, MIN_LEN[k] * w * mpp);
@@ -683,7 +710,9 @@ map.on("load", async () => {
   openFromUrl();
   for (const k of overlays) LOADERS[k]?.();
   loadConsists();
-  setInterval(loadConsists, 10 * 60_000); // the formation crawl adds trains through the day
+  setInterval(loadConsists, 10 * 60_000);
+  loadBias();
+  setInterval(loadBias, 3600_000); // the formation crawl adds trains through the day
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -752,8 +781,8 @@ function stationTip(si) {
 }
 function trainTip(i) {
   const [route, head, num] = day.trips[i];
-  const ex = expected(i), p = locate(ex.stops, now()), d = p ? ex.delay[p.b] : 0, pl = p ? platform(i, p.b) : "", issue = trainIssue(i);
-  return `${badge(route)} <span>${esc(num)}</span>${kindOf(route)[0] ? `<span class="sub">${esc(kindOf(route)[0])}</span>` : ""}<span class="sub">→ ${esc(head)}</span>${pl ? `<span class="sub">Pl. ${esc(pl)}</span>` : ""}`
+  const ex = expected(i), p = where(i, now()), d = p ? ex.delay[p.b] : 0, v = p && !p.at ? Math.round((shownV.get(i) ?? 0) * 3.6) : 0, pl = p ? platform(i, p.b) : "", issue = trainIssue(i);
+  return `${badge(route)} <span>${esc(num)}</span>${kindOf(route)[0] ? `<span class="sub">${esc(kindOf(route)[0])}</span>` : ""}<span class="sub">→ ${esc(head)}</span>${pl ? `<span class="sub">Pl. ${esc(pl)}</span>` : ""}${v ? `<span class="sub">≈ ${v} km/h</span>` : ""}`
     + (live.delays[i]?.c ? `<span class="very-late">cancelled</span>` : delayText(d)) + (issue ? `<span class="very-late">${esc(issue)}</span>` : standing(i) ? `<span class="standing">probably standing</span>` : "");
 }
 function alertTip(id) {
@@ -849,9 +878,9 @@ function stopLocate() {
 }
 /** Where trip i is at service time t, by its expected times (the drawn icon eases toward this): [lon, lat] or null. */
 function positionAt(i, t) {
-  const e = expected(i), p = locate(e.stops, t);
+  const e = expected(i), off = depOff(i, e), p = locate(e.stops, t, off);
   if (!p) return null;
-  const { route, cum } = tripRoute(i), q = atDistance(route, cum, alongRoute(i, e, p));
+  const { route, cum } = tripRoute(i), q = atDistance(route, cum, alongRoute(i, e, p, off, traction([], 0, styles[day.trips[i][0]].cat), 0));
   return [q.lon, q.lat];
 }
 function onPosition(pos) {
@@ -1135,7 +1164,7 @@ function open(type, idx, fly = false, push = true) {
   };
   if (a?.seg) return fit(Array.from({ length: a.seg[0].length / 2 }, (_, k) => [a.seg[0][k * 2], a.seg[0][k * 2 + 1]]));
   if (type === "line") {
-    const t = now(), pts = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) && locate(expected(i).stops, t) ? [trainPos(i)] : []));
+    const t = now(), pts = day.trips.flatMap((tr, i) => (selected.routes.has(tr[0]) && where(i, t) ? [trainPos(i)] : []));
     return pts.length ? fit(pts) : undefined;
   }
   const c = type === "station" ? day.stations[idx].slice(1, 3) : type === "train" ? trainPos(idx)
@@ -1237,10 +1266,10 @@ let lineKm = null, lineKmLoading = false;
 const loadLineKm = () => { if (lineKmLoading) return; lineKmLoading = true; fetch("/api/linekm").then((r) => r.json()).then((j) => (lineKm = kmIndex(j.lines))).catch(() => (lineKmLoading = false)); };
 /** What moves every second in an open train panel: progress, "next stop", the age of the live data, which stops are behind. */
 function trainNow(i) {
-  const sched = day.trips[i][3], n = sched.length / 3, e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t), st = day.stations;
-  const kmh = p && !p.at ? speedAt(i) : 0, lk = p && !p.at && lineKm ? kmAt(lineKm, ...trainPos(i)) : null;
+  const sched = day.trips[i][3], n = sched.length / 3, e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = where(i, t), st = day.stations;
+  const kmh = p && !p.at ? lineSpeedAt(i) : 0, v = p && !p.at ? Math.round((shownV.get(i) ?? 0) * 3.6) : 0, lk = p && !p.at && lineKm ? kmAt(lineKm, ...trainPos(i)) : null;
   if (!lineKm) loadLineKm();
-  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}${kmh ? ` · line speed ${kmh} km/h` : ""}${lk ? ` · <span title="${esc(lk.name)}">line ${esc(lk.line)}, km ${lk.km.toFixed(1)}</span>` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
+  const status = cancelled ? "" : p ? `${p.at ? "At" : "Next:"} ${esc(st[e.stops[p.b * 3]][0])}${platform(i, p.b) ? ` · Pl. ${esc(platform(i, p.b))}` : ""}${v ? ` · ≈ ${v} km/h` : ""}${kmh ? ` · line speed ${kmh} km/h` : ""}${lk ? ` · <span title="${esc(lk.name)}">line ${esc(lk.line)}, km ${lk.km.toFixed(1)}</span>` : ""}` : t < e.stops[2] ? `Departs ${hhmm(e.stops[2])}` : "Arrived";
   const age = live.time && live.delays[i] ? Math.max(0, Math.round((Date.now() + clockSkew) / 1000 - live.time)) : null;
   return {
     p, cancelled, status: status && ` · ${status}`, prog: !p ? (t < e.stops[2] ? 0 : 1) : (p.a + (p.b - p.a) * p.f) / (n - 1),
@@ -1272,7 +1301,7 @@ function patchPanel() {
 
 function trainHtml(i) {
   const [route, head, num, sched] = day.trips[i];
-  const e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = locate(e.stops, t);
+  const e = expected(i), t = now(), cancelled = !!live.delays[i]?.c, p = where(i, t);
   const st = day.stations, n = sched.length / 3;
   loadDetails(i);
   loadProfile(i);
@@ -1407,7 +1436,7 @@ function tripRow(i, sched, ex, where, pf = "") {
 function runningRows(trips) {
   const t = now();
   return trips.flatMap((i) => {
-    const e = expected(i), p = locate(e.stops, t);
+    const e = expected(i), p = where(i, t);
     if (!p) return [];
     const s = day.trips[i][3];
     return [tripRow(i, s[p.b * 3 + 1], e.stops[p.b * 3 + 1], `→ ${esc(day.trips[i][1])}`)];
@@ -1423,7 +1452,7 @@ function alertPanelHtml(id) {
   const span = a.s.map((s) => `<button class="stn" data-station="${s}">${esc(day.stations[s][0])}</button>`).join(`<span class="arrow">${a.s.length === 2 ? "↔" : "·"}</span>`);
   const lines = [...new Set(a.r)].map(badge).join("");
   const t = now();
-  const onLines = a.t.length ? a.t : day.trips.map((_, i) => i).filter((i) => a.r.includes(day.trips[i][0]) && locate(expected(i).stops, t));
+  const onLines = a.t.length ? a.t : day.trips.map((_, i) => i).filter((i) => a.r.includes(day.trips[i][0]) && where(i, t));
   const rows = runningRows(onLines.slice(0, 40)).slice(0, 15).join("");
   return `<span class="sev-tag" style="--c:${c}">${a.sudden ? "Just happened" : SEV[a.sev][0]}</span>
     <div class="kind-title">${esc(whyText(a))}</div>
