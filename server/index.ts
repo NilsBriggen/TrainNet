@@ -77,7 +77,7 @@ async function refresh() {
   try { maintain(); } catch (e: any) { console.error(`[record] ${e.message}`); }
   // yesterday's official actual data, published next morning (hourly at most; the dev instance leaves it to production)
   if (!LIVE_FROM) importRecentDays(db).catch((e) => console.error(`[history] ${e.message}`));
-  if (!LIVE_FROM && day) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // hourly; it skips what's known
+  if (!LIVE_FROM && day) crawlFleet(day).catch((e) => console.error(`[fleet] ${e.message}`)); // trains starting within 90 min; it skips what's known
   if (day?.date === date && occupancyDate() !== date) await loadOccupancy(date).catch((e) => console.error(`[details] occupancy: ${e.message}`)); // retried hourly
   rebuildRail();
   if (loading || day?.date === date) return;

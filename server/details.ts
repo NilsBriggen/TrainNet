@@ -169,7 +169,8 @@ async function fetchFormation(evu: string, num: string, date: string, background
 // the cache holds parsed formations: a parser that reads more (vehicle numbers in parts, RhB's numbering) starts it over
 const PARSED = 4; // 2: numbers in parts, RhB; 3: country codes, sets numbered car by car; 4: types from car codes
 export const formationKey = (evu: string, num: string, date: string) => `${evu}:${num}:${date}:${PARSED}`;
-const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: 4 * 3600_000 }; // "none" can mean "not yet": ask again later
+export const NONE_RETRY = 3600_000; // "none" can mean "not yet": asked again after an hour (the crawl does while the train is due)
+const RETRY: Partial<Record<FormationStatus, number>> = { error: 120_000, none: NONE_RETRY };
 /** Formation of a trip: from the cache in stats.db (survives restarts), else fetched once. Permanent "none"s are cached for the day too. */
 export function formationFor(trip: Trip, { fetch = true, background = false, allow = () => true } = {}): Promise<FormationResult> {
   const evu = EVU[trip.agency];
