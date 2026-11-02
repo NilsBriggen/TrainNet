@@ -99,6 +99,11 @@ export function distanceAt(p, tau) {
   const k = slot(p, tau);
   return p.s[k] + share(p, k, tau) * (p.s[k + 1] - p.s[k]);
 }
+/** Speed (m/s) x metres into the stretch, by profile(). */
+export function speedAtDistance({ s, v }, x) {
+  const n = s.length - 1, k = Math.max(0, Math.min(n - 1, Math.floor((x / s[n]) * n) || 0)), span = s[k + 1] - s[k];
+  return v[k] + (span > 0 ? (Math.min(Math.max(x, s[k]), s[k + 1]) - s[k]) / span : 0) * (v[k + 1] - v[k]);
+}
 /** Speed (m/s) tau seconds after departure, by profile(). */
 export function speedAt(p, tau) {
   const k = slot(p, tau), u = share(p, k, tau);
@@ -110,10 +115,12 @@ export function speedAt(p, tau) {
  * own = how far the forecast moved it since the last frame (its own speed), dt = ms. A new forecast is rolled into,
  * never jumped to: behind, it catches up at most 25 m/s; ahead (a later forecast), it creeps at 30 % of its speed
  * until the forecast catches up, so it neither rolls back nor stops dead mid-line. Over 5 km off it snaps.
+ * cap: the next stop the forecast has it reach; a train ahead waits there, it never runs through it.
+ * run: m/s to carry on at instead of creeping (the forecast has it standing at a stop it already left in the drawing).
  */
-export function ease(d, target, own, dt) {
+export function ease(d, target, own, dt, cap = Infinity, run = 0) {
   if (d === undefined || Math.abs(d - target) > 5000) return target;
-  if (d > target) return d + 0.3 * Math.max(0, own);
+  if (d > target) { const x = d + (run ? (run * dt) / 1000 : 0.3 * Math.max(0, own)); return d <= cap ? Math.min(cap, x) : x; }
   d = Math.min(target, d + Math.max(0, own));
   return d + Math.min((target - d) * (1 - Math.exp(-dt / 4000)), (dt / 1000) * 25);
 }

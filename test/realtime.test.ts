@@ -93,6 +93,11 @@ test("placeOf reads the span or the place from real headers", () => {
   expect(placeOf("Limited train services at Jenaz.", [], byName)).toEqual({ at: 7 });
   expect(placeOf("Information on IC 1 727", [3, 5], byName)).toEqual({ pair: [3, 5] }); // no span in the header: the two named stations
   expect(placeOf("Interrupted service between Nowhere and Elsewhere [train]", [], byName)).toEqual({});
+  // Appenzeller Bahnen, 2 Nov: no span in the header, the whole line's stops named, the span in the description
+  const ab = ["Teufen AR Stofel", "Teufen AR", "St. Gallen", "Speicher", "Trogen"], abBy = new Map(ab.map((n, i) => [n.toLowerCase(), i] as const));
+  const d = "This is due to a technical difficulty with the carriage. Line S22 is affected. Expect cancellations between Teufen and Trogen. Please follow the signs.";
+  expect(placeOf("Limited service: line S22", [0, 1, 2, 3, 4], abBy, d, ab)).toEqual({ pair: [1, 4] }); // "Teufen": the shortest name starting so
+  expect(classify("Limited service: line S22", d, "TECHNICAL_PROBLEM").kind).toBe("train");
 });
 
 test("an alert with no end (decoded as Long 0) is active", () => {

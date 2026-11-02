@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyDelays, departure, distanceAt, ease, frontEnd, locate, matchTrain, profile, reversals, speedAt } from "../public/position.js";
+import { applyDelays, departure, distanceAt, ease, frontEnd, locate, matchTrain, profile, reversals, speedAt, speedAtDistance } from "../public/position.js";
 import { traction } from "../public/traction.js";
 
 // station, arr, dep: A 10:00 dep, B 10:10-10:12, C 10:20
@@ -207,6 +207,12 @@ test("a new forecast is rolled into, not jumped to (IR35 2389 was 700 m off, S1 
   expect(ease(10_700, 10_000, own, dt)).toBeCloseTo(10_700 + 0.3 * own); // ahead: creeps on, never back, never dead still
   expect(ease(10_000, 16_000, own, dt)).toBe(16_000); // over 5 km off: snaps
   expect(ease(undefined, 3_000, 0, dt)).toBe(3_000); // first frame
+  expect(ease(10_999.5, 10_000, own, dt, 11_000)).toBe(11_000); // ahead, it waits at the next stop, never runs through it
+  // S44 16456 stood 250 m past Uetendorf Allmend: drawn as departed, then the feed had it still standing there.
+  // It carries on at its own pace (here 12 m/s) and waits at the next stop: never back, never dead on the line
+  expect(ease(10_250, 10_000, 0, dt, 13_500, 12)).toBeCloseTo(10_250 + 12 * (dt / 1000));
+  expect(ease(13_499.9, 10_000, 0, dt, 13_500, 12)).toBe(13_500);
+  expect(ease(13_600, 10_000, 0, dt, 13_500, 12)).toBeGreaterThan(13_600); // already past the cap (a jump of a leg): not pulled back
   expect(ease(9_999, 10_000, own, dt)).toBe(10_000); // its own motion never carries it past the forecast
 });
 
@@ -260,3 +266,13 @@ test("rigid cars: straight through bogies on the track, the links bend at a corn
   expect(metres(outline[0], outline[1], pieces[3][0], pieces[3][1])).toBeLessThan(0.01);
   expect(rigidCars(route, cum, 50, [25, 25, 25, 25]).rear).toBeNull(); // reaches back past the start: no rear cab
 });
+
+test("speed by distance: from rest, up to the line speed, braking to a stop", () => {
+  const p = profile(8000, [{ d0: 0, d1: 8000, v: 120 }], traction(["521"], 0, "s"), 400);
+  expect(speedAtDistance(p, 0)).toBe(0);
+  expect(speedAtDistance(p, 8000)).toBe(0);
+  expect(speedAtDistance(p, 50)).toBeGreaterThan(0);
+  expect(speedAtDistance(p, 4000)).toBeCloseTo(speedAt(p, distanceAtInverse(p, 4000)), 6);
+  expect(speedAtDistance(p, 9000)).toBe(0); // past the end: stopped
+});
+const distanceAtInverse = (p, x) => { let lo = 0, hi = p.t.at(-1); for (let r = 0; r < 60; r++) { const m = (lo + hi) / 2; distanceAt(p, m) < x ? (lo = m) : (hi = m); } return lo; };

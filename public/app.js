@@ -1,4 +1,4 @@
-import { applyDelays, atDistance, cars, cumStops, departure, rigidCars, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, profile, reversals, slice, speedAt, unpackPath } from "./position.js";
+import { applyDelays, atDistance, cars, cumStops, departure, rigidCars, distanceAt, ease, frontEnd, kmAt, kmIndex, locate, matchTrain, metres, profile, reversals, slice, speedAt, speedAtDistance, unpackPath } from "./position.js";
 import { traction } from "./traction.js";
 import { routeStyle, SEV, token, trainKind } from "./colors.js";
 import { HINTS } from "./hints.js";
@@ -405,9 +405,18 @@ function positionOf(i, t, dt) {
   shownE.set(i, e);
   if (start && shownLeg.get(i) !== p.a) shown.delete(i); // the jump of a train length is a snap, not eased over the fold
   shownLeg.set(i, p.at ? -1 : p.a);
-  const d = ease(shown.get(i), target, own, dt);
+  const prev = shown.get(i), k = p.a, next = Math.min(p.at ? k + 1 : p.b, cum.length - 1);
+  let run = 0;
+  // the forecast has it standing at a stop it already left in the drawing (it really left later than drawn): it carries
+  // on at its own pace and waits at the next stop, rather than standing dead on the line or rolling back
+  if (p.at && next > k && prev > cum[k]) {
+    const st = rev[k] ? Math.min(real, (cum[next] - cum[k]) / 2) : 0;
+    alongRoute(i, e, { a: k, b: next, f: 0, at: false }, off, tr, st);
+    run = Math.max(1, speedAtDistance(route[k].prof.p, prev - cum[k] - st));
+  }
+  const d = ease(prev, target, own, dt, cum[next], run);
   shown.set(i, d);
-  shownV.set(i, p.at ? 0 : speedAt(route[p.a].prof.p, p.f * (e.stops[p.b * 3 + 1] - departure(e.stops, p.a, off))));
+  shownV.set(i, run || (p.at ? 0 : speedAt(route[p.a].prof.p, p.f * (e.stops[p.b * 3 + 1] - departure(e.stops, p.a, off)))));
   return { p, e, q: atDistance(route, cum, d), dist: d, done, lens, locos, real };
 }
 
@@ -1209,10 +1218,11 @@ function setFollow(on) {
 }
 
 const delayText = (d) => (d >= 60 ? `<span class="${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)}′</span>` : "");
-const alertHtml = (a) => `<div class="alert" style="--c:${a.sudden ? SEV[3][1] : SEV[a.sev][1]}"><span class="sev">${a.sudden ? "Just happened" : SEV[a.sev][0]} · ${esc(whyText(a))}</span><strong>${esc(a.h)}</strong>${a.d ? `<p>${esc(a.d)}</p>` : ""}<button class="more" data-alert="${a.id}">Details →</button></div>`;
-const alertsHtml = (list) => {
-  const liveOnes = list.filter((a) => a.sev > 1), planned = list.filter((a) => a.sev === 1);
-  return liveOnes.map(alertHtml).join("") + (planned.length ? `<details class="planned"><summary>${planned.length} planned / notices</summary>${planned.map(alertHtml).join("")}</details>` : "");
+const alertHtml = (a, on = "") => `<div class="alert" style="--c:${a.sudden ? SEV[3][1] : SEV[a.sev][1]}"><span class="sev">${on}${a.sudden ? "Just happened" : SEV[a.sev][0]} · ${esc(whyText(a))}</span><strong>${esc(a.h)}</strong>${a.d ? `<p>${esc(a.d)}</p>` : ""}<button class="more" data-alert="${a.id}">Details →</button></div>`;
+/** on(a): a prefix for its label, e.g. "On line S22 · " in a train's panel when the alert doesn't name that train. */
+const alertsHtml = (list, on = () => "") => {
+  const liveOnes = list.filter((a) => a.sev > 1), planned = list.filter((a) => a.sev === 1), html = (a) => alertHtml(a, on(a));
+  return liveOnes.map(html).join("") + (planned.length ? `<details class="planned"><summary>${planned.length} planned / notices</summary>${planned.map(html).join("")}</details>` : "");
 };
 let photos = {}; // a photo per train type (scripts/typephotos.ts), for the formation's unit chips
 fetch("/types/photos.json").then((r) => r.json()).then((j) => (photos = j)).catch(() => {});
@@ -1293,9 +1303,14 @@ function patchPanel() {
     if (near) dot.setAttribute("cx", ((km / +svg.dataset.km) * EW).toFixed(1)), dot.setAttribute("cy", (EH - 6 - ((near[1] - +svg.dataset.lo) / +svg.dataset.span) * (EH - 14)).toFixed(1));
   }
   if (!stem) return;
-  stem.style.setProperty("--p", x.prog.toFixed(4));
-  stem.querySelectorAll(":scope > li").forEach((li, k) => li.classList.toggle("past", x.past[k]));
-  const pos = stem.querySelector(".pos");
+  // from the rows' real centres: an opened stop (its connections) is taller than the others
+  const lis = stem.querySelectorAll(":scope > li"), row = parseFloat(getComputedStyle(stem).getPropertyValue("--row")) || 30, mid = (k) => lis[k].offsetTop + row / 2;
+  const y = x.p ? mid(x.p.a) + (mid(x.p.b) - mid(x.p.a)) * (x.p.at ? 0 : x.p.f) : x.prog ? mid(lis.length - 1) : mid(0);
+  const pos = stem.querySelector(".pos"), fresh = !stem.style.getPropertyValue("--y"); // a rebuilt list: place the marker, don't slide it in from the top
+  if (fresh && pos) pos.style.transition = "none";
+  for (const [v, px] of [["--y0", mid(0)], ["--y1", mid(lis.length - 1)], ["--y", y]]) stem.style.setProperty(v, `${px.toFixed(1)}px`);
+  if (fresh && pos) { void pos.offsetTop; pos.style.transition = ""; }
+  lis.forEach((li, k) => li.classList.toggle("past", x.past[k]));
   if (pos) pos.style.display = x.p && !x.cancelled ? "" : "none";
 }
 
@@ -1367,7 +1382,7 @@ function trainHtml(i) {
     <div class="sub">${esc(st[sched[0]][0])} → ${esc(head || st[sched[(n - 1) * 3]][0])}<span data-live="status"></span><span class="age" data-live="age"></span></div>
     <div class="progress"><i></i></div>
     ${banner}<div class="actions"><button data-follow aria-pressed="${follow}"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>Follow</button><button data-share>Copy link</button><a href="/stats#/train/${encodeURIComponent(num)}">Train stats →</a></div>
-    ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)))}${onBoard}${formation}
+    ${alertsHtml(live.alerts.filter((a) => a.t.includes(i) || a.r.includes(route)), (a) => (a.t.includes(i) ? "" : `On line ${esc(lineName(route))} · `))}${onBoard}${formation}
     ${elevationHtml(i)}<h3>Stops <small>tap a stop for connections</small></h3>${link(prevTrip.get(i), "Comes from")}<ol class="stops stem">${!cancelled ? `<span class="pos"></span>` : ""}${stops}</ol>${link(nextTrip.get(i), "Continues as")}`;
 }
 

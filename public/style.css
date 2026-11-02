@@ -207,16 +207,16 @@ h3::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .facts svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 .stops { list-style: none; margin: 0; padding: 0; position: relative; --p: 0; }
-.stops li { display: grid; grid-template-columns: 42px 34px 1fr auto auto; gap: 8px; height: var(--row); align-items: center; position: relative; padding-left: 20px; }
-.stops li::before { content: ""; position: absolute; left: 4px; top: 50%; width: 8px; height: 8px; margin-top: -5px; border-radius: 50%; border: 2px solid var(--line); background: var(--bg); }
+.stops li { display: grid; grid-template-columns: 42px 34px 1fr auto auto; grid-template-rows: var(--row); column-gap: 8px; align-items: center; position: relative; padding-left: 20px; } /* an opened stop grows a row for its connections */
+.stops li::before { content: ""; position: absolute; left: 2px; top: calc(var(--row) / 2); width: 8px; height: 8px; margin-top: -6px; /* 12 px with its border (pseudo-elements are content-box): centred on the stem at 8 px */ border-radius: 50%; border: 2px solid var(--line); background: var(--bg); }
 .stops li.past::before { background: var(--line); }
 .stops li.past { color: var(--muted); }
 .stops li.skipped .name { text-decoration: line-through; color: var(--very-late); }
 .stops .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .stops .name small { color: var(--dim); font-size: var(--fs-s); }
-.stops.stem::after { content: ""; position: absolute; left: 7px; width: 2px; top: calc(var(--row) / 2); bottom: calc(var(--row) / 2); border-radius: 1px; z-index: -1;
-  background: linear-gradient(to bottom, var(--line) calc(var(--p) * 100%), rgba(255, 255, 255, 0.1) calc(var(--p) * 100%)); }
-.stops.stem .pos { position: absolute; left: 3px; top: calc(var(--row) / 2 + var(--p) * (100% - var(--row)) - 5px); width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--line) 45%, transparent); transition: top 1s linear; }
+.stops.stem::after { content: ""; position: absolute; left: 7px; width: 2px; top: var(--y0, calc(var(--row) / 2)); height: calc(var(--y1, 0px) - var(--y0, 0px)); border-radius: 1px; z-index: -1;
+  background: linear-gradient(to bottom, var(--line) calc(var(--y, 0px) - var(--y0, 0px)), rgba(255, 255, 255, 0.1) calc(var(--y, 0px) - var(--y0, 0px))); }
+.stops.stem .pos { position: absolute; left: 3px; top: calc(var(--y, 0px) - 5px); width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--line) 45%, transparent); transition: top 1s linear; }
 .stops .exp { font-size: var(--fs-m); }
 .stops .pl { font-size: var(--fs-s); color: var(--dim); min-width: 28px; text-align: right; }
 .meters { display: inline-flex; gap: 5px; }

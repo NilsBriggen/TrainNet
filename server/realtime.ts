@@ -39,7 +39,7 @@ const KINDS: [string, RegExp][] = [
   ["person", /\bpersons?\b|people|personenunfall|accident involving|on the track/],
   ["signal", /signal|interlocking|points|switch|stellwerk|weiche|level crossing|barrier|aiguillage|enclenchement/],
   ["power", /overhead line|power|electric|catenary|fahrleitung|strom|ligne de contact/],
-  ["train", /(fault|defect|problem|difficult\w*) (on|with|of) (a|the)? ?(train|vehicle|rolling)|defective (train|vehicle)|vehicle (fault|defect)|breakdown|fahrzeugstörung|panne|train blocking|blocking train/],
+  ["train", /(fault|defect|problem|difficult\w*) (on|with|of) (a|the)? ?(train|vehicle|rolling|carriage|coach|wagon)|defective (train|vehicle)|vehicle (fault|defect)|breakdown|fahrzeugstörung|panne|train blocking|blocking train/],
   ["infra", /infrastructure|track (damage|fault|defect)|damage to the track|rail break|route blocking|embankment|gleis/],
   ["weather", /storm|natural (hazard|event)|snow|weather|tree|landslide|flood|avalanche|rock|wind|unwetter|hail/],
   ["police", /police|emergency (services|operation)|fire|polizei|feuerwehr|rescue|vandal/],
@@ -113,12 +113,18 @@ export function observe(hist: Hist, i: number, stop: number, delay: number, now:
 }
 
 /**
- * Where an alert is: the "between A and B" span or the "at X" station of its header, else the two stations it names.
- * The entity list is unreliable (often the whole line's stops, or none), so the header wins.
+ * Where an alert is: the "between A and B" span or the "at X" station of its header, else the span its description
+ * names ("Expect cancellations between Teufen and Trogen" under "Limited service: line S22"), else the two stations it
+ * names. The entity list is unreliable (often the whole line's stops, or none), so the texts win. A short name in the
+ * text ("Teufen") is the shortest named station it begins ("Teufen AR").
  */
-export function placeOf(h: string, entityStations: number[], byName: Map<string, number>): { pair?: [number, number]; at?: number } {
-  const m = h.match(/(?:between|zwischen|entre|tra)\s+(.+?)\s+(?:and|und|et|e)\s+(.+?)\s*(?:\[|\.|$)/i);
-  const pair = m ? [byName.get(m[1].toLowerCase()), byName.get(m[2].toLowerCase())] : entityStations.length === 2 ? entityStations : [];
+export function placeOf(h: string, entityStations: number[], byName: Map<string, number>, d = "", names: string[] = []): { pair?: [number, number]; at?: number } {
+  const span = /(?:between|zwischen|entre|tra)\s+(.+?)\s+(?:and|und|et|e)\s+(.+?)\s*(?:\[|\.|$)/i, m = h.match(span) ?? d.match(span);
+  const find = (x: string) => {
+    const n = x.toLowerCase();
+    return byName.get(n) ?? entityStations.filter((i) => names[i]?.toLowerCase().startsWith(`${n} `)).sort((a, b) => names[a].length - names[b].length)[0];
+  };
+  const pair = m ? [find(m[1]), find(m[2])] : entityStations.length === 2 ? entityStations : [];
   if (pair[0] !== undefined && pair[1] !== undefined && pair[0] !== pair[1]) return { pair: [pair[0], pair[1]] };
   const at = h.match(/\b(?:at|in|bei|à|a)\s+(.+?)\s*(?:\[|\.|$)/i), st = at ? byName.get(at[1].toLowerCase()) : undefined;
   return st === undefined ? {} : { at: st };
@@ -254,9 +260,9 @@ async function pollAlerts(day: () => Day | undefined) {
   const remember = db.query("INSERT OR REPLACE INTO alert_entity VALUES (?, ?, ?)");
   db.transaction(() => { for (const k of keys) for (const e of entities.get(k)!) remember.run(e, entityIds!.get(e)!, Math.floor(now)); })();
   alerts = [...next.values()];
-  const byName = new Map(d.stations.map((s, i) => [s[0].toLowerCase(), i] as const));
+  const byName = new Map(d.stations.map((s, i) => [s[0].toLowerCase(), i] as const)), names = d.stations.map((s) => s[0]);
   for (const a of alerts) {
-    const place = placeOf(a.h, a.s, byName);
+    const place = placeOf(a.h, a.s, byName, a.d, names);
     if (place.pair) {
       const seg = d.track(...place.pair);
       if (seg) a.seg = [seg];
