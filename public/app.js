@@ -214,7 +214,10 @@ function cabLights(k, colour) {
 }
 // body width by zoom [zoom, px, scaled by the train's size: regional trains thinner at country zoom]; real cars are ~9× as
 // long as wide, so the width stays well under a car's length on screen
-const BODY_W = [[6, 2, 1], [8, 2.6, 1], [10, 3], [12, 3.2], [14, 4], [16, 5.5], [18, 8]];
+// From zoom 17 on that has reached a coach's true width (3 m), which then grows with the map like the track does: one
+// stop per zoom level (linear in between, within 6 % of the true curve), at Switzerland's middle latitude
+const TRUE_W = (3 * 512) / (40075016.686 * Math.cos((46.8 * Math.PI) / 180)); // px at zoom 0
+const BODY_W = [[6, 2, 1], [8, 2.6, 1], [10, 3], [12, 3.2], [14, 4], [16, 5.5], ...[17, 18, 19, 20, 21, 22].map((z) => [z, TRUE_W * 2 ** z])];
 function bodyPx(z, s) {
   const at = ([, w, sc]) => w * (sc ? s : 1), k = BODY_W.findIndex(([zz]) => zz > z);
   if (k <= 0) return at(BODY_W[k < 0 ? BODY_W.length - 1 : 0]);
@@ -425,9 +428,13 @@ function trainFeatures(dt, ts, only) {
       const outline = slice(route, cum, front - long + cab, front - cab);
       if (outline.length >= 4) bodies.push(line(outline, { i, col: h, x: 2 * hw, s: style.s, o, sk }));
       cars(route, cum, front, lens_, Math.max(1.5, 1.2 * mpp), cab, cab).forEach((car, n) => bodies.push(line(car, { i, col: style.c, x: 0, win: n >= nLoco ? 1 : 0, s: style.s, o, sk: sk + 1 }))); // a locomotive: no window band
-      q = atDistance(route, cum, front); // cab ends go in the cars' source: one source updates in one pass, so they never drift apart
-      bodies.push(point([q.lon, q.lat], { i, n: cabK, e: "f", r: q.bearing - 90, c: style.c, h, hw, s: style.s, o, sk }));
-      if (front - long > 0) { const t = atDistance(route, cum, front - long); bodies.push(point([t.lon, t.lat], { i, n: cabK, e: "r", r: t.bearing + 90, c: style.c, h, hw, s: style.s, o, sk })); }
+      // cab ends go in the cars' source (one source updates in one pass, so they never drift apart), turned along the body's
+      // own ends: the track's bearing at a stop can be the next leg's, which may leave the other way
+      const brg = (k) => Math.atan2((outline[k + 2] - outline[k]) * Math.cos((outline[k + 1] * Math.PI) / 180), outline[k + 3] - outline[k + 1]) * 180 / Math.PI;
+      q = atDistance(route, cum, front);
+      const ok = outline.length >= 4;
+      bodies.push(point([q.lon, q.lat], { i, n: cabK, e: "f", r: (ok ? brg(outline.length - 4) : q.bearing) - 90, c: style.c, h, hw, s: style.s, o, sk }));
+      if (front - long > 0) { const t = atDistance(route, cum, front - long); bodies.push(point([t.lon, t.lat], { i, n: cabK, e: "r", r: (ok ? brg(0) : t.bearing) + 90, c: style.c, h, hw, s: style.s, o, sk })); }
     }
     if (!body && !(selected?.type === "train" && selected.idx === i)) continue; // off screen: no label or glow to place (the selected one is followed)
     drawn.push(i);
