@@ -150,7 +150,7 @@ try {
   fitBoundsOptions: { padding: { top: 80, left: 40, right: 40, bottom: 60 } },
   maxBounds: [[3.5, 44.8], [12.9, 48.9]],
   attributionControl: false,
-  fadeDuration: 150, // shorter label cross-fade: less time with two labels on one spot
+  fadeDuration: 0, // no label fade: a moving train's label is a new symbol at every update and would fade out and in
   style: { version: 8, glyphs: `${location.origin}/glyphs/{fontstack}/{range}.pbf`, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#040a18" } }] },
   });
 } catch (e) {
@@ -383,18 +383,19 @@ function positionOf(i, t, dt) {
 
 const CHIP_DELAYS = () => !hidden.has("delays");
 let lastStatus = 0;
-function trainFeatures(dt, ts) {
-  const t = now(), feats = [], alarms = [], z = map.getZoom();
+/** Train features for the map. `only`: just these trains (the ones on screen), between full passes. */
+function trainFeatures(dt, ts, only) {
+  const t = now(), feats = [], alarms = [], drawn = [], z = map.getZoom();
   const blinkOn = CALM || ts % 1000 < 550;
   let running = 0, observed = 0, late = 0;
   const dimOthers = selected?.type === "train" || selected?.type === "line", labels = z >= 11.5, perCat = {};
-  // close in, a train long enough on screen is drawn at its real length on its track, car by car, instead of the silhouette
+  // every train is drawn car by car on its own track: at its real length close in, never shorter than a few body widths
   const bodies = [], mpp = (40075016.686 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** z);
   const vb = map.getBounds(), padX = (vb.getEast() - vb.getWest()) * 0.2, padY = (vb.getNorth() - vb.getSouth()) * 0.2;
   const kx = 1 / (111320 * Math.cos((map.getCenter().lat * Math.PI) / 180)), ky = 1 / 111320;
   // the train's front within `m` metres of the view (plus a margin): a long train's rear cars show though its front is off screen
   const inView = (q, m = 0) => q.lon > vb.getWest() - padX - m * kx && q.lon < vb.getEast() + padX + m * kx && q.lat > vb.getSouth() - padY - m * ky && q.lat < vb.getNorth() + padY + m * ky;
-  for (let i = 0; i < day.trips.length; i++) {
+  for (const i of only ?? day.trips.keys()) {
     const s = day.trips[i][3], style = styles[day.trips[i][0]];
     if (hidden.has(style.cat) || t < s[2] - 60 || t > s[s.length - 2] + 3 * 3600) continue; // cheap reject, allows 3 h delay
     const r = positionOf(i, t, dt);
@@ -428,6 +429,8 @@ function trainFeatures(dt, ts) {
       bodies.push(point([q.lon, q.lat], { i, n: cabK, e: "f", r: q.bearing - 90, c: style.c, h, hw, s: style.s, o, sk }));
       if (front - long > 0) { const t = atDistance(route, cum, front - long); bodies.push(point([t.lon, t.lat], { i, n: cabK, e: "r", r: t.bearing + 90, c: style.c, h, hw, s: style.s, o, sk })); }
     }
+    if (!body && !(selected?.type === "train" && selected.idx === i)) continue; // off screen: no label or glow to place (the selected one is followed)
+    drawn.push(i);
     feats.push(point([q.lon, q.lat], {
       i, c: style.c, s: style.s, g: style.glow, r: q.bearing - 90, h, hw, k,
       o, z: zs,
@@ -435,14 +438,14 @@ function trainFeatures(dt, ts) {
       ...(labels && { l: `${lineName(day.trips[i][0])} ${day.trips[i][2]}${cancelled ? " ×" : showDelay && d >= 60 ? ` +${Math.round(d / 60)}'` : ""}` }),
     }, i));
   }
-  if (ts - lastStatus > 1000) {
+  if (!only && ts - lastStatus > 1000) {
     lastStatus = ts;
     const pct = observed ? Math.round((1 - late / observed) * 100) : 100, age = live.time ? (Date.now() + clockSkew) / 1000 - live.time : 0;
     $("status-text").innerHTML = `${running.toLocaleString("de-CH")} <span class="long">trains</span> · ${pct} %<span class="long"> on time</span>`;
     $("live").title = age > 120 ? `Live data ${Math.round(age / 60)} min old` : "Live data";
     for (const b of $("chips").querySelectorAll("button[data-cat]")) if (b.dataset.cat !== "delays") b.dataset.n = perCat[b.dataset.cat] ?? 0;
   }
-  return { trains: fc(feats), alarms, bodies: fc(bodies) };
+  return { trains: fc(feats), alarms, bodies: fc(bodies), drawn };
 }
 
 let lastZ = 0, hadBodies = false, shownTrains = { features: [] }, lastTip = 0, last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, lastAnim = 0, hadRipples = false;
@@ -451,19 +454,23 @@ function frame(ts) {
 }
 /**
  * How often train positions are rebuilt: about every half pixel of movement for a fast train (50 m/s), so ~1 Hz at
- * country zoom and ~15 Hz zoomed in. Rebuilding thousands of features 20 times a second for sub-pixel moves only drained phones.
+ * country zoom and every frame from about zoom 15 in (a 15 Hz floor showed as stutter there). Rebuilding for sub-pixel
+ * moves only drains phones.
  */
-function updateMs() {
+function updateMs() { // ms between updates; under 66 the full pass stays at 66 ms and the trains on screen move in between
   const mPerPx = (78271.5 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
-  const ms = Math.min(1000, Math.max(66, (0.5 * mPerPx * 1000) / 50));
+  const ms = Math.min(1000, (0.5 * mPerPx * 1000) / 50);
   return incidentTrains.size && !CALM ? Math.min(ms, 250) : ms; // reported incidents blink
 }
+let onScreen = [];
 function tickFrame(ts) {
-  if (ts - last > updateMs() || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
+  const ms = updateMs();
+  if (ts - last > Math.max(66, ms) || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
     lastZ = map.getZoom();
     const dt = Math.min(ts - lastFrame, 1000);
     last = lastFrame = ts;
-    const { trains, alarms, bodies } = trainFeatures(dt, ts);
+    const { trains, alarms, bodies, drawn } = trainFeatures(dt, ts);
+    onScreen = drawn;
     shownTrains = trains;
     map.getSource("trains").setData(trains);
     if (bodies.features.length || hadBodies) map.getSource("bodies").setData(bodies); // nothing to clear: skip the upload
@@ -471,6 +478,13 @@ function tickFrame(ts) {
     const ripples = alarms.length + rippleAlerts.length > 0;
     if (ripples || hadRipples) map.getSource("ripples").setData(fc([...alarms, ...rippleAlerts.map((c) => point(c, {}))])); // nothing to clear: skip the upload
     hadRipples = ripples;
+  } else if (ms < 66 && ts - lastFrame >= ms && onScreen.length) { // zoomed in: the trains on screen move every frame
+    const { trains, bodies } = trainFeatures(Math.min(ts - lastFrame, 1000), ts, onScreen);
+    lastFrame = ts;
+    shownTrains = trains;
+    map.getSource("trains").setData(trains);
+    map.getSource("bodies").setData(bodies);
+    hadBodies = bodies.features.length > 0;
   }
   // blinking and breathing disruptions: only while there's something to animate
   if (!CALM && ts - lastAnim > 50 && (hadRipples || live.alerts.some((a) => a.sev === 3 || a.sudden))) {
