@@ -1,5 +1,5 @@
 import { loadDay, tripProfile, type Day } from "./gtfs";
-import { alertsBody, classify, live, resetRealtime, startRealtime } from "./realtime";
+import { alertsBody, classify, current, live, resetRealtime, startRealtime } from "./realtime";
 import { details, loadOccupancy, occupancyDate } from "./details";
 import { serviceBase, zurichDate } from "./time";
 import { loadGraph, type Graph } from "./paths";
@@ -12,6 +12,8 @@ import { crawlFleet } from "./fleet";
 import { buildInfra, buildSections, junctionsBody, lineKmBody, loadSbbData, platformEdge, platformEnds, sectionsBody, stationPax, useRegisterNames, usePlatformEdges, usePlatformEnds } from "./sbbdata";
 import * as stats from "./stats";
 import { reopenTiles, tileOf } from "./tiles";
+import { board, stationList, tripInfo, type Delays } from "./board";
+import { plan } from "./plan";
 
 // dev: borrow production's realtime and train details instead of polling with the API tokens it shares
 const LIVE_FROM = process.env.LIVE_FROM;
@@ -19,6 +21,12 @@ const borrow = async (path: string) => {
   const r = await fetch(LIVE_FROM + path);
   return new Response(await r.arrayBuffer(), { status: r.status, headers: { "Content-Type": "application/json" } });
 };
+
+// the delays the server's own answers use (board, a train, plans): dev borrows production's every 15 s
+let devDelays: Delays = {};
+const borrowDelays = () => borrow("/api/live").then((r) => r.json()).then((j: any) => { devDelays = j.delays ?? {}; }).catch(() => {});
+if (LIVE_FROM) { borrowDelays(); setInterval(borrowDelays, 15_000); }
+const delaysNow = (): Delays => (LIVE_FROM ? devDelays : current().delays);
 
 let day: Day | undefined;
 let loading = false;
@@ -192,6 +200,19 @@ const server = Bun.serve({
     "/api/sections": () => { const b = sectionsBody(); return b ? new Response(b, { headers: { ...gz, "Cache-Control": "public, max-age=86400" } }) : new Response("not loaded yet", { status: 503, headers: { "Retry-After": "60" } }); },
     "/api/stats/commute/:a/:b": (req) => (/^\d{7}$/.test(req.params.a) && /^\d{7}$/.test(req.params.b) ? statsJson(req, (d) => stats.commute(d, req.params.a, req.params.b)) : notFound()),
     "/api/stats/type/:cls": withParam("cls", stats.trainType),
+    // the phone views: stations to search, a departure board, one train as a list, journeys
+    "/api/stations": (req) => statsJson(req, (d) => ({ v: d.version, s: stationList(d, new Map(stationPax().map((r) => [r.uic, r.daily]))) })),
+    "/api/board/:uic": withParam("uic", (d, uic) => board(d, uic, delaysNow(), Date.now() / 1000)),
+    "/api/trip/:idx": (req) => {
+      const v = new URL(req.url).searchParams.get("v");
+      if (day && v && v !== day.version) return new Response("timetable changed", { status: 409 }); // indexes are per day version
+      return /^\d{1,6}$/.test(req.params.idx) ? statsJson(req, (d) => tripInfo(d, +req.params.idx, delaysNow())) : notFound();
+    },
+    "/api/plan": (req) => {
+      const q = new URL(req.url).searchParams, a = q.get("from") ?? "", b = q.get("to") ?? "", at = Number(q.get("at") ?? Date.now() / 1000);
+      if (!/^\d{7}$/.test(a) || !/^\d{7}$/.test(b) || !Number.isFinite(at) || Math.abs(at - Date.now() / 1000) > 2 * 86400) return notFound();
+      return statsJson(req, (d) => plan(d, delaysNow(), a, b, at, q.get("arrive") === "1"));
+    },
     // a train's elevation profile; computed here even in dev (no upstream calls), the URL carries the day version
     "/api/profile/:idx": (req) => {
       const v = new URL(req.url).searchParams.get("v");

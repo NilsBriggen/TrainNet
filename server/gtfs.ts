@@ -38,6 +38,8 @@ export type Day = {
   segments: number[]; // flat [a, pa, b, pb, ...]: legs in travel order, station + platform index at each end; a way back on the same track isn't one (run backwards)
   paths: (Path | null)[]; // track geometry per segment, null = straight
   profiles?: (number[] | null)[]; // per segment: heights every ~100 m from a to b (server only: /api/profile); missing in old day caches
+  through: number[]; // flat [from trip, to trip]: the train continues under another number ("stay seated")
+  transfers: Record<string, number>; // "station:platform:platform" -> minimum change time (s), platform 0 = the station's own rule
   tripIndex: Map<string, number>; // `${trip_id}|${YYYYMMDD}` -> index
   routeIndex: Map<string, number>;
   stationOfStop: (stopId: string) => number | undefined;
@@ -127,7 +129,7 @@ export function serviceDays(days: string[]) {
   };
 }
 
-const FORMAT = "f10"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
+const FORMAT = "f11"; // part of the version (the ETag) and the day cache key: bump it whenever what loadDay builds changes
 
 /** Everything a Day holds besides its client payload, as plain JSON. */
 type DayCache = Omit<Day, "tripIndex" | "routeIndex" | "stationOfStop" | "track" | "json"> & { routeIds: string[]; stops: [string, number][] };
@@ -282,8 +284,14 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     });
     tripIndex.set(`${t.id}|${ymd(t.date)}`, kept.push(t) - 1);
   });
-  const through = throughRunning(days, running, tripIndex);
-  await eachRow(zip, "transfers.txt", through.row);
+  const through = throughRunning(days, running, tripIndex), transfers: Day["transfers"] = {};
+  await eachRow(zip, "transfers.txt", (c) => {
+    through.row(c);
+    // minimum change times within a station, platform to platform (rules for single routes or trips aren't kept)
+    if (c[6] !== "2" || c[2] || c[3] || c[4] || c[5]) return;
+    const a = stationOf(c[0], false), b = stationOf(c[1], false);
+    if (a !== undefined && a === b) transfers[`${a}:${stops.get(c[0])!.plat}:${stops.get(c[1])!.plat}`] = +c[7];
+  });
   // each leg end: its platform's point and number when known (the router puts it on that track), else the station's point
   const end = (st: number, pl: number) => {
     const q = pl ? quay.get(`${st}:${pl}`) : undefined, s = stations[st];
@@ -320,7 +328,7 @@ export async function loadDay(date: string, graph: Graph | null): Promise<Day> {
     hints: hintSets, through: through.pairs, // hint code sets (trips point into it), through-running [from, to, …]
   }));
   console.log(`[gtfs] ${date}: ${kept.length} trips, ${stations.length} stations, ${keep.length} legs, ${(json.length / 1e6).toFixed(2)} MB gz, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments: legSegs, paths: pick(paths), profiles: pick(profiles), tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
+  const day: Day = { date, base, stations, routes, agencies, platforms, trips: kept, segments: legSegs, paths: pick(paths), profiles: pick(profiles), through: through.pairs, transfers, tripIndex, routeIndex, stationOfStop: (id) => stationOf(id, false), json, version,
     track: (a, b) => graph && route(graph, [stations[a][1], stations[a][2]], [stations[b][1], stations[b][2]]) };
   // payload first, cache last: a cache file whose version matches always has its payload next to it
   const stopStation = [...stops.keys()].flatMap((id): [string, number][] => { const i = stationOf(id, false); return i === undefined ? [] : [[id, i]]; });

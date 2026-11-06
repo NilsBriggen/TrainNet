@@ -329,3 +329,95 @@ h3 small { color: var(--dim); font-weight: 400; font-size: var(--fs-s); margin-l
 .elev .line { fill: none; stroke: var(--line, #5cc8ff); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .elev .ticks line { stroke: var(--muted); stroke-width: 1; }
 .elev circle { fill: #fff; stroke: var(--line, #5cc8ff); stroke-width: 2; }
+
+/* views: plan, my trips, departures, a train as a list (shell.js) */
+#views { display: none; }
+body.views #views { display: block; }
+#tabs { display: none; }
+#tabs button { border: 0; background: transparent; color: var(--muted); cursor: pointer; font: 500 var(--fs-m) Inter, system-ui, sans-serif; }
+#tabs button[aria-selected="true"] { color: var(--accent); }
+#tabs svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.view-title { margin: 0 0 12px; font-size: var(--fs-2xl); font-weight: 600; display: flex; gap: 9px; align-items: center; letter-spacing: -0.01em; }
+.view .sub { margin-top: -6px; }
+.field { position: relative; display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 4px 0 12px; margin-bottom: 8px; border-radius: var(--r-m); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--hairline); }
+.field:focus-within { border-color: rgba(92, 200, 255, 0.45); }
+.field label { min-width: 38px; flex: none; color: var(--dim); font-size: var(--fs-s); text-transform: uppercase; letter-spacing: 0.08em; }
+.field input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; color: var(--text); font: 16px Inter, system-ui, sans-serif; outline: none; } /* 16 px: iOS zooms smaller fields on focus */
+.field input::-webkit-search-cancel-button { display: none; }
+.picks { position: absolute; z-index: 5; top: calc(100% + 4px); left: -1px; right: -1px; margin: 0; padding: 6px; list-style: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-m); box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5); max-height: 50vh; overflow: auto; }
+.picks[hidden] { display: none; }
+.picks li { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 10px; border-radius: var(--r-s); cursor: pointer; }
+.picks li small { color: var(--dim); font-size: var(--fs-s); white-space: nowrap; }
+.picks li:hover, .picks li[aria-selected="true"] { background: rgba(92, 200, 255, 0.12); }
+.plan-form { position: relative; }
+.swap { position: absolute; right: 52px; top: 50px; transform: translateY(-50%); z-index: 2; background: var(--surface-2); border: 1px solid var(--border); }
+.when { display: flex; gap: 8px; align-items: center; }
+.when select, .when input { height: 40px; border-radius: var(--r-s); border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.05); color: var(--text); font: 15px Inter, system-ui, sans-serif; padding: 0 8px; min-width: 0; }
+.when input { flex: 1; }
+.when select { flex: none; width: 104px; }
+.detail .plan-form, .detail .recent, .detail > .view-title { display: none; }
+#p-out .back:first-child { margin-top: -4px; }
+.chip-btn { height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--hairline); background: transparent; color: var(--muted); font-weight: 600; cursor: pointer; }
+.chip-btn[aria-pressed="true"] { color: var(--accent); border-color: rgba(92, 200, 255, 0.45); background: rgba(92, 200, 255, 0.1); }
+.recent .stn { margin: 0 6px 6px 0; }
+#p-out { margin-top: 14px; }
+.jlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.jcard { display: grid; gap: 5px; width: 100%; text-align: left; padding: 12px 14px; border-radius: var(--r-m); border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.04); color: var(--text); font: inherit; }
+button.jcard { cursor: pointer; }
+button.jcard:hover { background: rgba(255, 255, 255, 0.07); }
+.jtimes { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-xl); }
+.jtimes b { font-weight: 600; }
+.jtimes .dur { margin-left: auto; color: var(--muted); font-size: var(--fs-m); text-align: right; }
+.jlines { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.jlines .meters { margin-left: auto; }
+.jch { color: var(--muted); font-size: var(--fs-m); }
+.jrel, .jexp { font-size: var(--fs-m); color: var(--muted); }
+.jrel.ok, .jexp.ok { color: var(--ok); }
+.jrel.late { color: var(--late); } .jrel.very-late { color: var(--very-late); }
+.more-btn { width: 100%; height: 42px; margin-top: 10px; border-radius: var(--r-m); border: 1px solid var(--hairline); background: transparent; color: var(--accent); font: 500 var(--fs) Inter, system-ui, sans-serif; cursor: pointer; }
+.back { border: 0; background: none; color: var(--accent); font: 500 var(--fs) Inter, system-ui, sans-serif; padding: 6px 0; margin-bottom: 4px; cursor: pointer; }
+.jsum { margin: 2px 0 10px; font-size: var(--fs-l); }
+.legs { list-style: none; margin: 12px 0 0; padding: 0; }
+.leg { border-left: 3px solid var(--line); padding: 4px 0 4px 12px; }
+.leg-h { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-bottom: 2px; }
+.leg-h .meters { margin-left: auto; }
+.leg-row { display: grid; grid-template-columns: 74px 1fr auto; gap: 8px; align-items: baseline; padding: 3px 0; }
+.leg-row .pl { color: var(--dim); font-size: var(--fs-s); }
+.leg-stops { border: 0; background: none; padding: 2px 0; color: var(--dim); font: var(--fs-s) Inter, system-ui, sans-serif; cursor: pointer; text-align: left; }
+.leg-stops:hover { color: var(--accent); }
+.change { margin: 8px 0; padding: 8px 12px; border-radius: var(--r-m); background: rgba(255, 255, 255, 0.04); font-size: var(--fs-m); border-left: 3px solid var(--muted); }
+.change.ok { border-left-color: var(--ok); } .change.late { border-left-color: var(--late); } .change.very-late { border-left-color: var(--very-late); }
+.change small { color: var(--dim); }
+.change.seated { border-left-style: dashed; color: var(--muted); }
+.backup { margin-top: 4px; color: var(--muted); }
+.trip .actions { margin: 4px 0 0; }
+#v-train .actions { margin: 8px 0 10px; }
+.actions button:disabled { opacity: 0.5; }
+
+@media (min-width: 761px) {
+  .phone-only { display: none !important; }
+  /* a card left of the map: tabs on top, the view below */
+  body.views #tabs { display: flex; position: fixed; z-index: 3; top: 80px; left: 14px; width: 400px; height: 46px; padding: 6px 6px 0; gap: 2px; align-items: stretch; background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0; border-radius: var(--r) var(--r) 0 0; }
+  body.views #tabs button[data-view] { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-s) var(--r-s) 0 0; }
+  body.views #tabs button[data-view][aria-selected="true"] { background: rgba(255, 255, 255, 0.06); }
+  body.views #tabs svg { width: 16px; height: 16px; }
+  #views-close { flex: none; align-self: center; }
+  body.views #views { position: fixed; z-index: 3; top: 126px; left: 14px; width: 400px; bottom: 16px; overflow-y: auto; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--r) var(--r); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  body.views #chips { left: 428px; max-width: calc(100% - 442px); }
+}
+@media (max-width: 760px) {
+  :root { --tabs: calc(58px + env(safe-area-inset-bottom)); }
+  .desk-only { display: none !important; }
+  #tabs { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; z-index: 7; left: 0; right: 0; bottom: 0; height: var(--tabs); padding-bottom: env(safe-area-inset-bottom); background: #091126; border-top: 1px solid var(--border); }
+  #tabs button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: var(--fs-xs); }
+  body.views #views { position: fixed; z-index: 6; inset: 0 0 var(--tabs) 0; overflow-y: auto; padding: max(16px, env(safe-area-inset-top)) 16px 24px; background: var(--bg); overscroll-behavior: contain; }
+  body.views #bar, body.views #chips, body.views #credits, body.views #panel, body.views #key, body.views #loading, body.views #tip { display: none; }
+  /* the map tab: its controls sit above the tab bar */
+  #chips { bottom: calc(var(--tabs) + 10px); }
+  #credits, body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #credits { bottom: calc(var(--tabs) + 62px); }
+  #panel, #key { bottom: var(--tabs); padding-bottom: 14px; }
+  #panel { max-height: calc(58dvh - var(--tabs) + 40px); }
+  #panel.tall { max-height: calc(92dvh - var(--tabs)); }
+  #toast { z-index: 8; bottom: calc(var(--tabs) + 14px); }
+  .icon { width: 40px; height: 40px; }
+}

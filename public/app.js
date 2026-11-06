@@ -515,6 +515,7 @@ function updateMs() { // ms between updates; under 66 the full pass stays at 66 
 }
 let onScreen = [];
 function tickFrame(ts) {
+  if (document.body.classList.contains("views") && innerWidth <= 760) return; // a phone's lists cover the map: nothing to draw
   const ms = updateMs();
   if (ts - last > Math.max(66, ms) || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
     lastZ = map.getZoom();
@@ -562,6 +563,23 @@ function tickFrame(ts) {
     }
   }
 }
+
+// the views (shell.js) open a train's panel and show a planned journey here; trip indexes are per day version, so an
+// older one is found again by its number
+const tripOf = ({ i, v, num }) => (day.v === v && day.trips[i] ? i : day.trips.findIndex((t) => t[2] === num));
+addEventListener("trainnet:open", (e) => { const i = tripOf(e.detail); if (i >= 0) open("train", i, true); });
+addEventListener("trainnet:journey", (e) => {
+  closePanel();
+  const parts = e.detail.legs.flatMap((l) => {
+    const i = tripOf({ ...l, v: e.detail.v });
+    if (i < 0) return [];
+    const { route, cum } = tripRoute(i);
+    return [line(slice(route, cum, cum[l.from], cum[l.to]), { c: styles[day.trips[i][0]].c, part: "behind" })];
+  }).filter((f) => f.geometry.coordinates.length > 1);
+  map.getSource("route").setData(fc(parts));
+  const pts = parts.flatMap((f) => f.geometry.coordinates);
+  if (pts.length) map.fitBounds(pts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0])), { padding: camPad(40), maxZoom: 13 });
+});
 
 /** The selected train's whole route: travelled part bright, remaining part faint, split where the icon is drawn. */
 function setRoute(i) {
@@ -717,6 +735,7 @@ map.on("load", async () => {
   setInterval(() => $("live").classList.toggle("stale", !live.time || Date.now() / 1000 - live.time > 120), 5000);
   setInterval(patchPanel, 1000);
   openFromUrl();
+  dispatchEvent(new Event("trainnet:ready")); // shell.js: the views may now open trains and journeys here
   for (const k of overlays) LOADERS[k]?.();
   loadConsists();
   setInterval(loadConsists, 10 * 60_000);
@@ -1184,7 +1203,7 @@ const NO_PAD = { top: 0, bottom: 0, left: 0, right: 0 };
 /** Where the panel covers the map: beside it on wide screens, the bottom sheet on phones. `extra` adds a margin all round. */
 const camPad = (extra = 0) => {
   const sheet = innerWidth <= 760, h = sheet && !$("panel").hidden ? $("panel").offsetHeight || innerHeight * 0.58 : 0;
-  return { top: 70 + extra, left: extra, right: (sheet || $("panel").hidden ? 0 : 430) + extra, bottom: h + extra };
+  return { top: 70 + extra, left: (!sheet && document.body.classList.contains("views") ? 430 : 0) + extra, right: (sheet || $("panel").hidden ? 0 : 430) + extra, bottom: h + extra }; // beside the plan card too
 };
 const trainPos = (i) => { const r = positionOf(i, now(), 0); return r ? [r.q.lon, r.q.lat] : day.stations[day.trips[i][3][0]].slice(1, 3); };
 function closePanel(fromHistory = false) {
