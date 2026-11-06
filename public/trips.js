@@ -50,13 +50,16 @@ export function initTrips(el, nav) {
     const on = legs.find((l) => (at(t, l, l.to.k, 1) ?? 0) > nowS) ?? legs.at(-1);
     return `On ${esc(on.line)} ${esc(on.num)} · arrives ${hm(arrN)}`;
   }
+  // after midnight the timetable is a new day's: a trip followed before it has no live times any more
+  function stale(t) { return t.j.legs.some((l) => live.has(`${l.i}|${t.v}`) && live.get(`${l.i}|${t.v}`) === null) ? ` <small class="age">· timetable times, no live data</small>` : "";
+  }
   function render(trips) {
     $("t-list").innerHTML = trips.length ? `<ol class="jlist">${trips.map((t) => {
       const j = t.j, l0 = j.legs[0], lN = j.legs.at(-1), d0 = (at(t, l0, l0.from.k, 2) ?? l0.from.sched) - l0.from.sched, d1 = (at(t, lN, lN.to.k, 1) ?? lN.to.sched) - lN.to.sched;
       return `<li class="trip"><div class="jcard">
         <span class="jtimes"><b>${hm(l0.from.sched)}</b>${delayText(d0)}<span class="arrow">→</span><b>${hm(lN.to.sched)}</b>${delayText(d1)}<span class="dur">${esc(l0.from.name)} → ${esc(lN.to.name)}</span></span>
         <span class="jlines">${j.legs.filter((l) => !l.through).map((l) => badge(l.line, l.cat, l.agency)).join('<span class="arrow">›</span>')}</span>
-        <span class="jrel">${state(t)}</span>
+        <span class="jrel">${state(t)}${stale(t)}</span>
         <span class="actions"><button data-map="${esc(t.id)}">On the map</button><button data-drop="${esc(t.id)}">Remove</button></span></div></li>`;
     }).join("")}</ol>` : `<div class="empty">Follow a journey from Plan to see it here, live.</div>`;
   }

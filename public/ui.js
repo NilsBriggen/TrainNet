@@ -5,7 +5,8 @@ export const $ = (id) => document.getElementById(id);
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const TIME = new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Zurich" });
 export const hm = (unix) => TIME.format(unix * 1000);
-export const mins = (s) => { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+/** "4 min", "1 h 05", "30 s"; no-break spaces, so a number never parts from its unit at a line end. */
+export const mins = (s) => { if (s > 0 && s < 60) return `${Math.round(s)}\u00a0s`; const m = Math.max(0, Math.round(s / 60)); return m < 60 ? `${m}\u00a0min` : `${Math.floor(m / 60)}\u00a0h\u00a0${String(m % 60).padStart(2, "0")}`; };
 /** "zurich" finds Zürich, "geneve" Genève. */
 export const fold = (x) => x.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 export const delayText = (d) => (d >= 60 ? `<span class="${d >= 600 ? "very-late" : d >= 180 ? "late" : ""}">+${Math.round(d / 60)}′</span>` : "");
@@ -22,7 +23,8 @@ export const store = {
 
 // stations: [name, uic, lon, lat, trains today, daily passengers]
 let stationsP = null;
-export const stations = () => (stationsP ??= json("/api/stations").then((j) => { j.folded = j.s.map((s) => fold(s[0])); j.byUic = new Map(j.s.map((s) => [s[1], s])); return j; }));
+export const stations = () => (stationsP ??= json("/api/stations").then((j) => { j.folded = j.s.map((s) => fold(s[0])); j.byUic = new Map(j.s.map((s) => [s[1], s])); return j; })
+  .catch((e) => { stationsP = null; throw e; })); // a failed load (a deploy, a dead spot) is asked again next time
 /** Stations whose name contains q: names starting with it first, then the busiest. */
 export function matchStations(st, q, n = 8) {
   q = fold(q.trim());
@@ -54,7 +56,12 @@ export function stationPicker(input, list, nearBtn, onPick) {
     input.setAttribute("aria-activedescendant", cur >= 0 ? `${list.id}-${cur}` : "");
   };
   const pick = (s) => { picked = s; input.value = s ? s[0] : ""; hits = []; show(); onPick(s); };
-  input.addEventListener("input", async () => { hits = matchStations(await stations(), input.value); cur = hits.length ? 0 : -1; picked = null; show(); });
+  input.addEventListener("input", async () => {
+    picked = null;
+    try { hits = matchStations(await stations(), input.value); } catch { hits = []; toast("Couldn't load the stations. Check your connection."); }
+    cur = hits.length ? 0 : -1;
+    show();
+  });
   input.addEventListener("keydown", (e) => {
     if ((e.key === "ArrowDown" || e.key === "ArrowUp") && hits.length) { e.preventDefault(); cur = (cur + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length; show(); }
     else if (e.key === "Enter" && hits[cur]) { e.preventDefault(); pick(hits[cur]); }

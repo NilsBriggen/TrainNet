@@ -355,6 +355,7 @@ body.views #views { display: block; }
 .when select, .when input { height: 40px; border-radius: var(--r-s); border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.05); color: var(--text); font: 15px Inter, system-ui, sans-serif; padding: 0 8px; min-width: 0; }
 .when input { flex: 1; }
 .when select { flex: none; width: 104px; }
+@media (max-width: 380px) { .when { flex-wrap: wrap; } .when input { order: 3; flex-basis: 100%; } .when .chip-btn { margin-left: auto; } } /* the date and time get a line of their own */
 .detail .plan-form, .detail .recent, .detail > .view-title { display: none; }
 #p-out .back:first-child { margin-top: -4px; }
 .chip-btn { height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--hairline); background: transparent; color: var(--muted); font-weight: 600; cursor: pointer; }
@@ -394,30 +395,40 @@ button.jcard:hover { background: rgba(255, 255, 255, 0.07); }
 #v-train .actions { margin: 8px 0 10px; }
 .actions button:disabled { opacity: 0.5; }
 
-@media (min-width: 761px) {
-  .phone-only { display: none !important; }
-  /* a card left of the map: tabs on top, the view below */
-  body.views #tabs { display: flex; position: fixed; z-index: 3; top: 80px; left: 14px; width: 400px; height: 46px; padding: 6px 6px 0; gap: 2px; align-items: stretch; background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0; border-radius: var(--r) var(--r) 0 0; }
-  body.views #tabs button[data-view] { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-s) var(--r-s) 0 0; }
-  body.views #tabs button[data-view][aria-selected="true"] { background: rgba(255, 255, 255, 0.06); }
-  body.views #tabs svg { width: 16px; height: 16px; }
-  #views-close { flex: none; align-self: center; }
-  body.views #views { position: fixed; z-index: 3; top: 126px; left: 14px; width: 400px; bottom: 16px; overflow-y: auto; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--r) var(--r); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-  body.views #chips { left: 428px; max-width: calc(100% - 442px); }
+/* layout chosen once at load by shell.js (body.phone): a phone keeps its tabs when turned sideways */
+body:not(.phone) .phone-only, body.phone .desk-only { display: none !important; }
+/* wide screens: a card left of the map, tabs on top, the view below */
+body:not(.phone).views #tabs { display: flex; position: fixed; z-index: 3; top: 80px; left: 14px; width: 400px; height: 46px; padding: 6px 6px 0; gap: 2px; align-items: stretch; background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0; border-radius: var(--r) var(--r) 0 0; }
+body:not(.phone).views #tabs button[data-view] { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-s) var(--r-s) 0 0; }
+body:not(.phone).views #tabs button[data-view][aria-selected="true"] { background: rgba(255, 255, 255, 0.06); }
+body:not(.phone).views #tabs svg { width: 16px; height: 16px; }
+#views-close { flex: none; align-self: center; }
+body:not(.phone).views #views { position: fixed; z-index: 3; top: 126px; left: 14px; width: 400px; bottom: 16px; overflow-y: auto; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--r) var(--r); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+body:not(.phone).views #chips { left: 428px; max-width: calc(100% - 442px); }
+body:not(.phone).views #credits { max-width: calc(100% - 442px); text-align: right; } /* beside the card, wrapping on a narrow screen */
+body:not(.phone).views:has(#panel:not([hidden])) #chips, body:not(.phone).views:has(#key:not([hidden])) #chips { max-width: calc(100% - 442px - 416px); }
+body:not(.phone).views:has(#panel:not([hidden])) #credits .long, body:not(.phone).views:has(#key:not([hidden])) #credits .long { display: none; } /* short, between the card and the panel */
+@media (max-width: 1180px) { /* no room for the card and a panel side by side: the panel (or the key) takes its place until it closes */
+  body:not(.phone).views:has(#panel:not([hidden])) #views, body:not(.phone).views:has(#panel:not([hidden])) #tabs,
+  body:not(.phone).views:has(#key:not([hidden])) #views, body:not(.phone).views:has(#key:not([hidden])) #tabs { display: none; }
+  body:not(.phone).views:has(#panel:not([hidden])) #chips, body:not(.phone).views:has(#key:not([hidden])) #chips { left: 14px; max-width: calc(100% - 28px - 416px); }
 }
-@media (max-width: 760px) {
-  :root { --tabs: calc(58px + env(safe-area-inset-bottom)); }
-  .desk-only { display: none !important; }
-  #tabs { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; z-index: 7; left: 0; right: 0; bottom: 0; height: var(--tabs); padding-bottom: env(safe-area-inset-bottom); background: #091126; border-top: 1px solid var(--border); }
-  #tabs button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: var(--fs-xs); }
-  body.views #views { position: fixed; z-index: 6; inset: 0 0 var(--tabs) 0; overflow-y: auto; padding: max(16px, env(safe-area-inset-top)) 16px 24px; background: var(--bg); overscroll-behavior: contain; }
-  body.views #bar, body.views #chips, body.views #credits, body.views #panel, body.views #key, body.views #loading, body.views #tip { display: none; }
-  /* the map tab: its controls sit above the tab bar */
-  #chips { bottom: calc(var(--tabs) + 10px); }
-  #credits, body:has(#panel:not([hidden])) #credits, body:has(#key:not([hidden])) #credits { bottom: calc(var(--tabs) + 62px); }
-  #panel, #key { bottom: var(--tabs); padding-bottom: 14px; }
-  #panel { max-height: calc(58dvh - var(--tabs) + 40px); }
-  #panel.tall { max-height: calc(92dvh - var(--tabs)); }
-  #toast { z-index: 8; bottom: calc(var(--tabs) + 14px); }
-  .icon { width: 40px; height: 40px; }
+/* phones: a tab bar at the bottom, the views full screen above it */
+body.phone { --tabs: calc(58px + env(safe-area-inset-bottom)); }
+body.phone #tabs { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; z-index: 7; left: 0; right: 0; bottom: 0; height: var(--tabs); padding-bottom: env(safe-area-inset-bottom); background: #091126; border-top: 1px solid var(--border); }
+body.phone #tabs button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: var(--fs-xs); }
+body.phone.views #views { position: fixed; z-index: 6; inset: 0 0 var(--tabs) 0; overflow-y: auto; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 24px max(16px, env(safe-area-inset-left)); background: var(--bg); overscroll-behavior: contain; }
+body.phone.views #bar, body.phone.views #chips, body.phone.views #credits, body.phone.views #panel, body.phone.views #key, body.phone.views #loading, body.phone.views #tip { display: none; }
+/* the map tab: its controls sit above the tab bar */
+body.phone #chips { bottom: calc(var(--tabs) + 10px); }
+body.phone #credits, body.phone:has(#panel:not([hidden])) #credits, body.phone:has(#key:not([hidden])) #credits { bottom: calc(var(--tabs) + 62px); }
+body.phone #panel, body.phone #key { bottom: calc(var(--tabs) + 8px); }
+body.phone #toast { z-index: 8; bottom: calc(var(--tabs) + 14px); }
+body.phone .icon { width: 40px; height: 40px; }
+@media (max-width: 760px) { /* the bottom sheet sits on the tab bar */
+  body.phone #panel, body.phone #key { bottom: var(--tabs); padding-bottom: 14px; }
+  body.phone #panel { max-height: calc(58dvh - var(--tabs) + 40px); }
+  body.phone #panel.tall { max-height: calc(100dvh - var(--tabs) - 118px); } /* dragged up: to just below the search bar */
 }
+body.zen #tabs { display: none; }
+#bar:has(#results:not([hidden])) { z-index: 5; } /* its search results above the plan card */

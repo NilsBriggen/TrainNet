@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { catchRate, expectedArrival, network, scan } from "../server/plan";
+import { catchRate, expectedArrival, network, plan, scan } from "../server/plan";
+import { initRecord } from "../server/record";
 
 // stations A=0, B=1, C=2; times in seconds from the day's base; platforms: index 1 = "1", 2 = "2"
 const trip = (route: number, num: string, stops: number[], plat: number[]) => ({ id: num, date: "2026-11-06", route, agency: "11", head: "C", num, stops, seq: [], plat, km: [], hints: "" });
@@ -43,10 +44,20 @@ test("catch rate: every arrival against every departure, or the days both ran wh
   const waits = Array.from({ length: 10 }, (_, k) => [k * 120, k * 120] as [number, number]); // the departure waits for the late arrival
   expect(catchRate([600], [0], 300, 180, waits)).toMatchObject({ p: 1, basis: "pair", n: 10 });
   expect(catchRate([], [], 300, 180).p).toBe(1); // nothing recorded: the timetable's word
+  expect(catchRate([], [], 0, 30, [], 30).p).toBe(1); // a 0-min change by timetable that today's times make (the arriving train is early)
 });
 
 test("ranking by expected arrival prefers the reliable journey over a minute-faster fragile one", () => {
   const fragile = expectedArrival(1000, [{ p: 0.5, backupArr: 2800 }]), direct = expectedArrival(1060, []);
   expect(fragile).toBe(1900);
   expect(direct).toBeLessThan(fragile);
+});
+
+test("arrive by: the last journeys that make it, also for a trip longer than three hours", () => {
+  initRecord(":memory:");
+  // A → C takes 4 h; departures every hour from 05:00 (18 000 s) to 12:00; arrive by 14:30
+  const runs = Array.from({ length: 8 }, (_, k) => trip(0, `ic${k}`, [0, 18_000 + k * 3600, 18_000 + k * 3600, 2, 32_400 + k * 3600, 32_400 + k * 3600], [1, 1]));
+  const d = day(runs), r = plan(d, {}, "8500001", "8500003", 52_200, true)!;
+  expect(r.journeys.map((j) => j.legs[0].num)).toEqual(["ic0", "ic1", "ic2", "ic3", "ic4", "ic5"]); // ic5 arrives 14:00, ic6 15:00 is too late
+  expect(plan(d, {}, "8500001", "8500003", 30_000, true)!.journeys).toEqual([]); // nothing arrives by 08:20
 });

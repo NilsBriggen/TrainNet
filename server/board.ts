@@ -21,7 +21,7 @@ function byStation(d: Day) {
 }
 
 /** A row about a trip: what the views need to draw its badge and name it. */
-const tripHead = (d: Day, i: number) => { const t = d.trips[i], [line, cat, agency] = d.routes[t.route]; return { i, line, cat, agency, num: t.num, head: t.head }; };
+const tripHead = (d: Day, i: number) => { const t = d.trips[i], [line, cat, agency] = d.routes[t.route]; return { i, v: d.version, line, cat, agency, num: t.num, head: t.head }; }; // v: trip indexes are per day version
 
 /**
  * The next departures from a station: the ones expected from a minute ago to `span` s ahead, by scheduled time.

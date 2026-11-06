@@ -6,16 +6,20 @@ import { $, badge, delayText, esc, hm, json, stationPicker, store, stations } fr
 import { initPlan } from "./plan.js";
 import { initTrips } from "./trips.js";
 
-const phone = matchMedia("(max-width: 760px)").matches;
+// a phone, upright or turned sideways; decided once, so turning it keeps the tab bar (the CSS follows body.phone)
+const phone = matchMedia("(max-width: 760px), (pointer: coarse) and (max-height: 500px)").matches;
+document.body.classList.toggle("phone", phone);
 const ready = new Promise((ok) => addEventListener("trainnet:ready", ok, { once: true })); // app.js: map and timetable loaded
 let appP = null;
 const app = () => (appP ??= import("./app.js").then(() => ready));
 
-// detail views (a train, a journey) are history entries on phones, so Back closes them
+// detail views (a train, a journey) are history entries, so Back closes them. Each entry carries its depth (tn): a
+// Back that lands on an entry of the map's panels (app.js) or deeper closes nothing here
 const closers = [];
-addEventListener("popstate", () => { if (closers.length) closers.pop()(); });
+addEventListener("popstate", (e) => { const depth = e.state?.tn ?? (e.state?.panel ? closers.length : 0); while (closers.length > depth) closers.pop()(); });
 const detail = (close) => { history.pushState({ tn: closers.length + 1 }, ""); closers.push(close); };
-const back = () => (closers.length ? history.back() : null);
+/** The in-view back button: the history entry if there is one, else close directly (fallback). */
+const back = (fallback) => (closers.length ? history.back() : fallback?.());
 
 let view = null;
 const views = { plan: $("v-plan"), trips: $("v-trips"), board: $("v-board"), train: $("v-train") };
@@ -73,7 +77,7 @@ async function loadBoard() {
 }
 $("b-rows").addEventListener("click", (e) => { const li = e.target.closest("[data-k]"); if (li) nav.openTrain(boardRows[+li.dataset.k]); });
 $("b-rows").addEventListener("keydown", (e) => { const li = e.target.closest("[data-k]"); if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); nav.openTrain(boardRows[+li.dataset.k]); } });
-stations().then((st) => { const s = st.byUic.get(store.get("board", "")); if (s) { boardSt = s; boardPick.set(s); } });
+stations().then((st) => { const s = st.byUic.get(store.get("board", "")); if (s) { boardSt = s; boardPick.set(s); } }).catch(() => {});
 
 // ---------- a train as a list (phones) ----------
 const trainEl = views.train;
@@ -108,7 +112,7 @@ function renderTrain() {
   for (const [v, px] of [["--y0", mid(0)], ["--y1", mid(n - 1)], ["--y", y]]) stem.style.setProperty(v, `${px}px`);
 }
 trainEl.addEventListener("click", (e) => {
-  if (e.target.closest("[data-back]")) back();
+  if (e.target.closest("[data-back]")) back(() => go(lastTab));
   if (e.target.closest("[data-onmap]")) nav.onMap({ i: trainRow.i, v: trainRow.v, num: trainRow.num });
 });
 

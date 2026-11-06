@@ -39,18 +39,19 @@ export function network(d: Day, delays: Delays): Net {
   return net;
 }
 
-const stationDefault = new WeakMap<Day, Map<number, number>>();
+// the rules by number (station·1e8 + platform·1e4 + platform), read once per day: the scan asks millions of times
+const rules = new WeakMap<Day, { pair: Map<number, number>; station: Map<number, number> }>();
+const ruleKey = (st: number, pa: number, pb: number) => st * 1e8 + pa * 1e4 + pb;
 /** Minimum change time at station st from platform pa to pb (indexes into d.platforms). */
 export function changeTime(d: Day, st: number, pa: number, pb: number) {
-  const r = d.transfers[`${st}:${pa}:${pb}`] ?? d.transfers[`${st}:0:0`];
-  if (r !== undefined) return r;
-  let m = stationDefault.get(d);
-  if (!m) { // the station's typical rule: the median of its platform pairs
-    const by = new Map<number, number[]>();
-    for (const [k, v] of Object.entries(d.transfers)) { const s = +k.slice(0, k.indexOf(":")); (by.get(s) ?? by.set(s, []).get(s)!).push(v); }
-    stationDefault.set(d, (m = new Map([...by].map(([s, vs]) => [s, vs.sort((a, b) => a - b)[vs.length >> 1]]))));
+  let r = rules.get(d);
+  if (!r) {
+    const pair = new Map<number, number>(), by = new Map<number, number[]>();
+    for (const [k, v] of Object.entries(d.transfers)) { const [s, a, b] = k.split(":").map(Number); pair.set(ruleKey(s, a, b), v); (by.get(s) ?? by.set(s, []).get(s)!).push(v); }
+    // the station's typical rule where a pair has none: the median of its platform pairs
+    rules.set(d, (r = { pair, station: new Map([...by].map(([s, vs]) => [s, vs.sort((x, y) => x - y)[vs.length >> 1]])) }));
   }
-  return m.get(st) ?? DEFAULT_CHANGE;
+  return r.pair.get(ruleKey(st, pa, pb)) ?? r.pair.get(ruleKey(st, 0, 0)) ?? r.station.get(st) ?? DEFAULT_CHANGE;
 }
 
 export type Leg = { trip: number; from: number; to: number; enter: number; exit: number; through?: boolean }; // stop positions on the trip; hops
@@ -104,10 +105,10 @@ export function scan(d: Day, net: Net, origin: number, to: number, t0: number): 
 }
 
 /** Distinct journeys departing from t0 on: the fastest per number of legs, then again from just after each one's departure. */
-export function journeys(d: Day, net: Net, origin: number, to: number, t0: number, want = 6, until = t0 + 4 * 3600) {
+export function journeys(d: Day, net: Net, origin: number, to: number, t0: number, want = 6, until = t0 + 4 * 3600, rounds = 12) {
   const out: Leg[][] = [], seen = new Set<string>();
   let t = t0;
-  for (let round = 0; round < 12 && out.length < want && t < until; round++) {
+  for (let round = 0; round < rounds && out.length < want && t < until; round++) {
     const found = scan(d, net, origin, to, t).filter((j): j is Leg[] => !!j && j.length > 0);
     if (!found.length) break;
     for (const j of found) { const key = j.map((l) => `${l.trip}:${l.from}`).join("|"); if (!seen.has(key)) { seen.add(key); out.push(j); } }
@@ -120,10 +121,11 @@ export function journeys(d: Day, net: Net, origin: number, to: number, t0: numbe
  * How often a change works: arrival delays `a` of the arriving train and departure delays `b` of the departing one
  * (s, same station), `slack` = scheduled departure − scheduled arrival, `walk` = minimum change time.
  * Pairs = [a, b] seen on the same day (a connection that waits for late arrivals shows there); else every a against every b.
+ * Nothing recorded: whether today's times leave enough (`left`, as the planner chose the change by them).
  */
-export function catchRate(a: number[], b: number[], slack: number, walk: number, pairs: [number, number][] = []) {
+export function catchRate(a: number[], b: number[], slack: number, walk: number, pairs: [number, number][] = [], left = slack) {
   if (pairs.length >= 8) return { p: pairs.filter(([x, y]) => x + walk <= slack + y).length / pairs.length, n: pairs.length, basis: "pair" as const };
-  if (!a.length) return { p: walk <= slack ? 1 : 0, n: 0, basis: "none" as const };
+  if (!a.length) return { p: walk <= left ? 1 : 0, n: 0, basis: "none" as const };
   const bb = b.length ? b : [0];
   let ok = 0;
   for (const x of a) for (const y of bb) if (x + walk <= slack + y) ok++;
@@ -168,8 +170,17 @@ export function plan(d: Day, delays: Delays, a: string, b: string, at: number, a
   const origin = d.stations.findIndex((s) => s[3] === a), dest = d.stations.findIndex((s) => s[3] === b);
   if (origin < 0 || dest < 0 || origin === dest) return null;
   const net = network(d, delays), base = d.base / 1000, rel = Math.round(at - base);
-  let js = arriveBy ? journeys(d, net, origin, dest, rel - 3 * 3600, 12, rel) : journeys(d, net, origin, dest, rel);
-  if (arriveBy) js = js.filter((j) => net.arr[j.at(-1)!.exit] <= rel).slice(-6);
+  let js: Leg[][];
+  if (arriveBy) {
+    // the shortest trip there (from far enough back) says where the last departure that can make it is; the window
+    // before it widens by 90 min (up to 6 h) until six journeys arrive in time, each window with its own search budget
+    const probe = scan(d, net, origin, dest, rel - 14 * 3600).filter((j): j is Leg[] => !!j && j.length > 0);
+    const shortest = Math.min(...probe.map((j) => net.arr[j.at(-1)!.exit] - net.dep[j[0].enter]));
+    let found: Leg[][] = [];
+    for (let back = 5400; Number.isFinite(shortest) && back <= 6 * 3600 && found.length < 6; back += 5400)
+      found = journeys(d, net, origin, dest, rel - shortest - back, 60, rel - shortest + 60, 60).filter((j) => net.arr[j.at(-1)!.exit] <= rel);
+    js = found.slice(-6);
+  } else js = journeys(d, net, origin, dest, rel);
   const occ = occupancyAll();
   const stop = (i: number, k: number, kind: Kind) => {
     const t = d.trips[i], e = applyDelays(t.stops, delays[i]?.u as any), s = d.stations[t.stops[k * 3]], col = kind === "arr" ? 1 : 2;
@@ -182,11 +193,13 @@ export function plan(d: Day, delays: Delays, a: string, b: string, at: number, a
     });
     const changes = legs.slice(1).map((l, j) => {
       const A = out[j], B = out[j + 1], st = d.trips[l.trip].stops[l.from * 3];
-      if (B.through) return { at: B.from.name, walk: 0, slack: 0, p: 1, n: 0, basis: "seated", backup: null };
+      if (B.through) return { at: B.from.name, walk: 0, slack: 0, left: 0, p: 1, n: 0, basis: "seated", backup: null };
       const walk = changeTime(d, st, d.trips[legs[j].trip].plat[legs[j].to], d.trips[l.trip].plat[l.from]), slack = B.from.sched - A.to.sched;
-      // a train running or about to start: today's forecast, spread by how far such forecasts were off (or by its
-      // recorded delays around their median, before enough forecasts are recorded); later trains: the recorded delays
-      const live = (i: number) => (delays[i]?.u?.length ?? 0) > 0 && base + d.trips[i].stops[2] < Date.now() / 1000 + 1800;
+      const arrA = A.to.sched + A.to.delay, depB = B.from.sched + B.from.delay, left = depB - arrA; // today's minutes for the change
+      // a change within the hour: today's forecasts for both trains, spread by how far such forecasts were off (or by
+      // their recorded delays around the median, before enough forecasts are recorded); later: the recorded delays.
+      // Both trains on the same footing: the planner chose the change by today's times
+      const soon = Math.min(arrA, depB) < Date.now() / 1000 + 3600, live = (i: number) => soon && (delays[i]?.u?.length ?? 0) > 0;
       const around = (i: number, uic: string, num: string, line: string, kind: Kind, now: number) => {
         const err = samples(d, uic, num, line, kind, true).v;
         if (!live(i)) return samples(d, uic, num, line, kind).v;
@@ -197,11 +210,11 @@ export function plan(d: Day, delays: Delays, a: string, b: string, at: number, a
       let r;
       if (live(A.i) || live(B.i)) {
         r = { ...catchRate(around(A.i, A.to.uic, A.num, A.line, "arr", A.to.delay), around(B.i, B.from.uic, B.num, B.line, "dep", B.from.delay), slack, walk), basis: "live" };
-      } else r = catchRate(samples(d, A.to.uic, A.num, A.line, "arr").v, samples(d, B.from.uic, B.num, B.line, "dep").v, slack, walk, pairsAt(d, A.to.uic, A.num, B.num));
+      } else r = catchRate(samples(d, A.to.uic, A.num, A.line, "arr").v, samples(d, B.from.uic, B.num, B.line, "dep").v, slack, walk, pairsAt(d, A.to.uic, A.num, B.num), left);
       // missed: the next way on from this station, after the train you missed has gone
       const alt = scan(d, net, st, dest, net.dep[l.enter] + 1).filter((x): x is Leg[] => !!x).sort((x, y) => net.arr[x.at(-1)!.exit] - net.arr[y.at(-1)!.exit])[0];
       const backup = alt ? { arr: base + net.arr[alt.at(-1)!.exit], line: lineOf(d, alt[0].trip), num: d.trips[alt[0].trip].num, dep: base + net.dep[alt[0].enter], changes: alt.length - 1 } : null;
-      return { at: B.from.name, walk, slack, p: Math.round(r.p * 100) / 100, n: r.n, basis: r.basis, backup };
+      return { at: B.from.name, walk, slack, left, p: Math.round(r.p * 100) / 100, n: r.n, basis: r.basis, backup };
     });
     const arr = base + net.arr[legs.at(-1)!.exit], dep = base + net.dep[legs[0].enter];
     return { dep, arr, exp: Math.round(expectedArrival(arr, changes.map((c) => ({ p: c.p, backupArr: c.backup?.arr ?? null })))), changes: changes.filter((c) => c.basis !== "seated").length, legs: out, transfers: changes };

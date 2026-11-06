@@ -515,7 +515,7 @@ function updateMs() { // ms between updates; under 66 the full pass stays at 66 
 }
 let onScreen = [];
 function tickFrame(ts) {
-  if (document.body.classList.contains("views") && innerWidth <= 760) return; // a phone's lists cover the map: nothing to draw
+  if (document.body.classList.contains("views") && document.body.classList.contains("phone")) return; // a phone's lists cover the map: nothing to draw
   const ms = updateMs();
   if (ts - last > Math.max(66, ms) || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
     lastZ = map.getZoom();
@@ -1203,7 +1203,7 @@ const NO_PAD = { top: 0, bottom: 0, left: 0, right: 0 };
 /** Where the panel covers the map: beside it on wide screens, the bottom sheet on phones. `extra` adds a margin all round. */
 const camPad = (extra = 0) => {
   const sheet = innerWidth <= 760, h = sheet && !$("panel").hidden ? $("panel").offsetHeight || innerHeight * 0.58 : 0;
-  return { top: 70 + extra, left: (!sheet && document.body.classList.contains("views") ? 430 : 0) + extra, right: (sheet || $("panel").hidden ? 0 : 430) + extra, bottom: h + extra }; // beside the plan card too
+  return { top: 70 + extra, left: (!sheet && $("views").offsetWidth ? 430 : 0) + extra, right: (sheet || $("panel").hidden ? 0 : 430) + extra, bottom: h + extra }; // beside the plan card too
 };
 const trainPos = (i) => { const r = positionOf(i, now(), 0); return r ? [r.q.lon, r.q.lat] : day.stations[day.trips[i][3][0]].slice(1, 3); };
 function closePanel(fromHistory = false) {
