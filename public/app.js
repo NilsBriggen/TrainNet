@@ -10,7 +10,8 @@ const TIME = new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digi
 const hhmm = (t) => TIME.format(day.base + t * 1000);
 const STANDING = token("standing"); // inferred "probably standing": a quiet outline, never a blink (it's a guess, not a report)
 const KIND = { person: "Person on the track / accident", signal: "Signal or points fault", power: "Overhead line fault", train: "Train fault", infra: "Infrastructure fault", weather: "Weather", police: "Police / emergency services", staff: "Staff shortage", other: "Disruption" };
-const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches; // no blinking or ripples
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let CALM = REDUCED; // no blinking, breathing or growing ripples: reduced motion, or wallpaper
 const clock = (sec) => TIME.format(sec * 1000);
 const dayOf = (sec) => DATE.format(sec * 1000);
 /** HH:MM, with the date when it isn't today (works lasting days, weeks). */
@@ -29,7 +30,7 @@ const paxPromise = fetch("/api/pax").then((r) => r.json()).catch(() => ({}));
 const expCache = new Map(), routeCache = new Map(), shown = new Map(), shownTarget = new Map(), shownE = new Map(); // trip -> expected times / track model / eased distance / the forecast it was eased under
 let selected = null; // { type: "train" | "station" | "alert" | "issues", idx, tab? }
 let incidentTrains = new Map(), rippleAlerts = []; // trip -> its sudden alert; where sudden things happened
-let follow = false, zen = false, lastFocus = null;
+let follow = false, zen = false, wallpaper = false, lastFocus = null;
 const hidden = new Set(); // chip keys switched off
 try { for (const k of JSON.parse(localStorage.getItem("trainnet.hidden") ?? "[]")) hidden.add(k); } catch {}
 
@@ -99,10 +100,12 @@ function indexDay() {
   for (let k = 0; k < (day.through?.length ?? 0); k += 2) { nextTrip.set(day.through[k], day.through[k + 1]); prevTrip.set(day.through[k + 1], day.through[k]); }
 }
 
-let polling = false, alertsV = "";
+let polling = false, alertsV = "", lastPoll = 0;
 async function pollLive() {
   if (polling || document.hidden) return; // a background tab doesn't need trains; the next visible tick catches up
+  if (wallpaper && Date.now() - lastPoll < 60_000) return; // the feed itself learns of a departure ~2.5 min late
   polling = true;
+  lastPoll = Date.now();
   try {
     // never from the browser cache (max-age 14): a stale copy hides a new day and its Date header skews the clock
     const r = await fetch("/api/live", { cache: "no-cache" }).catch(() => null), j = await r?.json().catch(() => null);
@@ -379,7 +382,10 @@ function alongRoute(i, e, p, off, tr, start) {
   if (p.at) return cum[p.a];
   const leg = route[p.a], dep = departure(e.stops, p.a, off), T = e.stops[p.b * 3 + 1] - dep, len = cum[p.b] - cum[p.a] - start;
   const key = `${T}|${start | 0}|${tr.a0}|${tr.b}|${tr.vmax}`;
-  if (leg.prof?.key !== key) leg.prof = { key, p: profile(len, start ? leg.speeds.map((x) => ({ d0: x.d0 - start, d1: x.d1 - start, v: x.v })) : leg.speeds, tr, T) };
+  if (leg.prof?.key !== key) {
+    leg.prof = { key, p: profile(len, start ? leg.speeds.map((x) => ({ d0: x.d0 - start, d1: x.d1 - start, v: x.v })) : leg.speeds, tr, T) };
+    if (p.a > 0) route[p.a - 1].prof = undefined; // the stretch left behind: 24 bytes per 25 m, for every train of the day
+  }
   return cum[p.a] + start + distanceAt(leg.prof.p, p.f * T);
 }
 const ARRIVED = 60; // s a train stays at its last stop: seen to arrive, and a drawn position that lagged behind gets there
@@ -500,8 +506,12 @@ function trainFeatures(dt, ts, only) {
 }
 
 let lastZ = 0, hadBodies = false, shownTrains = { features: [] }, lastTip = 0, last = 0, lastFrame = 0, lastFollow = 0, lastRoute = 0, lastAnim = 0, hadRipples = false;
+let wallTimer = 0;
 function frame(ts) {
-  try { tickFrame(ts); } finally { requestAnimationFrame(frame); } // one bad frame must not stop the map for good
+  try { tickFrame(ts); } finally { // one bad frame must not stop the map for good
+    if (wallpaper) wallTimer = setTimeout(() => { wallTimer = 0; requestAnimationFrame(frame); }, WALL_MS);
+    else requestAnimationFrame(frame);
+  }
 }
 /**
  * How often train positions are rebuilt: about every half pixel of movement for a fast train (50 m/s), so ~1 Hz at
@@ -519,7 +529,7 @@ function tickFrame(ts) {
   const ms = updateMs();
   if (ts - last > Math.max(66, ms) || Math.abs(map.getZoom() - lastZ) > 0.15) { // zooming: bodies are in metres, keep them roughly in step
     lastZ = map.getZoom();
-    const dt = Math.min(ts - lastFrame, 1000);
+    const dt = Math.min(ts - lastFrame, wallpaper ? 3 * WALL_MS : 1000);
     last = lastFrame = ts;
     const { trains, alarms, bodies, drawn } = trainFeatures(dt, ts);
     onScreen = drawn;
@@ -741,6 +751,11 @@ map.on("load", async () => {
   setInterval(loadConsists, 10 * 60_000);
   loadBias();
   setInterval(loadBias, 3600_000); // the formation crawl adds trains through the day
+  // a train 3 h past its end is never drawn again: its track model and easing state go (a day on screen collects thousands)
+  setInterval(() => {
+    const t = now(), keep = selected?.type === "train" ? selected.idx : -1;
+    for (const m of [routeCache, shown, shownTarget, shownE, shownV, shownLeg, depSeen]) for (const i of m.keys()) { const s = day.trips[i][3]; if (i !== keep && t > s[s.length - 2] + 3 * 3600) m.delete(i); }
+  }, 10 * 60_000);
 });
 
 const hoverable = !matchMedia("(hover: none)").matches;
@@ -945,6 +960,7 @@ function onPosition(pos) {
 setInterval(() => ($("clock").textContent = new Date().toLocaleTimeString("de-CH", { timeZone: "Europe/Zurich" })), 1000);
 let idleTimer;
 function setZen(on) {
+  if (!on && wallpaper) setWallpaper(false);
   zen = on;
   document.body.classList.toggle("zen", on);
   document.body.classList.remove("idle");
@@ -954,6 +970,34 @@ function setZen(on) {
   history.replaceState(history.state, "", u);
 }
 $("zen").onclick = () => setZen(!zen);
+
+// wallpaper: zen for a screen left on. Trains move every WALL_MS instead of up to every frame, the feed is asked every
+// minute, nothing blinks or breathes (a reported incident is a steady red ring), and the map renders at 1 px per CSS px
+const WALL_MS = 10_000;
+let zenBefore = false;
+function setWallpaper(on) {
+  if (!day || on === wallpaper) return; // the map's layers aren't there yet
+  if (on) { zenBefore = zen; setZen(true); }
+  wallpaper = on;
+  CALM = on || REDUCED;
+  document.body.classList.toggle("wallpaper", on);
+  $("zen-exit").textContent = on ? "Exit wallpaper" : "Exit zen";
+  map.setPixelRatio(on ? 1 : devicePixelRatio); // a 4K screen at 2x draws 4x the pixels, in GPU memory and power
+  map.setLayoutProperty("ripples", "visibility", on || !REDUCED ? "visible" : "none");
+  if (on) { // what blinks or breathes stands still, at its strongest
+    map.setPaintProperty("alert-seg-3", "line-opacity", 0.8);
+    map.setPaintProperty("alert-seg-sudden", "line-opacity", 0.95);
+    map.setPaintProperty("alert-pts", "icon-opacity", ["match", ["get", "sev"], 1, 0.45, 0.95]);
+    map.setPaintProperty("ripples", "circle-radius", 14);
+    map.setPaintProperty("ripples", "circle-stroke-opacity", 0.75);
+  } else if (wallTimer) { clearTimeout(wallTimer); wallTimer = 0; requestAnimationFrame(frame); } // smooth again now, not in 10 s
+  const u = new URL(location.href);
+  on ? u.searchParams.set("wallpaper", "1") : u.searchParams.delete("wallpaper");
+  history.replaceState(history.state, "", u);
+  if (!on) { pollLive(); if (!zenBefore && zen) setZen(false); } // W again: back to where it started
+}
+$("wallpaper").onclick = () => setWallpaper(!wallpaper);
+map.on("moveend", () => { if (wallpaper) tickFrame(performance.now()); }); // panned or zoomed: trains at the new scale now
 $("zen-exit").onclick = () => setZen(false);
 let zenExitTimer;
 /** In zen there's no bar: a tap shows a way out for a few seconds (touch screens have no Z key or Escape). */
@@ -974,6 +1018,7 @@ document.addEventListener("keydown", (e) => {
   else if ((e.metaKey || e.ctrlKey) && e.key === "k" || (!typing && e.key === "/")) { e.preventDefault(); $("q").focus(); $("q").select(); }
   else if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   else if (e.key === "z" || e.key === "Z") setZen(!zen);
+  else if (e.key === "w" || e.key === "W") setWallpaper(!wallpaper);
   else if (e.key === "?") toggleKey();
 });
 if (!/Mac|iPhone|iPad/.test(navigator.platform)) document.querySelector(".search kbd").textContent = "Ctrl K";
@@ -1082,6 +1127,7 @@ const PANEL_KEYS = ["train", "station", "alert", "line"], PAGE = Math.random(); 
 function openFromUrl(initial = true) {
   const u = new URL(location.href);
   if (initial && u.searchParams.get("zen") === "1") setZen(true);
+  if (initial && u.searchParams.get("wallpaper") === "1") setWallpaper(true);
   const at = u.searchParams.get("at")?.split("/").map(Number); // map view: zoom/lat/lon
   if (initial && at?.length === 3 && at.every(Number.isFinite)) map.jumpTo({ zoom: at[0], center: [at[2], at[1]] });
   const num = u.searchParams.get("train"), uic = u.searchParams.get("station"), aid = u.searchParams.get("alert"), ln = u.searchParams.get("line");
@@ -1283,7 +1329,7 @@ function renderPanel() {
   body.querySelector("[data-follow]")?.addEventListener("click", () => setFollow(!follow));
   body.querySelector("[data-share]")?.addEventListener("click", (e) => {
     const btn = e.currentTarget, u = new URL(location.href); // currentTarget is gone by the time the promise settles
-    u.searchParams.delete("zen");
+    u.searchParams.delete("zen"); u.searchParams.delete("wallpaper");
     if (!navigator.clipboard) return void prompt("Link to this train", u.href); // http or old browsers
     navigator.clipboard.writeText(u.href).then(() => { btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy link"), 1200); }, () => prompt("Link to this train", u.href));
   });

@@ -261,7 +261,7 @@ h3::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 body:not(.zen) #zen-exit { display: none; }
 
 /* zen */
-body.zen #bar, body.zen #chips, body.zen #panel, body.zen #credits, body.zen #tip, body.zen #vignette, body.zen #key { display: none; }
+body.zen #bar, body.zen #chips, body.zen #panel, body.zen #credits, body.zen #tip, body.zen #vignette, body.zen #key, body.zen #views { display: none; }
 body.zen.idle { cursor: none; }
 
 @media (max-width: 1400px) { #spark { display: none; } }
@@ -272,7 +272,9 @@ body.zen.idle { cursor: none; }
 }
 @media (max-width: 960px) {
   .stats { gap: 8px; }
+  .stats .long { display: none; } /* "655 · 96 %": room for the buttons beside an incident pill */
 }
+@media (max-width: 860px) { .stats .sep, #clock { display: none; } } /* the clock goes before a button does */
 @media (max-width: 760px) {
   /* a blur over a canvas redrawn 20× a second is expensive on phone GPUs */
   .ui { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(9, 17, 38, 0.94); }
