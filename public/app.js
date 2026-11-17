@@ -972,7 +972,7 @@ function setZen(on) {
 $("zen").onclick = () => setZen(!zen);
 
 // wallpaper: zen for a screen left on. Trains move every WALL_MS instead of up to every frame, the feed is asked every
-// minute, nothing blinks or breathes (a reported incident is a steady red ring), and the map renders at 1 px per CSS px
+// minute, and nothing blinks or breathes (a reported incident is a steady red ring)
 const WALL_MS = 10_000;
 let zenBefore = false;
 function setWallpaper(on) {
@@ -982,7 +982,6 @@ function setWallpaper(on) {
   CALM = on || REDUCED;
   document.body.classList.toggle("wallpaper", on);
   $("zen-exit").textContent = on ? "Exit wallpaper" : "Exit zen";
-  map.setPixelRatio(on ? 1 : devicePixelRatio); // a 4K screen at 2x draws 4x the pixels, in GPU memory and power
   map.setLayoutProperty("ripples", "visibility", on || !REDUCED ? "visible" : "none");
   if (on) { // what blinks or breathes stands still, at its strongest
     map.setPaintProperty("alert-seg-3", "line-opacity", 0.8);
